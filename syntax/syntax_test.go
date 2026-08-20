@@ -172,6 +172,18 @@ func FuzzLoad(fu *testing.F) {
 	})
 }
 
+func FuzzJBIG2(fu *testing.F) {
+	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.jb2"))
+	for _, name := range names {
+		if b, err := os.ReadFile(name); err == nil {
+			fu.Add(b)
+		}
+	}
+	fu.Fuzz(func(t *testing.T, b []byte) {
+		jbig2Decode(nil, b, nil)
+	})
+}
+
 // TestCorpus reads every file in the corpora named by $PDF_CORPUS_DIR and
 // holds the result to testdata/corpus.tsv, which records what MuPDF and
 // poppler make of each one. See docs/CORPUS.md; regenerate the manifest with

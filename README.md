@@ -2,12 +2,12 @@
 
 [PDF](https://en.wikipedia.org/wiki/PDF) renderer in pure Go. No CGo, no dependencies.
 
-Work in progress: everything but JBIG2 and JPEG 2000 renders.
+Work in progress: every page element a PDF can carry renders.
 
 The object layer is held to MuPDF, poppler and qpdf over 4382 files, the interpreter to
 `mutool trace` call for call, and the font engine to `mutool draw -F svg` glyph for glyph. The
-2D engine is byte-exact against AGG 2.3, and rendered pages are scored against MuPDF, poppler,
-cairo and Ghostscript.
+2D engine is byte-exact against AGG 2.3, the JPEG 2000 decoder is byte-exact against OpenJPEG,
+and rendered pages are scored against MuPDF, poppler, cairo and Ghostscript.
 
 ### Rendering
 
@@ -51,15 +51,13 @@ the public API.
 
 Paths, strokes and dashes, clipping by path, by text and by stencil, text in embedded TrueType,
 CFF, Type1 and CID keyed fonts, the fourteen standard substitutes, every color space and
-function type, images at every bit depth with soft masks and color keys, JPEG and CCITT Group 3
-and 4, all seven shading types, tiling and shading patterns, transparency groups, the sixteen
-blend modes and soft masks, annotation appearances, optional content layers that a caller can
-turn on and off, encryption, and files damaged enough that the cross-reference table has to be
-rebuilt.
+function type, images at every bit depth with soft masks and color keys, JPEG, CCITT Group 3
+and 4, JBIG2 and JPEG 2000, all seven shading types, tiling and shading patterns, transparency
+groups, the sixteen blend modes and soft masks, annotation appearances, optional content layers
+that a caller can turn on and off, encryption, and files damaged enough that the cross-reference
+table has to be rebuilt.
 
 ### Not implemented
-
-JBIG2 and JPEG 2000 images.
 
 Out of scope: writing or editing PDF, form field values, JavaScript, XFA, signature validation
 and PDF/A validation.

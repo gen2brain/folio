@@ -1113,6 +1113,105 @@ func TestRegisterImageDecoder(t *testing.T) {
 	}
 }
 
+// fixture reads one of the encoded streams in testdata.
+func fixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestImageJBIG2 draws testdata/generic.jb2, an MMR coded generic region that
+// jbig2dec decodes as a black frame around a white square.
+func TestImageJBIG2(t *testing.T) {
+	d := imagePDF(t, "/Width 16 /Height 16 /ColorSpace /DeviceGray"+
+		" /BitsPerComponent 1 /Filter /JBIG2Decode", fixture(t, "generic.jb2"), "")
+	px := renderDoc(t, d, &Options{ColorSpace: DeviceGray})
+	for _, tc := range []struct {
+		x, y int
+		want uint8
+	}{{6, 6, 0}, {93, 6, 0}, {6, 93, 0}, {93, 93, 0}, {50, 50, 255}, {35, 35, 255}} {
+		if got := pixel(px, tc.x, tc.y)[0]; got != tc.want {
+			t.Errorf("JBIG2 pixel at %d,%d = %d, want %d", tc.x, tc.y, got, tc.want)
+		}
+	}
+}
+
+// TestImageJBIG2Globals splits the same image so that the page information
+// lives in the globals stream, which is the shape a real scanner produces and
+// which nothing in any corpus has.
+func TestImageJBIG2Globals(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Im 5 0 R >> >> >>",
+		streamObj("", "q 100 0 0 100 0 0 cm /Im Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 16 /Height 16"+
+			" /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode"+
+			" /DecodeParms << /JBIG2Globals 6 0 R >>", fixture(t, "region.jb2")),
+		streamObj("", fixture(t, "globals.jb2")),
+	})
+	px := renderDoc(t, d, &Options{ColorSpace: DeviceGray})
+	if got := pixel(px, 6, 6)[0]; got != 0 {
+		t.Errorf("with globals the frame is %d, want 0", got)
+	}
+	if got := pixel(px, 50, 50)[0]; got != 255 {
+		t.Errorf("with globals the middle is %d, want 255", got)
+	}
+}
+
+// TestImageJPX decodes the three codestreams in testdata, which OpenJPEG made
+// from the ramps below without loss, and checks every sample.
+func TestImageJPX(t *testing.T) {
+	gray := make([]byte, 32*32)
+	color := make([]byte, 32*32*3)
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			gray[y*32+x] = byte(x*8 + y*4)
+			color[(y*32+x)*3] = byte(x * 8)
+			color[(y*32+x)*3+1] = byte(y * 8)
+			color[(y*32+x)*3+2] = byte((x ^ y) * 8)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		comps int
+		want  []byte
+	}{
+		{"gray.j2k", 1, gray},
+		{"rgb.j2k", 3, color},
+		{"lazy.j2k", 3, color},
+	} {
+		img, err := jpxDecode([]byte(fixture(t, tc.name)))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if img.width != 32 || img.height != 32 || img.comps != tc.comps {
+			t.Fatalf("%s: %dx%d with %d components", tc.name, img.width, img.height, img.comps)
+		}
+		for i, want := range tc.want {
+			if img.pix[i] != want {
+				t.Fatalf("%s: sample %d = %d, want %d", tc.name, i, img.pix[i], want)
+			}
+		}
+	}
+}
+
+func FuzzJPX(fu *testing.F) {
+	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.j2k"))
+	for _, name := range names {
+		if b, err := os.ReadFile(name); err == nil {
+			fu.Add(b)
+		}
+	}
+	fu.Fuzz(func(t *testing.T, b []byte) {
+		jpxDecode(b)
+	})
+}
+
 // shadingPDF builds a one page document whose content stream paints one
 // shading, given as the last object.
 func shadingPDF(t *testing.T, content, shade string, extra ...string) *Document {

@@ -21,7 +21,8 @@ var byteFilters = map[Name]bool{
 	"ASCIIHexDecode": true, "AHx": true,
 	"RunLengthDecode": true, "RL": true,
 	"CCITTFaxDecode": true, "CCF": true,
-	"Crypt": true, "": true,
+	"JBIG2Decode": true,
+	"Crypt":       true, "": true,
 }
 
 // Data returns the fully decoded stream contents.
@@ -148,6 +149,8 @@ func applyFilter(f *File, name Name, data []byte, parms Dict) ([]byte, error) {
 		return asciiHexDecode(data), nil
 	case "RunLengthDecode", "RL":
 		return runLengthDecode(data), nil
+	case "JBIG2Decode":
+		return jbig2Decode(f, data, parms)
 	case "CCITTFaxDecode", "CCF":
 		return ccittFaxDecode(f, data, parms)
 	case "Crypt":

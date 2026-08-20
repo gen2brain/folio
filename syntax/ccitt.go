@@ -20,8 +20,9 @@ const (
 )
 
 type ccitt struct {
-	src []byte
-	pos int
+	src  []byte
+	pos  int
+	read func() int
 
 	encoding  int
 	eoline    bool
@@ -113,6 +114,9 @@ func (c *ccitt) start() {
 }
 
 func (c *ccitt) next() int {
+	if c.read != nil {
+		return c.read()
+	}
 	if c.pos >= len(c.src) {
 		return -1
 	}
@@ -293,6 +297,15 @@ func (c *ccitt) decode1D(columns uint32) {
 	}
 }
 
+// ref reads the reference line, which a stream that codes more changing
+// elements than a row can hold will index past its two sentinels.
+func (c *ccitt) ref(i int) uint32 {
+	if i < 0 || i >= len(c.refLine) {
+		return uint32(c.columns)
+	}
+	return c.refLine[i]
+}
+
 // decode2D reads a line against the one above it.
 func (c *ccitt) decode2D(columns uint32) {
 	refLine, codingLine := c.refLine, c.codingLine
@@ -313,8 +326,8 @@ func (c *ccitt) decode2D(columns uint32) {
 	for codingLine[c.codingPos] < columns {
 		switch code := c.twoDimCode(); code {
 		case twoDimPass:
-			c.addPixels(refLine[refPos+1], black)
-			if refLine[refPos+1] < columns {
+			c.addPixels(c.ref(refPos+1), black)
+			if c.ref(refPos+1) < columns {
 				refPos += 2
 			}
 
@@ -355,22 +368,22 @@ func (c *ccitt) decode2D(columns uint32) {
 			if codingLine[c.codingPos] < columns {
 				c.addPixels(codingLine[c.codingPos]+uint32(run2), black^1)
 			}
-			for refLine[refPos] <= codingLine[c.codingPos] && refLine[refPos] < columns {
+			for c.ref(refPos) <= codingLine[c.codingPos] && c.ref(refPos) < columns {
 				refPos += 2
 			}
 
 		case twoDimVertR3, twoDimVertR2, twoDimVertR1, twoDimVert0:
-			c.addPixels(refLine[refPos]+uint32(vertOffset(code)), black)
+			c.addPixels(c.ref(refPos)+uint32(vertOffset(code)), black)
 			black ^= 1
 			if codingLine[c.codingPos] < columns {
 				refPos++
-				for refLine[refPos] <= codingLine[c.codingPos] && refLine[refPos] < columns {
+				for c.ref(refPos) <= codingLine[c.codingPos] && c.ref(refPos) < columns {
 					refPos += 2
 				}
 			}
 
 		case twoDimVertL3, twoDimVertL2, twoDimVertL1:
-			c.addPixelsNeg(int64(refLine[refPos])-int64(vertOffset(code)), black)
+			c.addPixelsNeg(int64(c.ref(refPos))-int64(vertOffset(code)), black)
 			black ^= 1
 			if codingLine[c.codingPos] < columns {
 				if refPos > 0 {
@@ -378,7 +391,7 @@ func (c *ccitt) decode2D(columns uint32) {
 				} else {
 					refPos++
 				}
-				for refLine[refPos] <= codingLine[c.codingPos] && refLine[refPos] < columns {
+				for c.ref(refPos) <= codingLine[c.codingPos] && c.ref(refPos) < columns {
 					refPos += 2
 				}
 			}
@@ -569,3 +582,28 @@ func (c *ccitt) eatBits(n int) {
 		c.inputBits = 0
 	}
 }
+
+// group4 decodes MMR coded rows, which is the coding CCITTFaxDecode with a
+// negative /K uses and which JBIG2 embeds.
+type group4 struct {
+	c ccitt
+}
+
+// newGroup4 returns a decoder of columns wide rows that pulls bytes from read,
+// which returns -1 at the end of the data.
+func newGroup4(read func() int, columns, rows int, endOfBlock bool) *group4 {
+	g := &group4{c: ccitt{
+		read:     read,
+		encoding: -1,
+		columns:  columns,
+		rows:     rows,
+		eoblock:  endOfBlock,
+		black:    true,
+	}}
+	g.c.start()
+	return g
+}
+
+// next returns the next eight pixels, most significant bit leftmost and a set
+// bit black, or -1 at the end of the data.
+func (g *group4) next() int { return g.c.readNextChar() }

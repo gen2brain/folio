@@ -31,6 +31,8 @@ type Image struct {
 	// ColorKey is the /Mask color key range, nil when there is none.
 	ColorKey []int
 
+	jpxAlpha []byte
+
 	doc    *Document
 	stream *syntax.Stream
 	dict   Dict
@@ -60,6 +62,8 @@ func (d *Document) image(st *syntax.Stream, dict Dict, res Dict, inline []byte, 
 		img.BPC = 1
 	} else if cs := f.Lookup(dict, "ColorSpace", "CS"); cs != nil {
 		img.CS = d.colorSpace(cs, res, 0)
+	} else {
+		img.CS = img.codestreamColorSpace()
 	}
 
 	if depth < maxNesting && inline == nil {
@@ -339,7 +343,7 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst *Colo
 	if dst == nil {
 		dst = DeviceRGB
 	}
-	alpha := i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil
+	alpha := i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil || i.jpxAlpha != nil
 	px := raster.NewPixmap(dst.Model(), i.Width, i.Height, alpha)
 	if px == nil {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
@@ -571,6 +575,18 @@ func (i *Image) transparency(px *raster.Pixmap) {
 	if !px.Alpha {
 		return
 	}
+	if i.jpxAlpha != nil {
+		n := px.Comps()
+		for y := 0; y < px.H; y++ {
+			row := px.Row(y)
+			for x := 0; x < px.W; x++ {
+				if p := y*px.W + x; p < len(i.jpxAlpha) {
+					row[x*n+px.N] = i.jpxAlpha[p]
+				}
+			}
+		}
+		return
+	}
 	mask := i.SMask
 	if mask == nil {
 		mask = i.StencilMask
@@ -728,6 +744,13 @@ func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) ([]byte, int
 		pix, w, h, n, err = registered(data, parms)
 	case filter == "DCTDecode" || filter == "DCT":
 		pix, w, h, n, err = jpegSamples(data)
+	case filter == "JPXDecode":
+		var img *jpxImage
+		img, err = jpxDecode(data)
+		if err == nil {
+			pix, w, h, n = img.pix, img.width, img.height, img.comps
+			pix, n = i.adoptJPX(pix, w, h, n)
+		}
 	default:
 		return nil, 0, fmt.Errorf("%w: %s image", ErrUnsupported, filter)
 	}
@@ -906,4 +929,73 @@ func (d *Document) imageUnlink(e *imageEntry) {
 		d.imageTail = e.prev
 	}
 	e.prev, e.next = nil, nil
+}
+
+// adoptJPX gives a JPX image the color space and the transparency the
+// codestream carries rather than the dictionary, which ISO 32000-1 7.4.9 says
+// is what a reader must do when the dictionary is silent or disagrees.
+func (i *Image) adoptJPX(pix []byte, w, h, n int) ([]byte, int) {
+	smask := i.smaskInData()
+	color := n
+	switch {
+	case i.CS != nil && i.CS.N <= n:
+		color = i.CS.N
+	case i.CS == nil && (n == 2 || n == 4) && smask != 0:
+		color = n - 1
+	}
+	if color < n && w*h*n <= len(pix) {
+		out := make([]byte, w*h*color)
+		var alpha []byte
+		if smask != 0 {
+			alpha = make([]byte, w*h)
+		}
+		for p := 0; p < w*h; p++ {
+			copy(out[p*color:], pix[p*n:p*n+color])
+			if alpha != nil {
+				alpha[p] = pix[p*n+color]
+			}
+		}
+		pix, n = out, color
+		i.jpxAlpha = alpha
+	}
+	if i.CS == nil || i.CS.N != n {
+		switch n {
+		case 1:
+			i.CS = DeviceGray
+		case 3:
+			i.CS = DeviceRGB
+		case 4:
+			i.CS = DeviceCMYK
+		}
+	}
+	return pix, n
+}
+
+// codestreamColorSpace is what a JPX image with no /ColorSpace paints in,
+// which is the component count of its codestream less any opacity channel.
+func (i *Image) codestreamColorSpace() *ColorSpace {
+	data, filter, _, err := i.data()
+	if err != nil || filter != "JPXDecode" {
+		return nil
+	}
+	n := jpxComponents(data)
+	if (n == 2 || n == 4) && i.smaskInData() != 0 {
+		n--
+	}
+	switch n {
+	case 1:
+		return DeviceGray
+	case 3:
+		return DeviceRGB
+	case 4:
+		return DeviceCMYK
+	}
+	return nil
+}
+
+func (i *Image) smaskInData() int64 {
+	if i.doc == nil {
+		return 0
+	}
+	return i.doc.f.GetInt(i.doc.f.Lookup(i.dict, "SMaskInData"), 0)
 }
