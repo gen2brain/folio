@@ -97,10 +97,51 @@ func (l *Lexer) Errors() []error { return l.errs }
 
 // Next returns the next token. ok is false at end of input.
 func (l *Lexer) Next() (obj Object, ok bool) {
+	op, ok := l.next()
+	if !ok {
+		return nil, false
+	}
+	return op.Object(), true
+}
+
+// An Operand is one token, with a number left as a number rather than boxed
+// into an Object. A content stream is almost entirely numbers, and boxing each
+// one is an allocation.
+type Operand struct {
+	// Num is the value when Obj is nil.
+	Num float64
+	// Whole is the exact value of an integer, which Num only rounds once it
+	// runs past what a float64 counts one by one.
+	Whole int64
+	// IsInt reports that the number was written without a fraction, which is
+	// what tells an object number from a coordinate.
+	IsInt bool
+	// IsNum says the operand is the number rather than Obj. It is not the same
+	// question as whether Obj is nil, because nil is the null object.
+	IsNum bool
+	// Obj is the token when it is anything but a number.
+	Obj Object
+}
+
+// Number reports whether the operand is a number rather than another object.
+func (o Operand) Number() bool { return o.IsNum }
+
+// Object boxes the operand.
+func (o Operand) Object() Object {
+	if !o.IsNum {
+		return o.Obj
+	}
+	if o.IsInt {
+		return Integer(o.Whole)
+	}
+	return Real(o.Num)
+}
+
+func (l *Lexer) next() (Operand, bool) {
 	l.skipSpace()
 	l.tokStart = l.pos
 	if l.pos >= len(l.buf) {
-		return nil, false
+		return Operand{}, false
 	}
 	c := l.buf[l.pos]
 	switch {
@@ -108,46 +149,46 @@ func (l *Lexer) Next() (obj Object, ok bool) {
 		return l.number(), true
 	case c == '(':
 		l.pos++
-		return l.literalString(), true
+		return Operand{Obj: l.literalString()}, true
 	case c == '/':
 		l.pos++
-		return l.name(), true
+		return Operand{Obj: l.name()}, true
 	case c == '[':
 		l.pos++
-		return Keyword("["), true
+		return Operand{Obj: Keyword("[")}, true
 	case c == ']':
 		l.pos++
-		return Keyword("]"), true
+		return Operand{Obj: Keyword("]")}, true
 	case c == '<':
 		if l.at(l.pos+1) == '<' {
 			l.pos += 2
-			return Keyword("<<"), true
+			return Operand{Obj: Keyword("<<")}, true
 		}
 		l.pos++
-		return l.hexString(), true
+		return Operand{Obj: l.hexString()}, true
 	case c == '>':
 		if l.at(l.pos+1) == '>' {
 			l.pos += 2
-			return Keyword(">>"), true
+			return Operand{Obj: Keyword(">>")}, true
 		}
 		l.pos++
 		l.errorf("stray %q at %d", c, l.pos-1)
-		return l.Next()
+		return l.next()
 	case c == '{', c == '}':
 		l.pos++
-		return Keyword(l.buf[l.pos-1 : l.pos]), true
+		return Operand{Obj: Keyword(l.buf[l.pos-1 : l.pos])}, true
 	case c == ')':
 		l.pos++
 		l.errorf("stray %q at %d", c, l.pos-1)
-		return l.Next()
+		return l.next()
 	}
-	return l.command(), true
+	return Operand{Obj: l.command()}, true
 }
 
 // number reads an integer or real, with the malformed syntax Acrobat accepts:
 // a double negative, a line break before the digits, a minus in the middle,
 // and more than one decimal point.
-func (l *Lexer) number() Object {
+func (l *Lexer) number() Operand {
 	start := l.pos
 	neg := false
 	if c := l.peek(); c == '-' || c == '+' {
@@ -202,15 +243,15 @@ func (l *Lexer) number() Object {
 	}
 }
 
-func (l *Lexer) numberValue(neg bool, intPart int64, frac float64, isReal bool, digits int, overflow bool, start int) Object {
+func (l *Lexer) numberValue(neg bool, intPart int64, frac float64, isReal bool, digits int, overflow bool, start int) Operand {
 	if digits == 0 {
 		l.errorf("invalid number at %d", start)
-		return Integer(0)
+		return Operand{IsInt: true, IsNum: true}
 	}
 	if overflow {
 		v, err := strconv.ParseFloat(string(l.buf[start:l.pos]), 64)
 		if err == nil {
-			return Real(v)
+			return Operand{Num: v, IsNum: true}
 		}
 	}
 	if isReal {
@@ -218,12 +259,12 @@ func (l *Lexer) numberValue(neg bool, intPart int64, frac float64, isReal bool, 
 		if neg {
 			v = -v
 		}
-		return Real(v)
+		return Operand{Num: v, IsNum: true}
 	}
 	if neg {
 		intPart = -intPart
 	}
-	return Integer(intPart)
+	return Operand{Num: float64(intPart), Whole: intPart, IsInt: true, IsNum: true}
 }
 
 // literalString reads a (...) string. The opening parenthesis is consumed.

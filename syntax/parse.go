@@ -8,7 +8,7 @@ type Parser struct {
 	lex *Lexer
 	doc *File
 
-	buf   [2]Object
+	buf   [2]Operand
 	ok    [2]bool
 	start [2]int
 
@@ -45,9 +45,9 @@ func (p *Parser) Refill() { p.refill() }
 
 // refill reloads both lookahead slots after the scanner position was moved.
 func (p *Parser) refill() {
-	p.buf[0], p.ok[0] = p.lex.Next()
+	p.buf[0], p.ok[0] = p.lex.next()
 	p.start[0] = p.lex.tokStart
-	p.buf[1], p.ok[1] = p.lex.Next()
+	p.buf[1], p.ok[1] = p.lex.next()
 	p.start[1] = p.lex.tokStart
 }
 
@@ -57,19 +57,39 @@ func (p *Parser) refill() {
 func (p *Parser) Pos() int { return p.last }
 
 func (p *Parser) shift() (Object, bool) {
+	o, ok := p.shiftOperand()
+	if !ok {
+		return nil, false
+	}
+	return o.Object(), true
+}
+
+func (p *Parser) shiftOperand() (Operand, bool) {
 	o, ok := p.buf[0], p.ok[0]
 	p.last = p.start[0]
 	p.buf[0], p.ok[0], p.start[0] = p.buf[1], p.ok[1], p.start[1]
-	p.buf[1], p.ok[1] = p.lex.Next()
+	p.buf[1], p.ok[1] = p.lex.next()
 	p.start[1] = p.lex.tokStart
 	return o, ok
+}
+
+// Operand reads one item of a content stream's operand list. A number comes
+// back unboxed; anything else is read as a whole object, so an array or a
+// dictionary operand still arrives complete. A content stream has no indirect
+// references, which is what lets a number be taken on sight.
+func (p *Parser) Operand() (Operand, bool) {
+	if p.ok[0] && p.buf[0].IsNum {
+		return p.shiftOperand()
+	}
+	obj, ok := p.Object()
+	return Operand{Obj: obj}, ok
 }
 
 func (p *Parser) isKeyword(i int, k Keyword) bool {
 	if !p.ok[i] {
 		return false
 	}
-	v, is := p.buf[i].(Keyword)
+	v, is := p.buf[i].Obj.(Keyword)
 	return is && v == k
 }
 
@@ -93,7 +113,8 @@ func (p *Parser) Object() (obj Object, ok bool) {
 			return String(p.crypt.decryptString(s)), true
 		}
 		if n, isInt := first.(Integer); isInt {
-			if g, isInt2 := p.buf[0].(Integer); isInt2 && p.ok[0] && p.isKeyword(1, "R") {
+			if p.ok[0] && p.buf[0].IsInt && p.isKeyword(1, "R") {
+				g := Integer(p.buf[0].Whole)
 				p.shift()
 				p.shift()
 				if n < 0 || n > 1<<31 || g < 0 || g > 0xffff {
@@ -163,9 +184,9 @@ func (p *Parser) dictOrStream() Object {
 			p.shift()
 			break
 		}
-		key, isName := p.buf[0].(Name)
+		key, isName := p.buf[0].Obj.(Name)
 		if !isName {
-			p.errorf("dictionary key is not a name: %s", format(p.buf[0]))
+			p.errorf("dictionary key is not a name: %s", format(p.buf[0].Object()))
 			if p.isKeyword(0, "endobj") || p.isKeyword(0, "]") {
 				return dict
 			}
@@ -298,8 +319,8 @@ func (p *Parser) indirectAny() (Object, error) {
 }
 
 func (p *Parser) indirectHeader() (Object, Ref, error) {
-	num, ok := p.buf[0].(Integer)
-	gen, ok2 := p.buf[1].(Integer)
+	num, ok := Integer(p.buf[0].Whole), p.buf[0].IsInt
+	gen, ok2 := Integer(p.buf[1].Whole), p.buf[1].IsInt
 	if !ok || !ok2 || num < 0 || num > maxObjects || gen < 0 || gen > 0xffff {
 		return nil, Ref{}, fmt.Errorf("%w: object header at %d", ErrInvalid, p.start[0])
 	}

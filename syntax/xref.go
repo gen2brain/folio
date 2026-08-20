@@ -221,8 +221,8 @@ func (f *File) readXrefTable(p *Parser) (Dict, error) {
 			}
 			return dict, nil
 		}
-		first, ok1 := p.buf[0].(Integer)
-		n, ok2 := p.buf[1].(Integer)
+		first, ok1 := Integer(p.buf[0].Whole), p.buf[0].IsInt
+		n, ok2 := Integer(p.buf[1].Whole), p.buf[1].IsInt
 		if !ok1 || !ok2 {
 			return nil, fmt.Errorf("%w: bad xref subsection header", ErrInvalid)
 		}

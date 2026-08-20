@@ -86,16 +86,16 @@ func (ip *interp) run(data []byte) {
 	p := syntax.NewParser(l, ip.doc.f)
 	p.AllowStreams(false)
 
-	var stack []Object
+	var stack []syntax.Operand
 	for {
-		obj, ok := p.Object()
+		op, ok := p.Operand()
 		if !ok {
 			break
 		}
-		kw, isKw := obj.(syntax.Keyword)
+		kw, isKw := op.Obj.(syntax.Keyword)
 		if !isKw {
 			if len(stack) < maxOperands {
-				stack = append(stack, obj)
+				stack = append(stack, op)
 			}
 			continue
 		}
@@ -118,30 +118,27 @@ func (ip *interp) run(data []byte) {
 
 // num returns operand i counting from the end of the operand list, so num(0)
 // is the last one.
-func num(stack []Object, i int) float32 {
+func num(stack []syntax.Operand, i int) float32 {
 	i = len(stack) - 1 - i
 	if i < 0 || i >= len(stack) {
 		return 0
 	}
-	switch v := stack[i].(type) {
-	case Integer:
-		return float32(v)
-	case Real:
-		return float32(v)
+	if stack[i].IsNum {
+		return float32(stack[i].Num)
 	}
 	return 0
 }
 
-func name(stack []Object, i int) Name {
+func name(stack []syntax.Operand, i int) Name {
 	i = len(stack) - 1 - i
 	if i < 0 {
 		return ""
 	}
-	n, _ := stack[i].(Name)
+	n, _ := stack[i].Obj.(Name)
 	return n
 }
 
-func (ip *interp) op(kw syntax.Keyword, stack []Object) {
+func (ip *interp) op(kw syntax.Keyword, stack []syntax.Operand) {
 	switch kw {
 	case "q":
 		if len(ip.gstack) >= maxGStack {
@@ -339,7 +336,7 @@ func (ip *interp) op(kw syntax.Keyword, stack []Object) {
 
 // markedProperty resolves the property list of a BDC, which is either an
 // inline dictionary or a name to look up in the resources.
-func (ip *interp) markedProperty(stack []Object) Object {
+func (ip *interp) markedProperty(stack []syntax.Operand) Object {
 	switch v := lastObject(stack).(type) {
 	case Name:
 		if props := ip.doc.f.GetDict(ip.res["Properties"]); props != nil {
@@ -351,11 +348,11 @@ func (ip *interp) markedProperty(stack []Object) Object {
 	}
 }
 
-func lastObject(stack []Object) Object {
+func lastObject(stack []syntax.Operand) Object {
 	if len(stack) == 0 {
 		return nil
 	}
-	return stack[len(stack)-1]
+	return stack[len(stack)-1].Object()
 }
 
 func clampInt(v, lo, hi int) int {
@@ -368,13 +365,13 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
-func (ip *interp) setDash(stack []Object) {
+func (ip *interp) setDash(stack []syntax.Operand) {
 	ip.gs.stroke.Dash = ip.gs.stroke.Dash[:0]
 	ip.gs.stroke.DashPhase = num(stack, 0)
 	if len(stack) < 2 {
 		return
 	}
-	arr, _ := stack[len(stack)-2].(Array)
+	arr, _ := stack[len(stack)-2].Obj.(Array)
 	allZero := true
 	for _, e := range arr {
 		v := ip.doc.f.GetFloat(e, 0)
@@ -392,7 +389,7 @@ func (ip *interp) setDash(stack []Object) {
 	}
 }
 
-func (ip *interp) setDeviceColor(c *color, cs *ColorSpace, stack []Object, n int) {
+func (ip *interp) setDeviceColor(c *color, cs *ColorSpace, stack []syntax.Operand, n int) {
 	c.set(cs)
 	for i := 0; i < n; i++ {
 		c.value[i] = num(stack, n-1-i)
@@ -402,7 +399,7 @@ func (ip *interp) setDeviceColor(c *color, cs *ColorSpace, stack []Object, n int
 
 // setColor handles sc, scn, SC and SCN, whose operands depend on the space
 // that cs or CS selected.
-func (ip *interp) setColor(c *color, stack []Object) {
+func (ip *interp) setColor(c *color, stack []syntax.Operand) {
 	if c.cs.IsPattern() {
 		c.pattern = nil
 		c.patternCTM = ip.base
