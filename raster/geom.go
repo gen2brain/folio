@@ -179,6 +179,13 @@ func (m Matrix) MaxExpansion() float32 {
 	return max
 }
 
+func abs32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func min32(a, b float32) float32 {
 	if a < b {
 		return a

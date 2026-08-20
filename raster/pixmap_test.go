@@ -418,3 +418,56 @@ func TestBilinearRowMatchesGeneral(t *testing.T) {
 		}
 	}
 }
+
+// TestGradientRowMatchesSpan holds the row form of a gradient to the span form
+// it exists to skip, over both kinds, both extends and a destination with and
+// without an alpha channel.
+func TestGradientRowMatchesSpan(t *testing.T) {
+	lut := make([]uint8, 256*3)
+	for i := range 256 {
+		lut[i*3], lut[i*3+1], lut[i*3+2] = uint8(i), uint8(255-i), uint8(i/2)
+	}
+	specs := []GradientSpec{
+		{C0: Point{4, 5}, C1: Point{28, 19}},
+		{C0: Point{4, 5}, C1: Point{28, 19}, Ext0: true, Ext1: true},
+		{C0: Point{16, 12}, R0: 2, C1: Point{18, 13}, R1: 14, Radial: true},
+		{C0: Point{16, 12}, R0: 2, C1: Point{18, 13}, R1: 14, Radial: true, Ext1: true},
+		{C0: Point{16, 12}, R0: 9, C1: Point{16, 12}, R1: 9, Radial: true, Ext0: true},
+	}
+	for _, alpha := range []bool{false, true} {
+		for i, spec := range specs {
+			spec.Matrix, spec.LUT, spec.N = Scale(1.3, 0.9), lut, 3
+			g := NewGradient(spec)
+			if g == nil {
+				t.Fatalf("spec %d built nothing", i)
+			}
+			const w, h = 30, 6
+			dst := NewPixmap(ModelRGB, w, h, alpha)
+			want := NewPixmap(ModelRGB, w, h, alpha)
+			for j := range dst.Samples {
+				dst.Samples[j], want.Samples[j] = 0x37, 0x37
+			}
+
+			span := make([]uint8, w*4)
+			n := want.Comps()
+			for y := range h {
+				g.ShadeRow(dst, 0, y, w)
+				g.Shade(0, y, w, span)
+				row := want.Row(y)
+				for x := range w {
+					src := span[x*4:]
+					if src[3] == 0 {
+						continue
+					}
+					if src[3] != 255 {
+						t.Fatalf("spec %d: covered pixel has alpha %d, want 255", i, src[3])
+					}
+					copy(row[x*n:], src[:min(n, 4)])
+				}
+			}
+			if !bytes.Equal(dst.Samples, want.Samples) {
+				t.Fatalf("spec %d alpha=%v: row and span disagree", i, alpha)
+			}
+		}
+	}
+}
