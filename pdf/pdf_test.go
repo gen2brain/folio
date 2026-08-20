@@ -989,6 +989,62 @@ func TestNestedColorIsolation(t *testing.T) {
 	}
 }
 
+// TestFormCycle checks that two form XObjects that reach each other draw one
+// pass and stop at the cycle, rather than running to the nesting limit. The
+// form halves the scale each time, so a depth counter alone would paint the
+// square sixteen times over.
+func TestFormCycle(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /A 5 0 R >> >> >>",
+		streamObj("", "0 0 1 rg /A Do"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 100 100]"+
+			" /Resources << /XObject << /B 6 0 R >> >>",
+			"0 0 50 50 re f 0.5 0 0 0.5 50 50 cm /B Do"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 100 100]"+
+			" /Resources << /XObject << /A 5 0 R >> >>",
+			"0 0 50 50 re f 0.5 0 0 0.5 50 50 cm /A Do"),
+	})
+	px := renderDoc(t, d, nil)
+	// A paints the lower left quarter, B the quarter above it at half scale.
+	if got := pixel(px, 20, 80); !same(got, 0, 0, 255) {
+		t.Errorf("form A drew %v, want blue", got)
+	}
+	if got := pixel(px, 60, 40); !same(got, 0, 0, 255) {
+		t.Errorf("form B drew %v, want blue", got)
+	}
+	// A reached from B is the cycle and must not paint.
+	if got := pixel(px, 80, 20); !same(got, 255, 255, 255) {
+		t.Errorf("the cycle drew %v at the third step, want white", got)
+	}
+	if len(d.Err()) == 0 {
+		t.Error("the cycle was not recorded as an error")
+	}
+}
+
+// TestFormTwiceIsNotACycle checks that the guard unwinds: the same form drawn
+// twice side by side is not a cycle and draws both times.
+func TestFormTwiceIsNotACycle(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Fm 5 0 R >> >> >>",
+		streamObj("", "0 0 1 rg /Fm Do 1 0 0 1 50 50 cm /Fm Do"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 100 100]",
+			"0 0 40 40 re f"),
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 20, 80); !same(got, 0, 0, 255) {
+		t.Errorf("the first copy drew %v, want blue", got)
+	}
+	if got := pixel(px, 70, 30); !same(got, 0, 0, 255) {
+		t.Errorf("the second copy drew %v, want blue", got)
+	}
+}
+
 // TestNestedDashIsolation is the same hazard on the dash array, which the d
 // operator also rewrites in place.
 func TestNestedDashIsolation(t *testing.T) {

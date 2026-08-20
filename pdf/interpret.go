@@ -58,7 +58,12 @@ type interp struct {
 	hidden int
 
 	depth int
-	ops   *int64
+	// running is the form XObjects on the path from the page to here, so that
+	// one that reaches itself stops at the cycle rather than at the depth
+	// limit. It is unwound on the way out, so a form drawn twice side by side
+	// still draws twice.
+	running []Ref
+	ops     *int64
 }
 
 const (

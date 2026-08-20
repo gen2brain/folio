@@ -101,7 +101,11 @@ func New(f *syntax.File) *Document { return newDocument(f) }
 func newDocument(f *syntax.File) *Document {
 	d := &Document{f: f, fonts: map[any]*Font{}}
 	d.errs = append(d.errs, f.Err()...)
-	d.fbFont = &Font{Name: "Helvetica", Dict: Dict{}, defWidth: 1000}
+	d.fbFont = d.font(Dict{
+		"Subtype":  Name("Type1"),
+		"BaseFont": Name("Helvetica"),
+		"Encoding": Name("WinAnsiEncoding"),
+	})
 	d.readOutputIntent()
 	d.readOptionalContent()
 	return d

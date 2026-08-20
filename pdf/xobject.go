@@ -1,11 +1,16 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import (
+	"slices"
+
+	"github.com/gen2brain/pdf/raster"
+)
 
 // doXObject runs the Do operator.
 func (ip *interp) doXObject(n Name) {
 	f := ip.doc.f
-	obj := f.Lookup(f.GetDict(ip.res["XObject"]), n)
+	res := f.GetDict(ip.res["XObject"])
+	obj := f.Lookup(res, n)
 	st := f.GetStream(obj)
 	if st == nil {
 		ip.errorf("XObject /%s is not in the resources", n)
@@ -18,11 +23,20 @@ func (ip *interp) doXObject(n Name) {
 	case "Image":
 		ip.drawImage(st)
 	case "Form":
-		if ip.depth < maxNesting {
-			ip.runForm(st, false)
-		} else {
-			ip.errorf("form XObject nested deeper than %d", maxNesting)
+		ref, indirect := res[n].(Ref)
+		if indirect && slices.Contains(ip.running, ref) {
+			ip.errorf("form XObject /%s reaches itself", n)
+			return
 		}
+		if ip.depth >= maxNesting {
+			ip.errorf("form XObject nested deeper than %d", maxNesting)
+			return
+		}
+		if indirect {
+			ip.running = append(ip.running, ref)
+			defer func() { ip.running = ip.running[:len(ip.running)-1] }()
+		}
+		ip.runForm(st, false)
 	case "PS":
 	default:
 		ip.errorf("XObject /%s has no subtype", n)
