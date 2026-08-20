@@ -271,26 +271,29 @@ func (ft *Font) encodingNames(builtin *[256]string) [256]string {
 	return names
 }
 
-// glyphFor resolves one code.
+// glyphFor resolves one code. Every lookup it makes answers -1 when it has
+// nothing, so zero is a glyph like any other: a Type1 program has no glyph
+// order of its own and its CharStrings dictionary puts whichever glyph it
+// likes first.
 func (d *Document) glyphFor(ft *Font, code int, name string) int {
 	p := ft.prog
 
 	if p.HasGlyphNames() {
 		if name != "" {
-			if gid := p.GIDForName(name); gid > 0 {
+			if gid := p.GIDForName(name); gid >= 0 {
 				return gid
 			}
 			if r := font.RuneForName(name); r > 0 {
-				if gid := p.GIDForRune(r); gid > 0 {
+				if gid := p.GIDForRune(r); gid >= 0 {
 					return gid
 				}
 			}
-			if gid := font.IndexForName(name); gid > 0 && gid < p.NumGlyphs() {
+			if gid := font.IndexForName(name); gid >= 0 && gid < p.NumGlyphs() {
 				return gid
 			}
 		}
 		if r := rune(standardRune(code)); r > 0 {
-			if gid := p.GIDForRune(r); gid > 0 {
+			if gid := p.GIDForRune(r); gid >= 0 {
 				return gid
 			}
 		}
@@ -300,30 +303,30 @@ func (d *Document) glyphFor(ft *Font, code int, name string) int {
 	}
 
 	if ft.symbolic {
-		if gid := p.GIDForSymbolCode(uint32(code)); gid > 0 {
+		if gid := p.GIDForSymbolCode(uint32(code)); gid >= 0 {
 			return gid
 		}
-		if gid := p.GIDForMacCode(uint32(code)); gid > 0 {
+		if gid := p.GIDForMacCode(uint32(code)); gid >= 0 {
 			return gid
 		}
 	}
 	if name != "" {
 		if r := font.RuneForName(name); r > 0 {
-			if gid := p.GIDForRune(r); gid > 0 {
+			if gid := p.GIDForRune(r); gid >= 0 {
 				return gid
 			}
 			if mac := font.MacRomanCode(r); mac >= 0 {
-				if gid := p.GIDForMacCode(uint32(mac)); gid > 0 {
+				if gid := p.GIDForMacCode(uint32(mac)); gid >= 0 {
 					return gid
 				}
 			}
 		}
 	}
 	if !ft.symbolic {
-		if gid := p.GIDForSymbolCode(uint32(code)); gid > 0 {
+		if gid := p.GIDForSymbolCode(uint32(code)); gid >= 0 {
 			return gid
 		}
-		if gid := p.GIDForMacCode(uint32(code)); gid > 0 {
+		if gid := p.GIDForMacCode(uint32(code)); gid >= 0 {
 			return gid
 		}
 	}

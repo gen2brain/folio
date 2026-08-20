@@ -180,7 +180,7 @@ bug1108301.pdf	1	100	0.00669	0.00046	cairo
 bug1132849.pdf	1	100	0.00413	0.00000	cairo
 bug1146106.pdf	1	100	0.00016	0.00000	cairo
 bug1151216.pdf	1	100	0.00474	0.00000	cairo
-bug1157493.pdf	1	100	0.01983	0.05397	cairo
+bug1157493.pdf	1	100	0.00210	0.00000	cairo
 bug1175962.pdf	1	100	0.00507	0.00000	cairo
 bug1186827.pdf	1	100	0.00732	0.00000	cairo
 bug1200096.pdf	1	100	0.00485	0.00000	cairo
@@ -239,7 +239,7 @@ bug1871353.pdf	1	100	0.00007	0.00020	cairo
 bug1872721.pdf	1	100	0.00344	0.00000	mupdf
 bug1873345.pdf	1	100	0.00287	0.00002	mupdf
 bug1883609.pdf	1	100	0.00292	0.00295	cairo
-bug1885505.pdf	1	100	0.00477	0.00029	cairo
+bug1885505.pdf	1	100	0.00469	0.00003	cairo
 bug1889122.pdf	1	100	0.00073	0.00000	mupdf
 bug1898053_minimal.pdf	1	100	0.00044	0.00000	cairo
 bug1907000_reduced.pdf	1	100	0.00001	0.00000	cairo
@@ -259,7 +259,7 @@ bug1974436.pdf	1	100	0.00023	0.00000	mupdf
 bug1978317.pdf	1	100	0.00339	0.00000	mupdf
 bug1980958.pdf	1	100	0.00000	0.00000	mupdf
 bug1989304.pdf	1	100	0.00002	0.00000	cairo
-bug1992868.pdf	1	100	0.00464	0.00026	cairo
+bug1992868.pdf	1	100	0.00456	0.00000	cairo
 bug1997343.pdf	1	100	0.00154	0.00000	cairo
 bug2004951.pdf	1	100	0.00005	0.00002	poppler
 bug2009627.pdf	1	100	0.00021	0.00000	cairo
@@ -311,7 +311,7 @@ colors.pdf	1	100	0.00005	0.00000	cairo
 colorspace_atan.pdf	1	100	0.00042	0.00000	cairo
 colorspace_cos.pdf	1	100	0.00035	0.00000	cairo
 colorspace_sin.pdf	1	100	0.00035	0.00000	cairo
-comments.pdf	1	100	0.00417	0.00026	cairo
+comments.pdf	1	100	0.00411	0.00000	cairo
 complex_ttf_font.pdf	1	100	0.00132	0.00000	cairo
 coons-allflags-withfunction.pdf	1	100	0.00077	0.00341	cairo
 copy_paste_ligatures.pdf	1	100	0.01259	0.00000	mupdf
@@ -358,7 +358,7 @@ hello_world_rotated.pdf	1	100	0.00044	0.00111	gs
 helloworld-bad.pdf	1	100	0.00044	0.00000	cairo
 highlight.pdf	1	100	0.00026	0.00000	mupdf
 highlight_popup.pdf	1	100	0.00177	0.00000	mupdf
-highlights.pdf	1	100	0.00410	0.00026	cairo
+highlights.pdf	1	100	0.00404	0.00000	cairo
 image-rotated-black-white-ratio.pdf	1	100	0.00002	0.00000	mupdf
 images.pdf	1	100	0.00066	0.00000	cairo
 images_1bit_grayscale.pdf	1	100	0.00019	0.00000	cairo
@@ -389,7 +389,7 @@ issue11150_reduced.pdf	1	100	0.00134	0.00000	cairo
 issue11242_reduced.pdf	1	100	0.02380	0.06984	gs
 issue11279.pdf	1	100	0.00007	0.00044	cairo
 issue11362.pdf	1	100	0.00236	0.00282	mupdf
-issue11403_reduced.pdf	1	100	0.00677	0.00317	mupdf
+issue11403_reduced.pdf	1	100	0.00704	0.00476	mupdf
 issue11442_reduced.pdf	1	100	0.00444	0.00000	mupdf
 issue11473.pdf	1	100	0.00016	0.00000	cairo
 issue11477_reduced.pdf	1	100	0.00893	0.01732	poppler
@@ -415,7 +415,7 @@ issue12010_reduced.pdf	1	100	0.00000	0.00000	cairo
 issue12120_reduced.pdf	1	100	0.00116	0.00000	mupdf
 issue12213.pdf	1	100	0.14799	0.18744	poppler
 issue12295.pdf	1	100	0.03268	0.09791	gs
-issue12337.pdf	1	100	0.02927	0.08562	cairo
+issue12337.pdf	1	100	0.02919	0.08536	cairo
 issue12399_reduced.pdf	1	100	0.00340	0.00000	cairo
 issue12418_reduced.pdf	1	100	0.06626	0.17460	mupdf
 issue1249.pdf	1	100	0.00398	0.00007	mupdf
@@ -461,7 +461,7 @@ issue14267.pdf	1	100	0.00000	0.00000	mupdf
 issue14297.pdf	1	100	0.00306	0.00028	cairo
 issue14307.pdf	1	100	0.00003	0.00000	cairo
 issue14415.pdf	1	100	0.00145	0.00160	mupdf
-issue14438.pdf	1	100	0.00499	0.00162	cairo
+issue14438.pdf	1	100	0.00492	0.00138	cairo
 issue14462_reduced.pdf	1	100	0.00544	0.00000	cairo
 issue14497.pdf	1	100	0.00024	0.00001	poppler
 issue14502.pdf	1	100	0.00002	0.00000	cairo
@@ -479,7 +479,7 @@ issue14862.pdf	1	100	0.00012	0.00005	cairo
 issue14881.pdf	1	100	0.00698	0.00000	cairo
 issue14953.pdf	1	100	0.00212	0.00000	mupdf
 issue14999_reduced.pdf	1	100	0.00778	0.00480	mupdf
-issue15012.pdf	1	100	0.00463	0.00026	cairo
+issue15012.pdf	1	100	0.00455	0.00000	cairo
 issue15053.pdf	1	100	0.00061	0.00183	cairo
 issue15092.pdf	1	100	0.00055	0.00140	cairo
 issue15096.pdf	1	100	0.00037	0.00022	cairo
@@ -567,7 +567,7 @@ issue18694.pdf	1	100	0.00000	0.00000	cairo
 issue18816.pdf	1	100	0.00030	0.00022	cairo
 issue18823.pdf	1	100	0.00148	0.00000	mupdf
 issue18894.pdf	1	100	0.00009	0.00029	gs
-issue18911.pdf	1	100	0.00464	0.00026	cairo
+issue18911.pdf	1	100	0.00456	0.00000	cairo
 issue18956.pdf	1	100	0.00789	0.04089	cairo
 issue18986.pdf	1	100	0.00000	0.00000	poppler
 issue1905.pdf	1	100	0.00369	0.00055	cairo
@@ -576,7 +576,7 @@ issue19120.pdf	1	100	0.00003	0.00000	cairo
 issue19176.pdf	1	100	0.00000	0.00000	mupdf
 issue19182.pdf	1	100	0.00049	0.00082	cairo
 issue19207.pdf	1	100	0.00028	0.00000	cairo
-issue19239.pdf	1	100	0.00481	0.00026	cairo
+issue19239.pdf	1	100	0.00473	0.00000	cairo
 issue19326.pdf	1	100	0.00566	0.00000	mupdf
 issue19360.pdf	1	100	0.00289	0.01372	cairo
 issue19389.pdf	1	100	0.00025	0.00053	poppler
@@ -686,7 +686,7 @@ issue5138.pdf	1	100	0.00163	0.00000	cairo
 issue5202.pdf	1	100	0.00266	0.00000	cairo
 issue5238.pdf	1	100	0.00539	0.00952	mupdf
 issue5244.pdf	1	100	0.04975	0.11032	gs
-issue5256.pdf	1	100	0.01656	0.03333	cairo
+issue5256.pdf	1	100	0.00572	0.00000	cairo
 issue5280.pdf	1	100	0.00001	0.00010	gs
 issue5291.pdf	1	100	0.00311	0.00000	mupdf
 issue5334.pdf	1	100	0.00979	0.00079	cairo
@@ -754,7 +754,7 @@ issue6901.pdf	1	100	0.02470	0.05556	poppler
 issue6931_reduced.pdf	1	100	0.00060	0.00029	cairo
 issue6961.pdf	1	100	0.00015	0.00000	mupdf
 issue6962.pdf	1	100	0.00278	0.00000	cairo
-issue7014.pdf	1	100	0.00455	0.00026	cairo
+issue7014.pdf	1	100	0.00448	0.00000	cairo
 issue7020.pdf	1	100	0.00269	0.00000	cairo
 issue7074_reduced.pdf	1	100	0.01457	0.00270	mupdf
 issue7101.pdf	1	100	0.01032	0.00000	cairo
@@ -799,7 +799,7 @@ issue8276_reduced.pdf	1	100	0.00003	0.00000	mupdf
 issue8372.pdf	1	100	0.01417	0.04444	mupdf
 issue840.pdf	1	100	0.00211	0.00003	cairo
 issue8424.pdf	1	100	0.00247	0.00071	poppler
-issue845r.pdf	1	100	0.01426	0.01429	cairo
+issue845r.pdf	1	100	0.00756	0.00000	cairo
 issue8480.pdf	1	100	0.00374	0.00079	cairo
 issue8565.pdf	1	100	0.00088	0.00000	cairo
 issue8570.pdf	1	100	0.00703	0.00946	poppler
@@ -931,12 +931,12 @@ three_pages_with_number.pdf	1	100	0.00002	0.00000	mupdf
 tiling-pattern-box.pdf	1	100	0.00022	0.00000	cairo
 tiling-pattern-large-steps.pdf	1	100	0.00051	0.00701	cairo
 tiling_patterns_variations.pdf	1	100	0.00154	0.00000	cairo
-tracemonkey.pdf	1	100	0.00464	0.00026	cairo
-tracemonkey_a11y.pdf	1	100	0.00471	0.00026	cairo
-tracemonkey_annotation_on_page_8.pdf	1	100	0.00464	0.00026	cairo
-tracemonkey_freetext.pdf	1	100	0.00466	0.00026	cairo
-tracemonkey_with_annotations.pdf	1	100	0.00468	0.00026	cairo
-tracemonkey_with_editable_annotations.pdf	1	100	0.00464	0.00026	cairo
+tracemonkey.pdf	1	100	0.00456	0.00000	cairo
+tracemonkey_a11y.pdf	1	100	0.00463	0.00000	cairo
+tracemonkey_annotation_on_page_8.pdf	1	100	0.00456	0.00000	cairo
+tracemonkey_freetext.pdf	1	100	0.00458	0.00000	cairo
+tracemonkey_with_annotations.pdf	1	100	0.00460	0.00000	cairo
+tracemonkey_with_editable_annotations.pdf	1	100	0.00456	0.00000	cairo
 transparency_group.pdf	1	100	0.00625	0.00034	cairo
 transparent.pdf	1	100	0.00111	0.00000	mupdf
 two_pages.pdf	1	100	0.00600	0.02170	cairo

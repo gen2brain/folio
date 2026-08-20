@@ -989,6 +989,121 @@ func TestNestedColorIsolation(t *testing.T) {
 	}
 }
 
+// type1Charstring encodes a Type1 charstring from a tiny operator list: a
+// number is pushed and a name is the operator that consumes what is on the
+// stack.
+func type1Charstring(ops ...any) []byte {
+	var out []byte
+	for _, o := range ops {
+		switch v := o.(type) {
+		case int:
+			switch {
+			case v >= -107 && v <= 107:
+				out = append(out, byte(v+139))
+			case v >= 108 && v <= 1131:
+				v -= 108
+				out = append(out, byte(247+v>>8), byte(v))
+			case v >= -1131 && v <= -108:
+				v = -v - 108
+				out = append(out, byte(251+v>>8), byte(v))
+			default:
+				out = append(out, 255, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+			}
+		case string:
+			out = append(out, map[string]byte{
+				"hsbw": 13, "rmoveto": 21, "rlineto": 5,
+				"closepath": 9, "endchar": 14,
+			}[v])
+		}
+	}
+	return out
+}
+
+// type1Crypt is the Type1 stream cipher, used with 55665 for the eexec section
+// and 4330 for a charstring.
+func type1Crypt(plain []byte, key uint16, pad int) []byte {
+	r := key
+	out := make([]byte, 0, len(plain)+pad)
+	for i := 0; i < pad+len(plain); i++ {
+		p := byte(0x55)
+		if i >= pad {
+			p = plain[i-pad]
+		}
+		c := p ^ byte(r>>8)
+		r = (uint16(c)+r)*52845 + 22719
+		out = append(out, c)
+	}
+	return out
+}
+
+// buildType1 assembles a Type1 font program whose CharStrings dictionary lists
+// names in the given order, so that the first one is glyph zero. A Type1
+// program has no glyph order of its own and nothing says .notdef comes first.
+func buildType1(names []string, shapes map[string][]byte) []byte {
+	var priv bytes.Buffer
+	priv.WriteString("dup /Private 8 dict dup begin\n/lenIV 4 def\n")
+	fmt.Fprintf(&priv, "2 index /CharStrings %d dict dup begin\n", len(names))
+	for _, n := range names {
+		cs := type1Crypt(shapes[n], 4330, 4)
+		fmt.Fprintf(&priv, "/%s %d RD ", n, len(cs))
+		priv.Write(cs)
+		priv.WriteString(" ND\n")
+	}
+	priv.WriteString("end\nend\nmark currentfile closefile\n")
+
+	head := "%!PS-AdobeFont-1.0: Probe 1.0\n" +
+		"/FontMatrix [0.001 0 0 0.001 0 0] readonly def\n" +
+		"/Encoding StandardEncoding def\n" +
+		"currentfile eexec\n"
+	return append([]byte(head), type1Crypt(priv.Bytes(), 55665, 4)...)
+}
+
+// TestType1GlyphZero checks that a name resolving to glyph zero is honored. A
+// Type1 CharStrings dictionary may put any glyph first, and treating zero as
+// "no glyph" sent every such name down the fallback path, which lands on the
+// glyph whose index happens to equal the character code.
+func TestType1GlyphZero(t *testing.T) {
+	big := type1Charstring(0, 500, "hsbw", 100, 100, "rmoveto",
+		300, 0, "rlineto", 0, 300, "rlineto", -300, 0, "rlineto", "closepath", "endchar")
+	small := type1Charstring(0, 500, "hsbw", 600, 600, "rmoveto",
+		200, 0, "rlineto", 0, 200, "rlineto", -200, 0, "rlineto", "closepath", "endchar")
+	blank := type1Charstring(0, 500, "hsbw", "endchar")
+
+	names := []string{"A"}
+	shapes := map[string][]byte{"A": big, "dollar": small}
+	for i := 1; i < 65; i++ {
+		n := fmt.Sprintf("uni%04X", 0xE000+i)
+		names = append(names, n)
+		shapes[n] = blank
+	}
+	names = append(names, "dollar")
+
+	prog := buildType1(names, shapes)
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Font << /F1 5 0 R >> >> >>",
+		streamObj("", "BT /F1 100 Tf 0 0 Td (A) Tj ET"),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Probe /FirstChar 65 /LastChar 65" +
+			" /Widths [500] /FontDescriptor 6 0 R" +
+			" /Encoding << /Type /Encoding /Differences [65 /A] >> >>",
+		"<< /Type /FontDescriptor /FontName /Probe /Flags 32 /ItalicAngle 0" +
+			" /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80" +
+			" /FontBBox [0 0 1000 1000] /FontFile 7 0 R >>",
+		streamObj(fmt.Sprintf("/Length1 %d /Length2 0 /Length3 0", len(prog)), string(prog)),
+	})
+	px := renderDoc(t, d, nil)
+	// Glyph "A" is the square from 10,10 to 40,40 at this size; "dollar", the
+	// glyph whose index equals the code, would paint from 60,60 to 80,80.
+	if got := pixel(px, 25, 75); !same(got, 0, 0, 0) {
+		t.Errorf("glyph A drew %v at 25,75, want black", got)
+	}
+	if got := pixel(px, 70, 30); !same(got, 255, 255, 255) {
+		t.Errorf("the glyph at the character code drew %v at 70,30, want white", got)
+	}
+}
+
 // TestFormCycle checks that two form XObjects that reach each other draw one
 // pass and stop at the cycle, rather than running to the nesting limit. The
 // form halves the scale each time, so a depth counter alone would paint the

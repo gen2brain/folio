@@ -197,7 +197,7 @@ func (f *Font) GIDForName(name string) int {
 	return -1
 }
 
-// GIDForRune looks a Unicode value up in the font's character map.
+// GIDForRune looks a Unicode value up in the font's character map, or -1.
 func (f *Font) GIDForRune(r rune) int {
 	if f.sfnt != nil {
 		return f.sfnt.lookupUnicode(r)
