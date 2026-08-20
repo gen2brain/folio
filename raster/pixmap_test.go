@@ -302,3 +302,80 @@ func pixelAt(p *Pixmap, x, y int) []uint8 {
 	n := p.Comps()
 	return p.Samples[y*p.Stride+x*n : y*p.Stride+x*n+n]
 }
+
+// TestShrinkerMatchesSubsample holds the streaming reduction to the one built
+// from the whole pixmap. The two have to agree byte for byte, because the
+// point of the streaming one is that nothing downstream can tell which built
+// the image.
+func TestShrinkerMatchesSubsample(t *testing.T) {
+	for _, size := range [][2]int{
+		{1, 1}, {1, 8}, {8, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 7}, {7, 5},
+		{16, 16}, {17, 33}, {64, 3}, {3, 64}, {100, 100}, {255, 129},
+	} {
+		w, h := size[0], size[1]
+		for n := 0; n < 5; n++ {
+			for _, alpha := range []bool{false, true} {
+				whole := NewPixmap(ModelRGB, w, h, alpha)
+				if whole == nil {
+					t.Fatalf("%dx%d: no pixmap", w, h)
+				}
+				comps := whole.Comps()
+				fill := func(row []uint8, y int) {
+					for x := 0; x < w*comps; x++ {
+						row[x] = uint8((y*7 + x*13 + y*x) % 251)
+					}
+				}
+				for y := 0; y < h; y++ {
+					fill(whole.Row(y), y)
+				}
+				want := whole.Subsample(n)
+
+				s := NewShrinker(ModelRGB, w, h, alpha, n)
+				if s == nil {
+					t.Fatalf("%dx%d: no shrinker", w, h)
+				}
+				for y := 0; y < h; y++ {
+					fill(s.Row(), y)
+					s.Commit()
+				}
+				got := s.Pixmap()
+
+				if got.W != want.W || got.H != want.H {
+					t.Fatalf("%dx%d by %d alpha=%v: shrank to %dx%d, Subsample gives %dx%d",
+						w, h, n, alpha, got.W, got.H, want.W, want.H)
+				}
+				for y := 0; y < want.H; y++ {
+					a, b := got.Row(y), want.Row(y)
+					for x := range b[:want.W*comps] {
+						if a[x] != b[x] {
+							t.Fatalf("%dx%d by %d alpha=%v: row %d byte %d is %d, Subsample gives %d",
+								w, h, n, alpha, y, x, a[x], b[x])
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestShrinkerShortRow checks that a row the caller does not fill reads as
+// zero, which is what writing into a fresh pixmap did.
+func TestShrinkerShortRow(t *testing.T) {
+	s := NewMaskShrinker(8, 8, 1)
+	for y := 0; y < 8; y++ {
+		row := s.Row()
+		if y == 0 {
+			for x := range row {
+				row[x] = 255
+			}
+		}
+		s.Commit()
+	}
+	px := s.Pixmap()
+	if got := px.Row(0)[0]; got != 128 {
+		t.Errorf("one white row of two averages to %d, want 128", got)
+	}
+	if got := px.Row(1)[0]; got != 0 {
+		t.Errorf("an unfilled row reads %d, want 0", got)
+	}
+}

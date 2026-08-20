@@ -222,3 +222,124 @@ func (p *Pixmap) MulImage(src *Pixmap, inv Matrix) {
 		}
 	}
 }
+
+// A Shrinker halves rows as they arrive and cascades them through as many
+// levels as Subsample would have used, so that an image may be reduced to the
+// size it will be drawn at without the full size pixmap ever existing. What it
+// returns is what Subsample would have built from that pixmap, byte for byte.
+//
+// The caller fills the slice Row returns and calls Commit, once per row of the
+// source, then takes the result from Pixmap.
+type Shrinker struct {
+	out  *Pixmap
+	n    int
+	w    []int
+	src  []uint8
+	pend [][]uint8
+	held []bool
+	rows [][]uint8
+	y    int
+}
+
+// NewShrinker reduces a w by h image of the model's components n times.
+func NewShrinker(model Model, w, h int, alpha bool, n int) *Shrinker {
+	comps := 0
+	if model != nil {
+		comps = model.Components()
+	}
+	return newShrinker(model, comps, w, h, alpha, n)
+}
+
+// NewMaskShrinker is NewShrinker for the one byte coverage NewMask returns.
+func NewMaskShrinker(w, h, n int) *Shrinker { return newShrinker(nil, 0, w, h, true, n) }
+
+func newShrinker(model Model, comps, w, h int, alpha bool, n int) *Shrinker {
+	widths := []int{w}
+	for sw, sh := w, h; n > 0 && sw > 1 && sh > 1; n-- {
+		sw, sh = max(sw/2, 1), max(sh/2, 1)
+		widths = append(widths, sw)
+	}
+	last := len(widths) - 1
+	out := newPixmap(model, comps, widths[last], heightAfter(h, last), alpha)
+	if out == nil {
+		return nil
+	}
+	s := &Shrinker{out: out, n: out.Comps(), w: widths}
+	if last == 0 {
+		return s
+	}
+	s.src = make([]uint8, w*s.n)
+	s.pend = make([][]uint8, last)
+	s.held = make([]bool, last)
+	s.rows = make([][]uint8, last+1)
+	for k := 0; k < last; k++ {
+		s.pend[k] = make([]uint8, widths[k]*s.n)
+		s.rows[k+1] = make([]uint8, widths[k+1]*s.n)
+	}
+	return s
+}
+
+// heightAfter is the height h becomes after k halvings.
+func heightAfter(h, k int) int {
+	for ; k > 0; k-- {
+		h = max(h/2, 1)
+	}
+	return h
+}
+
+// Row returns the buffer for the next source row, zeroed, which the caller
+// fills and then commits. A row the caller leaves short reads as zero, which
+// is what writing into a fresh pixmap did.
+func (s *Shrinker) Row() []uint8 {
+	if len(s.w) == 1 {
+		if s.y >= s.out.H {
+			return nil
+		}
+		return s.out.Row(s.y)
+	}
+	clear(s.src)
+	return s.src
+}
+
+// Commit folds the row Row returned into the result.
+func (s *Shrinker) Commit() {
+	if len(s.w) == 1 {
+		s.y++
+		return
+	}
+	s.feed(0, s.src)
+}
+
+func (s *Shrinker) feed(k int, row []uint8) {
+	if k == len(s.w)-1 {
+		if s.y < s.out.H {
+			copy(s.out.Row(s.y), row)
+			s.y++
+		}
+		return
+	}
+	if !s.held[k] {
+		copy(s.pend[k], row)
+		s.held[k] = true
+		return
+	}
+	s.held[k] = false
+	dst := s.rows[k+1]
+	halveRow(dst, s.pend[k], row, s.w[k+1], s.n)
+	s.feed(k+1, dst)
+}
+
+// halveRow averages two source rows into one of half the width, which is what
+// halve does to a pair of rows away from the edges it clamps.
+func halveRow(dst, a, b []uint8, w, n int) {
+	for x := 0; x < w; x++ {
+		x0, x1 := 2*x*n, (2*x+1)*n
+		for c := 0; c < n; c++ {
+			sum := uint32(a[x0+c]) + uint32(a[x1+c]) + uint32(b[x0+c]) + uint32(b[x1+c])
+			dst[x*n+c] = uint8((sum + 2) >> 2)
+		}
+	}
+}
+
+// Pixmap is the reduced image.
+func (s *Shrinker) Pixmap() *Pixmap { return s.out }

@@ -247,11 +247,17 @@ const maxImagePixels = 1 << 28
 // Pixmap decodes the image into a pixmap in its own color space, with an
 // alpha channel when it carries transparency. A stencil mask decodes to an
 // alpha only pixmap, since it has no color of its own.
-func (i *Image) Pixmap() (*raster.Pixmap, error) { return i.decode(i.CS) }
+func (i *Image) Pixmap() (*raster.Pixmap, error) { return i.decode(i.CS, 0) }
 
 // decode returns the image with its color converted into dst, which is the
 // space the page composites in.
-func (i *Image) decode(dst *ColorSpace) (*raster.Pixmap, error) {
+// decode returns the image reduced by shrink halvings, which is what the
+// caller is going to draw it at. Where nothing has to touch the whole size
+// pixmap the reduction happens as the samples are unpacked and it is never
+// built; where transparency has to be hung on it first, it is built and
+// reduced afterwards, because the alpha has to be averaged with the color it
+// is premultiplied into rather than picked out of the middle of a block.
+func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if int64(i.Width)*int64(i.Height) > maxImagePixels {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
@@ -283,12 +289,12 @@ func (i *Image) decode(dst *ColorSpace) (*raster.Pixmap, error) {
 	}
 
 	if i.Mask {
-		return i.stencil(data, bpc, decode)
+		return i.stencil(data, bpc, decode, shrink)
 	}
 	if cs == nil {
 		return nil, fmt.Errorf("%w: image has no color space", ErrInvalid)
 	}
-	return i.samples(data, bpc, comps, decode, dst, cs, alpha)
+	return i.samples(data, bpc, comps, decode, dst, cs, alpha, shrink)
 }
 
 // data returns the image bytes with the byte filters applied, and the image
@@ -306,9 +312,9 @@ func (i *Image) data() ([]byte, Name, Dict, error) {
 
 // stencil decodes an /ImageMask into coverage: a sample of zero paints, and
 // /Decode [1 0] turns that around.
-func (i *Image) stencil(data []byte, bpc int, decode []float64) (*raster.Pixmap, error) {
-	px := raster.NewMask(i.Width, i.Height)
-	if px == nil {
+func (i *Image) stencil(data []byte, bpc int, decode []float64, shrink int) (*raster.Pixmap, error) {
+	sh := raster.NewMaskShrinker(i.Width, i.Height, shrink)
+	if sh == nil {
 		return nil, fmt.Errorf("%w: mask is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
 	on, off := uint8(255), uint8(0)
@@ -317,7 +323,10 @@ func (i *Image) stencil(data []byte, bpc int, decode []float64) (*raster.Pixmap,
 	}
 	rowBytes := (i.Width*bpc + 7) / 8
 	for y := 0; y < i.Height; y++ {
-		row := px.Row(y)
+		row := sh.Row()
+		if row == nil {
+			break
+		}
 		start := y * rowBytes
 		if start >= len(data) {
 			break
@@ -334,33 +343,42 @@ func (i *Image) stencil(data []byte, bpc int, decode []float64) (*raster.Pixmap,
 				row[x] = off
 			}
 		}
+		sh.Commit()
 	}
-	return px, nil
+	return sh.Pixmap(), nil
 }
 
 // samples unpacks the image and converts it, then hangs its transparency on
 // the result.
-func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte) (*raster.Pixmap, error) {
+func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte, shrink int) (*raster.Pixmap, error) {
 	if dst == nil {
 		dst = DeviceRGB
 	}
 	alpha := i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil || opacity != nil
-	px := raster.NewPixmap(dst.Model(), i.Width, i.Height, alpha)
-	if px == nil {
+	// An image with no transparency is finished the moment it is unpacked, so
+	// it can be reduced on the way in. One with transparency is not.
+	during := shrink
+	if alpha {
+		during = 0
+	}
+	sh := raster.NewShrinker(dst.Model(), i.Width, i.Height, alpha, during)
+	if sh == nil {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
 
 	u := unpacker{
 		img: i, data: data, bpc: bpc, comps: comps,
-		decode: decode, dst: dst, cs: cs, px: px,
+		decode: decode, dst: dst, cs: cs, px: sh.Pixmap(), sh: sh,
 	}
 	u.run()
 
-	i.transparency(px, opacity)
-	if px.Alpha {
-		premultiplyPixmap(px)
+	px := sh.Pixmap()
+	if !alpha {
+		return px, nil
 	}
-	return px, nil
+	i.transparency(px, opacity)
+	premultiplyPixmap(px)
+	return px.Subsample(shrink), nil
 }
 
 // unpacker turns packed samples into destination components.
@@ -375,6 +393,7 @@ type unpacker struct {
 	// codestream says rather than what the dictionary does.
 	cs *ColorSpace
 	px *raster.Pixmap
+	sh *raster.Shrinker
 }
 
 func (u *unpacker) run() {
@@ -386,7 +405,10 @@ func (u *unpacker) run() {
 
 	if lut := u.table(); lut != nil {
 		for y := 0; y < i.Height; y++ {
-			row := px.Row(y)
+			row := u.sh.Row()
+			if row == nil {
+				break
+			}
 			r := bitRow(u.data, y*rowBytes, rowBytes, u.bpc)
 			for x := 0; x < i.Width; x++ {
 				v := r.next()
@@ -395,13 +417,17 @@ func (u *unpacker) run() {
 					row[x*n+px.N] = u.keyed(v)
 				}
 			}
+			u.sh.Commit()
 		}
 		return
 	}
 
 	if u.direct() {
 		for y := 0; y < i.Height; y++ {
-			row := px.Row(y)
+			row := u.sh.Row()
+			if row == nil {
+				break
+			}
 			start := y * rowBytes
 			if start >= len(u.data) {
 				break
@@ -413,6 +439,7 @@ func (u *unpacker) run() {
 					row[x*n+px.N] = u.keyedBytes(src[x*u.comps : (x+1)*u.comps])
 				}
 			}
+			u.sh.Commit()
 		}
 		return
 	}
@@ -421,7 +448,10 @@ func (u *unpacker) run() {
 	raw := make([]uint32, u.comps)
 	out := make([]uint8, px.N)
 	for y := 0; y < i.Height; y++ {
-		row := px.Row(y)
+		row := u.sh.Row()
+		if row == nil {
+			break
+		}
 		r := bitRow(u.data, y*rowBytes, rowBytes, u.bpc)
 		for x := 0; x < i.Width; x++ {
 			for j := range c {
@@ -434,6 +464,7 @@ func (u *unpacker) run() {
 				row[x*n+px.N] = u.keyedAll(raw)
 			}
 		}
+		u.sh.Commit()
 	}
 }
 
@@ -616,7 +647,7 @@ func (i *Image) transparency(px *raster.Pixmap, opacity []byte) {
 // coverage decodes a mask image into one byte a pixel: a stencil mask as its
 // one bit shape, a soft mask as its gray samples.
 func (i *Image) coverage() (*raster.Pixmap, error) {
-	px, err := i.decode(DeviceGray)
+	px, err := i.decode(DeviceGray, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -883,11 +914,7 @@ const DefaultImageCacheBytes = 1 << 26
 // are not cached: their data lives in the content stream and is drawn once.
 func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if img.stream == nil {
-		px, err := img.decode(dst)
-		if err != nil || shrink <= 0 {
-			return px, err
-		}
-		return px.Subsample(shrink), nil
+		return img.decode(dst, shrink)
 	}
 	key := imageKey{stream: img.stream, shrink: shrink}
 	if dst != nil {
@@ -907,12 +934,9 @@ func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raste
 	// Decoding happens outside the lock: it is the slowest thing a page does
 	// and it depends on nothing the cache holds, so two pages that want the
 	// same image at once both decode it and one of the two is kept.
-	px, err := img.decode(dst)
+	px, err := img.decode(dst, shrink)
 	if err != nil {
 		return nil, err
-	}
-	if shrink > 0 {
-		px = px.Subsample(shrink)
 	}
 	d.mu.Lock()
 	if e := d.images[key]; e != nil {
