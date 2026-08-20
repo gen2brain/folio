@@ -148,3 +148,21 @@ func TestBlitterOrigin(t *testing.T) {
 		t.Fatalf("past the fill = %d, want untouched", got)
 	}
 }
+
+// TestBlendOverAlphaUnion checks the alpha a blend mode leaves behind, which
+// is the union of the two and so cannot come out lower than the backdrop's.
+func TestBlendOverAlphaUnion(t *testing.T) {
+	for _, ba := range []uint8{64, 128, 254, 255} {
+		for _, sa := range []uint8{1, 100, 128, 255} {
+			dst := NewPixmap(ModelRGB, 1, 1, true)
+			copy(dst.Row(0), []uint8{mul255(200, ba), mul255(100, ba), mul255(50, ba), ba})
+			src := NewPixmap(ModelRGB, 1, 1, true)
+			copy(src.Row(0), []uint8{mul255(128, sa), mul255(128, sa), mul255(128, sa), sa})
+			dst.BlendOver(src, 255, BlendMultiply)
+			want := uint8(uint32(sa) + uint32(mul255(ba, 255-sa)))
+			if got := dst.Row(0)[3]; got != want {
+				t.Errorf("backdrop %d under source %d leaves alpha %d, want %d", ba, sa, got, want)
+			}
+		}
+	}
+}

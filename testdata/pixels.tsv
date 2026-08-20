@@ -209,11 +209,11 @@ bug1675139.pdf	1	100	0.00023	0.00029	cairo
 bug1703683_page2_reduced.pdf	1	100	0.00038	0.00019	mupdf
 bug1708040.pdf	1	100	0.00606	0.02214	cairo
 bug1708041.pdf	1	100	0.00002	0.00000	mupdf
-bug1721218_reduced.pdf	1	100	0.00051	0.00000	mupdf
+bug1721218_reduced.pdf	1	100	0.00048	0.00000	mupdf
 bug1724918.pdf	1	100	0.00007	0.00000	cairo
 bug1727053.pdf	1	100	0.00019	0.00000	cairo
 bug1743245.pdf	1	100	0.01161	0.00187	cairo
-bug1755507.pdf	1	100	0.00176	0.00445	cairo
+bug1755507.pdf	1	100	0.00116	0.00365	cairo
 bug1770750.pdf	1	100	0.00002	0.00000	mupdf
 bug1771477.pdf	1	100	0.00074	0.00000	cairo
 bug1782564.pdf	1	100	0.00005	0.00000	cairo
@@ -387,7 +387,7 @@ issue11131_reduced.pdf	1	100	0.01847	0.05936	mupdf
 issue11144_reduced.pdf	1	100	0.00015	0.00000	cairo
 issue11150_reduced.pdf	1	100	0.00134	0.00000	cairo
 issue11242_reduced.pdf	1	100	0.02380	0.06984	gs
-issue11279.pdf	1	100	0.00007	0.00044	cairo
+issue11279.pdf	1	100	0.00001	0.00000	cairo
 issue11362.pdf	1	100	0.00236	0.00282	mupdf
 issue11403_reduced.pdf	1	100	0.00704	0.00476	mupdf
 issue11442_reduced.pdf	1	100	0.00444	0.00000	mupdf
@@ -423,7 +423,7 @@ issue12504.pdf	1	100	0.00050	0.00195	gs
 issue12705.pdf	1	100	0.00000	0.00000	cairo
 issue12706.pdf	1	100	0.00345	0.00483	cairo
 issue12750.pdf	1	100	0.00055	0.00266	poppler
-issue12798_page1_reduced.pdf	1	100	0.00153	0.00524	mupdf
+issue12798_page1_reduced.pdf	1	100	0.00063	0.00000	mupdf
 issue12810.pdf	1	100	0.00393	0.00731	cairo
 issue12823.pdf	1	100	0.00043	0.00015	cairo
 issue12841_reduced.pdf	1	100	0.31204	0.83145	cairo
@@ -445,7 +445,7 @@ issue13343.pdf	1	100	0.02389	0.06905	cairo
 issue13372.pdf	1	100	0.00601	0.01538	gs
 issue13447.pdf	1	100	0.01173	0.01962	cairo
 issue1350.pdf	1	100	0.00539	0.00008	cairo
-issue13520.pdf	1	100	0.01111	0.00471	mupdf
+issue13520.pdf	1	100	0.01058	0.00128	mupdf
 issue13561_reduced.pdf	1	100	0.00034	0.00051	cairo
 issue13916.pdf	1	100	0.03855	0.10595	mupdf
 issue13931.pdf	1	100	0.00083	0.00053	poppler
@@ -458,7 +458,7 @@ issue14165.pdf	1	100	0.00439	0.00000	cairo
 issue14200.pdf	1	100	0.00105	0.00000	cairo
 issue14256.pdf	1	100	0.00676	0.02601	cairo
 issue14267.pdf	1	100	0.00000	0.00000	mupdf
-issue14297.pdf	1	100	0.00306	0.00028	cairo
+issue14297.pdf	1	100	0.00296	0.00000	cairo
 issue14307.pdf	1	100	0.00003	0.00000	cairo
 issue14415.pdf	1	100	0.00145	0.00160	mupdf
 issue14438.pdf	1	100	0.00492	0.00138	cairo
@@ -535,8 +535,8 @@ issue17492.pdf	1	100	0.00269	0.00331	cairo
 issue17540.pdf	1	100	0.00062	0.00352	poppler
 issue17554.pdf	1	100	0.00000	0.00000	mupdf
 issue17671.pdf	1	100	0.00004	0.00014	poppler
-issue17679.pdf	1	100	0.00418	0.01469	mupdf
-issue17679_2.pdf	1	100	0.00418	0.01469	mupdf
+issue17679.pdf	1	100	0.00059	0.00000	mupdf
+issue17679_2.pdf	1	100	0.00059	0.00000	mupdf
 issue17730.pdf	1	100	0.00136	0.00031	cairo
 issue17808.pdf	1	100	0.00018	0.00000	cairo
 issue17846.pdf	1	100	0.00007	0.00002	mupdf
@@ -844,11 +844,11 @@ js-buttons.pdf	1	100	0.00145	0.00394	mupdf
 js-colors.pdf	1	100	0.00012	0.00000	mupdf
 knockout_blend_multiply.pdf	1	100	0.00006	0.00000	cairo
 knockout_groups_test.pdf	1	100	0.00887	0.03109	poppler
-knockout_inner_backdrop.pdf	1	100	0.00202	0.00714	mupdf
+knockout_inner_backdrop.pdf	1	100	0.00137	0.00000	mupdf
 knockout_isolated_overlap.pdf	1	100	0.00050	0.00000	poppler
 knockout_nested.pdf	1	100	0.00058	0.00000	poppler
 knockout_nested_group_alpha.pdf	1	100	0.00007	0.00000	cairo
-knockout_nonisolated_sparse.pdf	1	100	0.00188	0.01690	cairo
+knockout_nonisolated_sparse.pdf	1	100	0.00000	0.00000	cairo
 knockout_smask.pdf	1	100	0.00052	0.00000	cairo
 labelled_pages.pdf	1	100	0.00000	0.00000	mupdf
 large_jpeg_downscale.pdf	1	100	0.00175	0.00000	cairo
@@ -867,7 +867,7 @@ noembed-identity.pdf	1	100	0.00012	0.00038	cairo
 noembed-jis7.pdf	1	100	0.00012	0.00035	cairo
 noembed-sjis.pdf	1	100	0.00073	0.00193	mupdf
 non-embedded-NuptialScript.pdf	1	100	0.03086	0.09654	mupdf
-nonisolated_blend_smask.pdf	1	100	0.00614	0.01297	mupdf
+nonisolated_blend_smask.pdf	1	100	0.00366	0.00138	mupdf
 openoffice.pdf	1	100	0.00851	0.00000	cairo
 operator-in-TJ-array.pdf	1	100	0.00012	0.00000	poppler
 operator_list_cycle.pdf	1	100	0.00000	0.00000	mupdf
@@ -937,7 +937,7 @@ tracemonkey_annotation_on_page_8.pdf	1	100	0.00456	0.00000	cairo
 tracemonkey_freetext.pdf	1	100	0.00458	0.00000	cairo
 tracemonkey_with_annotations.pdf	1	100	0.00460	0.00000	cairo
 tracemonkey_with_editable_annotations.pdf	1	100	0.00456	0.00000	cairo
-transparency_group.pdf	1	100	0.00625	0.00034	cairo
+transparency_group.pdf	1	100	0.00619	0.00000	cairo
 transparent.pdf	1	100	0.00111	0.00000	mupdf
 two_pages.pdf	1	100	0.00600	0.02170	cairo
 two_paragraphs.pdf	1	100	0.00006	0.00000	cairo

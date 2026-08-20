@@ -115,16 +115,12 @@ func blendPixel(p *Pixmap, dst, src []uint8, sa uint8, n int, mode BlendMode, bu
 		}
 	}
 
-	ao := sa
-	if ba != 255 {
-		ao = uint8(uint32(sa) + uint32(mul255(ba, 255-sa)))
-	}
 	isa := 255 - uint32(sa)
 	for c := 0; c < n; c++ {
 		dst[c] = div255(uint32(cr[c])*uint32(sa) + uint32(dst[c])*isa)
 	}
 	if p.Alpha {
-		dst[p.N] = ao
+		dst[p.N] = uint8(uint32(sa) + uint32(mul255(ba, 255-sa)))
 	}
 }
 
