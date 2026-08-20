@@ -861,6 +861,10 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 type imageKey struct {
 	stream *syntax.Stream
 	comps  int
+	// shrink is how many times the decoded pixmap was halved. It belongs in
+	// the key because the cache holds the shrunk pixmap, and a page that draws
+	// one image at two sizes wants both.
+	shrink int
 }
 
 type imageEntry struct {
@@ -877,11 +881,15 @@ const DefaultImageCacheBytes = 1 << 26
 // decodedImage decodes an image into dst's components, or into a stencil when
 // dst is nil, keeping the result while it fits in the cache. Inline images
 // are not cached: their data lives in the content stream and is drawn once.
-func (d *Document) decodedImage(img *Image, dst *ColorSpace) (*raster.Pixmap, error) {
+func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if img.stream == nil {
-		return img.decode(dst)
+		px, err := img.decode(dst)
+		if err != nil || shrink <= 0 {
+			return px, err
+		}
+		return px.Subsample(shrink), nil
 	}
-	key := imageKey{stream: img.stream}
+	key := imageKey{stream: img.stream, shrink: shrink}
 	if dst != nil {
 		key.comps = dst.N
 	}
@@ -902,6 +910,9 @@ func (d *Document) decodedImage(img *Image, dst *ColorSpace) (*raster.Pixmap, er
 	px, err := img.decode(dst)
 	if err != nil {
 		return nil, err
+	}
+	if shrink > 0 {
+		px = px.Subsample(shrink)
 	}
 	d.mu.Lock()
 	if e := d.images[key]; e != nil {

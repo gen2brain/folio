@@ -1238,6 +1238,32 @@ func imagePDF(t *testing.T, dict, data, content string) *Document {
 	})
 }
 
+// TestImageShrinkCached checks that an image drawn far smaller than it is
+// decodes to the size it will be drawn at and that the cache keeps that, so a
+// page clipping to the same scan many times decodes it once. The whole size
+// pixmap is what the cache used to refuse.
+func TestImageShrinkCached(t *testing.T) {
+	const w, h = 256, 256
+	d := imagePDF(t, fmt.Sprintf("/Width %d /Height %d /ColorSpace /DeviceGray"+
+		" /BitsPerComponent 8", w, h), strings.Repeat("\x80", w*h),
+		"q 8 0 0 8 0 0 cm /Im Do Q q 8 0 0 8 20 20 cm /Im Do Q")
+	renderDoc(t, d, nil)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.images) != 1 {
+		t.Fatalf("the cache holds %d images, want 1", len(d.images))
+	}
+	for key, e := range d.images {
+		if key.shrink == 0 {
+			t.Errorf("the image was not shrunk")
+		}
+		if e.px.W > 16 || e.px.H > 16 {
+			t.Errorf("cached %dx%d, want no more than 16x16 for an 8 point box", e.px.W, e.px.H)
+		}
+	}
+}
+
 func TestImageBitDepths(t *testing.T) {
 	// Four gray pixels, black to white, at each depth the format allows.
 	for _, tc := range []struct {

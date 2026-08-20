@@ -761,7 +761,7 @@ func (d *DrawDevice) FillImage(img *Image, ctm raster.Matrix, alpha float32, cp 
 	if !d.drawing() {
 		return
 	}
-	src := d.decodeImage(img, d.space())
+	src := d.decodeImage(img, d.space(), shrinkFor(img, ctm))
 	if src == nil {
 		return
 	}
@@ -773,7 +773,7 @@ func (d *DrawDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace
 	if !d.drawing() {
 		return
 	}
-	src := d.maskPixmap(img)
+	src := d.maskPixmap(img, shrinkFor(img, ctm))
 	if src == nil {
 		return
 	}
@@ -782,7 +782,7 @@ func (d *DrawDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace
 
 // ClipImageMask implements Device.
 func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
-	src := d.maskPixmap(img)
+	src := d.maskPixmap(img, shrinkFor(img, ctm))
 	if src == nil {
 		d.push(clipState{rect: raster.EmptyRect})
 		return
@@ -805,14 +805,14 @@ func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster
 
 // maskPixmap decodes an image into coverage, one byte a pixel, whether it is
 // the one bit stencil of an image mask or the gray samples of a soft mask.
-func (d *DrawDevice) maskPixmap(img *Image) *raster.Pixmap {
+func (d *DrawDevice) maskPixmap(img *Image, shrink int) *raster.Pixmap {
 	if img == nil {
 		return nil
 	}
 	if img.Mask {
-		return d.decodeImage(img, nil)
+		return d.decodeImage(img, nil, shrink)
 	}
-	px := d.decodeImage(img, DeviceGray)
+	px := d.decodeImage(img, DeviceGray, shrink)
 	if px == nil {
 		return nil
 	}
@@ -850,12 +850,27 @@ func sourceMatrix(ctm raster.Matrix, src *raster.Pixmap) (raster.Matrix, bool) {
 // subsampleBy is how many times an image should be halved before it is
 // sampled, which is what keeps a scan from turning into noise.
 func subsampleBy(src *raster.Pixmap, ctm raster.Matrix) int {
-	w, h := deviceExtent(ctm)
-	if w <= 0 || h <= 0 {
+	return subsampleFor(src.W, src.H, ctm)
+}
+
+// shrinkFor is subsampleBy asked before anything is decoded, from the size the
+// dictionary declares. A page that clips to the same scan forty times decodes
+// it forty times if the answer only arrives after the pixmap does, and the
+// full size pixmap is too large for the cache to keep.
+func shrinkFor(img *Image, ctm raster.Matrix) int {
+	if img == nil {
+		return 0
+	}
+	return subsampleFor(img.Width, img.Height, ctm)
+}
+
+func subsampleFor(w, h int, ctm raster.Matrix) int {
+	dw, dh := deviceExtent(ctm)
+	if dw <= 0 || dh <= 0 {
 		return 0
 	}
 	n := 0
-	for sw, sh := float32(src.W), float32(src.H); sw >= w*2 && sh >= h*2 && n < 8; n++ {
+	for sw, sh := float32(w), float32(h); sw >= dw*2 && sh >= dh*2 && n < 8; n++ {
 		sw /= 2
 		sh /= 2
 	}
@@ -898,11 +913,11 @@ func (d *DrawDevice) space() *ColorSpace {
 // decodeImage decodes an image into the destination's components, from the
 // document's cache when it is there. A nil space asks for the stencil of an
 // image mask.
-func (d *DrawDevice) decodeImage(img *Image, dst *ColorSpace) *raster.Pixmap {
+func (d *DrawDevice) decodeImage(img *Image, dst *ColorSpace, shrink int) *raster.Pixmap {
 	if img == nil || d.doc == nil {
 		return nil
 	}
-	px, err := d.doc.decodedImage(img, dst)
+	px, err := d.doc.decodedImage(img, dst, shrink)
 	if err != nil {
 		d.doc.errorf("image: %v", err)
 		return nil
