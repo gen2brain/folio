@@ -18,6 +18,8 @@ type Parser struct {
 	// crypt decrypts strings and stream data for the object being read.
 	crypt *cryptFilter
 	depth int
+	// last is where the token most recently returned begins.
+	last int
 }
 
 // Lexer returns the scanner the Parser reads from.
@@ -46,8 +48,14 @@ func (p *Parser) refill() {
 	p.start[1] = p.lex.tokStart
 }
 
+// Pos returns where the token Object returned last begins. The content
+// interpreter needs it because the data of an inline image starts one white
+// space byte after the ID keyword, and the parser reads two tokens ahead.
+func (p *Parser) Pos() int { return p.last }
+
 func (p *Parser) shift() (Object, bool) {
 	o, ok := p.buf[0], p.ok[0]
+	p.last = p.start[0]
 	p.buf[0], p.ok[0], p.start[0] = p.buf[1], p.ok[1], p.start[1]
 	p.buf[1], p.ok[1] = p.lex.Next()
 	p.start[1] = p.lex.tokStart

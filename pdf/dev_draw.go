@@ -250,13 +250,6 @@ func (d *DrawDevice) PopClip() {
 	}
 }
 
-// ClipImageMask implements Device. Images are not sampled yet, so the stencil
-// clips to its own rectangle rather than to its one bit shape.
-func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
-	r := ctm.ApplyRect(raster.Rect{X1: 1, Y1: 1})
-	d.push(clipState{rect: d.clip.rect.Intersect(r), mask: d.clip.mask})
-}
-
 // BeginMask implements Device. A soft mask is not composited yet, so what it
 // draws is thrown away rather than painted onto the page.
 func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams) {
@@ -508,4 +501,161 @@ func (d *DrawDevice) type3Glyph(f *Font, code int, m raster.Matrix, cs *ColorSpa
 	ip.finish()
 	d.depth--
 	d.src = saved
+}
+
+// unitRect is the square an image transform maps onto the page.
+var unitRect = raster.Rect{X1: 1, Y1: 1}
+
+// FillImage implements Device.
+func (d *DrawDevice) FillImage(img *Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
+	if !d.drawing() {
+		return
+	}
+	src := d.decodeImage(img, d.space())
+	if src == nil {
+		return
+	}
+	d.drawImage(src, ctm, raster.Paint{Alpha: alphaByte(alpha), Clip: d.clip.mask}, img.Interpolate)
+}
+
+// FillImageMask implements Device.
+func (d *DrawDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
+	if !d.drawing() {
+		return
+	}
+	src := d.maskPixmap(img)
+	if src == nil {
+		return
+	}
+	d.drawImage(src, ctm, d.paint(cs, col, alpha), img.Interpolate)
+}
+
+// ClipImageMask implements Device.
+func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
+	src := d.maskPixmap(img)
+	if src == nil {
+		d.push(clipState{rect: raster.EmptyRect})
+		return
+	}
+	c := d.maskClip(ctm.ApplyRect(unitRect), func(r *raster.Rasterizer, ox, oy int) {
+		m := ctm
+		m.E -= float32(ox)
+		m.F -= float32(oy)
+		var p raster.Path
+		p.Rect(0, 0, 1, 1)
+		r.AddPath(&p, m)
+	}, false)
+	if c.mask != nil {
+		if inv, ok := sourceMatrix(ctm, src); ok {
+			c.mask.MulImage(src, inv)
+		}
+	}
+	d.push(c)
+}
+
+// maskPixmap decodes an image into coverage, one byte a pixel, whether it is
+// the one bit stencil of an image mask or the gray samples of a soft mask.
+func (d *DrawDevice) maskPixmap(img *Image) *raster.Pixmap {
+	if img == nil {
+		return nil
+	}
+	if img.Mask {
+		return d.decodeImage(img, nil)
+	}
+	px := d.decodeImage(img, DeviceGray)
+	if px == nil {
+		return nil
+	}
+	return flattenGray(px)
+}
+
+// drawImage rasterizes the square the image occupies and samples the image
+// through it.
+func (d *DrawDevice) drawImage(src *raster.Pixmap, ctm raster.Matrix, paint raster.Paint, interpolate bool) {
+	if n := subsampleBy(src, ctm); n > 0 {
+		src = src.Subsample(n)
+	}
+	inv, ok := sourceMatrix(ctm, src)
+	if !ok {
+		return
+	}
+	var p raster.Path
+	p.Rect(0, 0, 1, 1)
+
+	d.ras.Reset()
+	d.ras.SetClip(d.clip.rect)
+	d.ras.AddPath(&p, ctm)
+	d.ras.FillImage(d.dst, src, inv, paint, smoothImage(src, ctm, interpolate))
+}
+
+// sourceMatrix maps a device pixel to a pixel of the image.
+func sourceMatrix(ctm raster.Matrix, src *raster.Pixmap) (raster.Matrix, bool) {
+	inv, ok := ctm.Invert()
+	if !ok {
+		return raster.Identity, false
+	}
+	return raster.Concat(inv, raster.Scale(float32(src.W), float32(src.H))), true
+}
+
+// subsampleBy is how many times an image should be halved before it is
+// sampled, which is what keeps a scan from turning into noise.
+func subsampleBy(src *raster.Pixmap, ctm raster.Matrix) int {
+	w, h := deviceExtent(ctm)
+	if w <= 0 || h <= 0 {
+		return 0
+	}
+	n := 0
+	for sw, sh := float32(src.W), float32(src.H); sw >= w*2 && sh >= h*2 && n < 8; n++ {
+		sw /= 2
+		sh /= 2
+	}
+	return n
+}
+
+// smoothImage decides between bilinear and nearest: magnifying by more than
+// four keeps the samples crisp unless the file asks for interpolation.
+func smoothImage(src *raster.Pixmap, ctm raster.Matrix, interpolate bool) bool {
+	if interpolate {
+		return true
+	}
+	w, h := deviceExtent(ctm)
+	return w < float32(src.W)*4 || h < float32(src.H)*4
+}
+
+// deviceExtent is how wide and tall the unit square is after ctm.
+func deviceExtent(ctm raster.Matrix) (w, h float32) {
+	return absf32(ctm.A) + absf32(ctm.C), absf32(ctm.B) + absf32(ctm.D)
+}
+
+func absf32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// space is the color space the destination composites in.
+func (d *DrawDevice) space() *ColorSpace {
+	switch d.dst.N {
+	case 1:
+		return DeviceGray
+	case 4:
+		return DeviceCMYK
+	}
+	return DeviceRGB
+}
+
+// decodeImage decodes an image into the destination's components, from the
+// document's cache when it is there. A nil space asks for the stencil of an
+// image mask.
+func (d *DrawDevice) decodeImage(img *Image, dst *ColorSpace) *raster.Pixmap {
+	if img == nil || d.doc == nil {
+		return nil
+	}
+	px, err := d.doc.decodedImage(img, dst)
+	if err != nil {
+		d.doc.errorf("image: %v", err)
+		return nil
+	}
+	return px
 }

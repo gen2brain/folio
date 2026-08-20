@@ -2,7 +2,7 @@
 
 [PDF](https://en.wikipedia.org/wiki/PDF) renderer in pure Go. No CGo, no dependencies.
 
-Work in progress: paths, strokes, clips and text render; images and shadings do not.
+Work in progress: paths, strokes, clips, text and images render; shadings and transparency do not.
 
 The object layer is held to MuPDF, poppler and qpdf over 4382 files, the interpreter to
 `mutool trace` call for call, and the font engine to `mutool draw -F svg` glyph for glyph. The
@@ -38,15 +38,15 @@ the public API.
 
 ### Supported
 
-Paths, strokes and dashes, clipping by path and by text, text in embedded TrueType, CFF, Type1
-and CID keyed fonts, the fourteen standard substitutes, every color space and function type,
-annotation appearances, optional content, encryption, and files damaged enough that the
+Paths, strokes and dashes, clipping by path, by text and by stencil, text in embedded TrueType,
+CFF, Type1 and CID keyed fonts, the fourteen standard substitutes, every color space and
+function type, images at every bit depth with soft masks and color keys, JPEG and CCITT Group 3
+and 4, annotation appearances, optional content, encryption, and files damaged enough that the
 cross-reference table has to be rebuilt.
 
 ### Not implemented
 
-Images, shadings, tiling patterns, transparency groups, blend modes and soft masks. JBIG2 and
-JPX.
+Shadings, tiling patterns, transparency groups, blend modes and soft masks. JBIG2 and JPEG 2000.
 
 Out of scope: writing or editing PDF, form field values, JavaScript, XFA, signature validation
 and PDF/A validation.

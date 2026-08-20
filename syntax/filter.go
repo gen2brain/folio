@@ -10,14 +10,18 @@ import (
 	"sync"
 )
 
-// imageFilters are the filters that produce pixels rather than bytes. They are
-// not applied here: the image decoder needs the encoded data, its dictionary
-// and its color space together.
-var imageFilters = map[Name]bool{
-	"DCTDecode": true, "DCT": true,
-	"JPXDecode":      true,
-	"JBIG2Decode":    true,
+// byteFilters are the filters that produce bytes. Anything else produces
+// pixels and is left alone: the image decoder needs the encoded data, its
+// dictionary and its color space together, and a caller may have registered a
+// decoder for a filter this package has never heard of.
+var byteFilters = map[Name]bool{
+	"FlateDecode": true, "Fl": true,
+	"LZWDecode": true, "LZW": true,
+	"ASCII85Decode": true, "A85": true,
+	"ASCIIHexDecode": true, "AHx": true,
+	"RunLengthDecode": true, "RL": true,
 	"CCITTFaxDecode": true, "CCF": true,
+	"Crypt": true, "": true,
 }
 
 // Data returns the fully decoded stream contents.
@@ -54,32 +58,39 @@ func (s *Stream) decode() ([]byte, Name, Dict, error) {
 	if err != nil {
 		return nil, "", nil, err
 	}
+	data, s.imgFilter, s.imgParms, s.err = s.doc.DecodeImageData(s.Dict, data)
+	if s.err != nil {
+		return nil, "", nil, s.err
+	}
+	s.dec = data
+	return s.dec, s.imgFilter, s.imgParms, nil
+}
 
-	f := s.doc
-	filters := f.names(s.Dict, "Filter", "F")
-	parms := f.parmsList(s.Dict, len(filters))
+// DecodeImageData applies the byte filters dict names to data and returns what
+// is left: the bytes, the image filter that produces pixels rather than bytes,
+// and its parameters. It is how an inline image, whose data lies in the
+// content stream rather than in a stream object, reaches the same decoders.
+func (f *File) DecodeImageData(dict Dict, data []byte) ([]byte, Name, Dict, error) {
+	filters := f.names(dict, "Filter", "F")
+	parms := f.parmsList(dict, len(filters))
 
 	for i, name := range filters {
-		if imageFilters[name] {
-			s.imgFilter, s.imgParms = name, parms[i]
+		if !byteFilters[name] {
 			if i != len(filters)-1 {
-				s.err = fmt.Errorf("%w: %s is not the last filter", ErrInvalid, name)
-				return nil, "", nil, s.err
+				return nil, "", nil, fmt.Errorf("%w: %s is not the last filter", ErrInvalid, name)
 			}
-			break
+			return data, name, parms[i], nil
 		}
 		out, err := applyFilter(f, name, data, parms[i])
 		if err != nil {
 			if out == nil {
-				s.err = err
 				return nil, "", nil, err
 			}
 			f.errorf("%v", err)
 		}
 		data = out
 	}
-	s.dec = data
-	return s.dec, s.imgFilter, s.imgParms, nil
+	return data, "", nil, nil
 }
 
 // names resolves a key that may hold either a name or an array of names.
@@ -137,6 +148,8 @@ func applyFilter(f *File, name Name, data []byte, parms Dict) ([]byte, error) {
 		return asciiHexDecode(data), nil
 	case "RunLengthDecode", "RL":
 		return runLengthDecode(data), nil
+	case "CCITTFaxDecode", "CCF":
+		return ccittFaxDecode(f, data, parms)
 	case "Crypt":
 		return data, nil
 	case "":

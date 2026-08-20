@@ -22,9 +22,16 @@ type Document struct {
 	intent *ColorSpace
 	glyphs *raster.GlyphCache
 
-	// GlyphCacheBytes bounds the rendered glyph masks the document keeps.
-	// Zero means the default; it is read the first time a page is rendered.
+	images     map[imageKey]*imageEntry
+	imageHead  *imageEntry
+	imageTail  *imageEntry
+	imageBytes int
+
+	// GlyphCacheBytes bounds the rendered glyph masks the document keeps and
+	// ImageCacheBytes the decoded images. Zero means the default, negative
+	// means no cache at all.
 	GlyphCacheBytes int
+	ImageCacheBytes int
 }
 
 // glyphCache returns the document's cache of rendered glyph masks.

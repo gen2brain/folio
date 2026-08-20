@@ -2,7 +2,9 @@ github.com/gen2brain/pdf
 
 This product includes software developed by the Mozilla Foundation as part of
 PDF.js (https://github.com/mozilla/pdf.js), licensed under the Apache License,
-Version 2.0.
+Version 2.0, including the CCITT fax decoder, which PDF.js in turn ported from
+XPDF, Copyright 1996-2003 Glyph & Cog, LLC, and made available under the same
+license.
 
 Portions are derived from PDFium (https://pdfium.googlesource.com/pdfium),
 Copyright 2014 The PDFium Authors, licensed under a BSD-style license, including

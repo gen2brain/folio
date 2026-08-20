@@ -92,7 +92,7 @@ func (f *File) Trailer() Dict { return f.trail }
 func (f *File) Catalog() Dict { return f.root }
 
 func (f *File) errorf(format string, a ...any) {
-	if len(f.Errors) < maxErrors {
+	if f != nil && len(f.Errors) < maxErrors {
 		f.Errors = append(f.Errors, fmt.Errorf(format, a...))
 	}
 }

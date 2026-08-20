@@ -43,6 +43,7 @@ type Rasterizer struct {
 	flatness float32
 	cover    []uint8
 	solid    solidBlitter
+	image    imageBlitter
 }
 
 // NewRasterizer returns a rasterizer for a w by h pixel target.

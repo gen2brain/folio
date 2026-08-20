@@ -106,3 +106,81 @@ func TestTIFFPredictor(t *testing.T) {
 		t.Errorf("tiff predictor = %v, want %v", got, want)
 	}
 }
+
+// TestCCITTGroup4 decodes what an independent encoder produced for a known
+// bitmap: 32 by 8, twelve columns of one color and a band of twenty four on
+// one row. Which color a run is depends on the convention the encoder wrote
+// it in, so the test is on the runs, and on BlackIs1 flipping them.
+func TestCCITTGroup4(t *testing.T) {
+	data := []byte{0x24, 0x06, 0x8f, 0x2a, 0x05, 0x24, 0x06, 0x8f, 0xc0, 0x04, 0x00, 0x40}
+	parms := Dict{"K": Integer(-1), "Columns": Integer(32), "Rows": Integer(8)}
+
+	got, err := ccittFaxDecode(&File{}, data, parms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 8*4 {
+		t.Fatalf("decoded %d bytes, want %d", len(got), 8*4)
+	}
+	for y := 0; y < 8; y++ {
+		want := []int{12, 20}
+		if y == 3 {
+			want = []int{24, 8}
+		}
+		if runs := bitRuns(got[y*4:y*4+4], 32); !equalInts(runs, want) {
+			t.Fatalf("row %d runs %v, want %v", y, runs, want)
+		}
+	}
+
+	parms["BlackIs1"] = Bool(true)
+	flipped, err := ccittFaxDecode(&File{}, data, parms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range got {
+		if flipped[i] != got[i]^0xff {
+			t.Fatalf("BlackIs1 byte %d = %02x, want %02x", i, flipped[i], got[i]^0xff)
+		}
+	}
+}
+
+// bitRuns is the lengths of the runs of equal bits in a row.
+func bitRuns(row []byte, n int) []int {
+	var runs []int
+	last, count := row[0]>>7, 0
+	for i := 0; i < n; i++ {
+		b := row[i/8] >> (7 - i%8) & 1
+		if b != last {
+			runs = append(runs, count)
+			last, count = b, 0
+		}
+		count++
+	}
+	return append(runs, count)
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestCCITTTruncated(t *testing.T) {
+	full := []byte{0x24, 0x06, 0x8f, 0x2a, 0x05, 0x24, 0x06, 0x8f, 0xc0, 0x04, 0x00, 0x40}
+	for n := 0; n <= len(full); n++ {
+		parms := Dict{"K": Integer(-1), "Columns": Integer(32), "Rows": Integer(8)}
+		got, err := ccittFaxDecode(&File{}, full[:n], parms)
+		if err != nil {
+			continue
+		}
+		if len(got) != 8*4 {
+			t.Fatalf("%d bytes in decoded to %d bytes, want %d", n, len(got), 8*4)
+		}
+	}
+}

@@ -822,3 +822,214 @@ func TestNestedDashIsolation(t *testing.T) {
 		}
 	}
 }
+
+// imagePDF builds a one page document whose content stream draws a single
+// image, so that the decoders can be tested a sample at a time.
+func imagePDF(t *testing.T, dict, data, content string) *Document {
+	t.Helper()
+	if content == "" {
+		content = "q 100 0 0 100 0 0 cm /Im Do Q"
+	}
+	return buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Im 5 0 R >> >> >>",
+		streamObj("", content),
+		streamObj("/Type /XObject /Subtype /Image "+dict, data),
+	})
+}
+
+func TestImageBitDepths(t *testing.T) {
+	// Four gray pixels, black to white, at each depth the format allows.
+	for _, tc := range []struct {
+		bpc  int
+		data string
+		want [4]uint8
+	}{
+		{1, "\x10", [4]uint8{0, 0, 0, 255}},
+		{2, "\x1b", [4]uint8{0, 85, 170, 255}},
+		{4, "\x05\xaf", [4]uint8{0, 85, 170, 255}},
+		{8, "\x00\x55\xaa\xff", [4]uint8{0, 85, 170, 255}},
+		{16, "\x00\x00\x55\x55\xaa\xaa\xff\xff", [4]uint8{0, 85, 170, 255}},
+	} {
+		d := imagePDF(t, fmt.Sprintf("/Width 4 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent %d", tc.bpc), tc.data, "")
+		px := renderDoc(t, d, &Options{ColorSpace: DeviceGray})
+		for x, want := range tc.want {
+			got := pixel(px, x*25+12, 50)[0]
+			if int(got)-int(want) > 1 || int(want)-int(got) > 1 {
+				t.Errorf("%d bits: pixel %d = %d, want %d", tc.bpc, x, got, want)
+			}
+		}
+	}
+}
+
+func TestImageDecodeArray(t *testing.T) {
+	d := imagePDF(t, "/Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [1 0]",
+		"\x00\xff", "")
+	px := renderDoc(t, d, &Options{ColorSpace: DeviceGray})
+	if got := pixel(px, 25, 50)[0]; got != 255 {
+		t.Fatalf("inverted black = %d, want 255", got)
+	}
+	if got := pixel(px, 75, 50)[0]; got != 0 {
+		t.Fatalf("inverted white = %d, want 0", got)
+	}
+}
+
+func TestImageIndexed(t *testing.T) {
+	d := imagePDF(t, "/Width 2 /Height 1 /BitsPerComponent 8"+
+		" /ColorSpace [/Indexed /DeviceRGB 1 <FF000000FF00>]", "\x00\x01", "")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 25, 50); !same(got, 255, 0, 0) {
+		t.Fatalf("palette entry 0 = %v, want red", got)
+	}
+	if got := pixel(px, 75, 50); !same(got, 0, 255, 0) {
+		t.Fatalf("palette entry 1 = %v, want green", got)
+	}
+}
+
+func TestImageMaskPaintsFillColor(t *testing.T) {
+	d := imagePDF(t, "/Width 2 /Height 1 /ImageMask true", "\x40",
+		"q 0 0 1 rg 100 0 0 100 0 0 cm /Im Do Q")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 25, 50); !same(got, 0, 0, 255) {
+		t.Fatalf("a zero bit = %v, want the fill color", got)
+	}
+	if got := pixel(px, 75, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("a one bit = %v, want the page", got)
+	}
+}
+
+func TestImageSMask(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Im 5 0 R >> >> >>",
+		streamObj("", "q 100 0 0 100 0 0 cm /Im Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 2 /Height 1"+
+			" /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R",
+			"\x00\x00\x00\x00\x00\x00"),
+		streamObj("/Type /XObject /Subtype /Image /Width 2 /Height 1"+
+			" /ColorSpace /DeviceGray /BitsPerComponent 8", "\xff\x00"),
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 25, 50); !same(got, 0, 0, 0) {
+		t.Fatalf("opaque half = %v, want black", got)
+	}
+	if got := pixel(px, 75, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("transparent half = %v, want the page", got)
+	}
+}
+
+func TestImageColorKey(t *testing.T) {
+	d := imagePDF(t, "/Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Mask [0 0]",
+		"\x00\x00", "")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 25, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("a masked sample painted %v", got)
+	}
+}
+
+func TestImageInline(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
+		streamObj("", "q 100 0 0 100 0 0 cm BI /W 2 /H 1 /CS /G /BPC 8 /F /AHx ID 00ff> EI Q"),
+	})
+	px := renderDoc(t, d, &Options{ColorSpace: DeviceGray})
+	if got := pixel(px, 25, 50)[0]; got != 0 {
+		t.Fatalf("inline black = %d", got)
+	}
+	if got := pixel(px, 75, 50)[0]; got != 255 {
+		t.Fatalf("inline white = %d", got)
+	}
+}
+
+func BenchmarkRenderImage(b *testing.B) {
+	// A 512 by 512 photograph shaped image drawn over a letter page, which is
+	// the downscale the sampler is written for.
+	pix := make([]byte, 512*512*3)
+	seed := uint32(1)
+	for i := range pix {
+		seed = seed*1664525 + 1013904223
+		pix[i] = uint8(seed >> 24)
+	}
+	var data strings.Builder
+	for _, v := range pix {
+		fmt.Fprintf(&data, "%02x", v)
+	}
+
+	d := buildPDFB(b, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R" +
+			" /Resources << /XObject << /Im 5 0 R >> >> >>",
+		streamObj("", "q 612 0 0 792 0 0 cm /Im Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 512 /Height 512"+
+			" /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode",
+			data.String()),
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctm := p.Matrix(150)
+	px := raster.NewPixmap(DeviceRGB.Model(), 1275, 1650, false)
+	b.ResetTimer()
+	for b.Loop() {
+		px.ClearWhite()
+		dev := NewDrawDevice(d, px)
+		ip := p.newInterp(dev, ctm)
+		ip.run(p.Contents())
+		ip.finish()
+	}
+}
+
+// buildPDFB is buildPDF for a benchmark.
+func buildPDFB(b *testing.B, objs []string) *Document {
+	b.Helper()
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n")
+	offs := make([]int, len(objs)+1)
+	for i, o := range objs {
+		offs[i+1] = buf.Len()
+		fmt.Fprintf(&buf, "%d 0 obj\n%s\nendobj\n", i+1, o)
+	}
+	start := buf.Len()
+	fmt.Fprintf(&buf, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for i := 1; i <= len(objs); i++ {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", offs[i])
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n",
+		len(objs)+1, start)
+
+	d, err := Load(buf.Bytes(), "")
+	if err != nil {
+		b.Fatalf("building a document: %v", err)
+	}
+	b.Cleanup(func() { d.Close() })
+	return d
+}
+
+func TestRegisterImageDecoder(t *testing.T) {
+	const filter = "TestDecode"
+	RegisterImageDecoder(filter, func(data []byte, parms Dict) ([]byte, int, int, int, error) {
+		if string(data) != "hello" {
+			return nil, 0, 0, 0, fmt.Errorf("got %q", data)
+		}
+		return []byte{0, 255}, 2, 1, 1, nil
+	})
+	defer RegisterImageDecoder(filter, nil)
+
+	d := imagePDF(t, "/Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8"+
+		" /Filter /"+filter, "hello", "")
+	px := renderDoc(t, d, &Options{ColorSpace: DeviceGray})
+	if got := pixel(px, 25, 50)[0]; got != 0 {
+		t.Fatalf("registered decoder: first sample = %d, want 0", got)
+	}
+	if got := pixel(px, 75, 50)[0]; got != 255 {
+		t.Fatalf("registered decoder: second sample = %d, want 255", got)
+	}
+}

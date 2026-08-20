@@ -78,9 +78,6 @@ func (l *Lexer) skipLine() {
 	}
 }
 
-// Pos returns the scanner position.
-func (l *Lexer) Pos() int { return l.pos }
-
 // SetPos moves the scanner, clamped to the buffer. It is how the content
 // interpreter steps over the binary data of an inline image.
 func (l *Lexer) SetPos(p int) {
