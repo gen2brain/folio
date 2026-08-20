@@ -269,6 +269,30 @@ func FuzzContent(f *testing.F) {
 	})
 }
 
+func FuzzCMap(f *testing.F) {
+	f.Add("1 begincodespacerange <00> <FF> endcodespacerange\n" +
+		"2 begincidrange <00> <7f> 1 <80> <ff> 200 endcidrange\n")
+	f.Add("1 begincodespacerange <0000> <FFFF> endcodespacerange\n" +
+		"2 beginbfchar <41> <00660066> <42> <0042> endbfchar\n")
+	f.Add("/WMode 1 def\n1 beginbfrange <00> <ff> [<41> <42>] endbfrange\n")
+	f.Fuzz(func(t *testing.T, src string) {
+		d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
+		if err != nil {
+			t.Skip()
+		}
+		defer d.Close()
+		cm := d.parseCMap([]byte(src), 0)
+		if cm == nil {
+			t.Fatal("no CMap")
+		}
+		for _, code := range []uint32{0, 1, 0x41, 0xff, 0x1234, 0xffff, 0xffffffff} {
+			cm.Lookup(code)
+			cm.Text(code)
+		}
+		cm.Next([]byte(src))
+	})
+}
+
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
 
 // TestFontMapping checks that a code reaches the right glyph, character and
@@ -349,6 +373,45 @@ func TestToUnicodeLigature(t *testing.T) {
 	}
 	if got := cm.Text('B'); got != "B" {
 		t.Errorf("Text('B') = %q, want %q", got, "B")
+	}
+}
+
+// TestCMapLongSection checks a cidrange section longer than the operand stack
+// the parser once kept, which silently dropped every entry past the 21st.
+func TestCMapLongSection(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	var b strings.Builder
+	b.WriteString("/CIDInit /ProcSet findresource begin\n")
+	b.WriteString("1 begincodespacerange <0000> <FFFF> endcodespacerange\n")
+	const n = 200
+	fmt.Fprintf(&b, "%d begincidrange\n", n)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "<%04x> <%04x> %d\n", i, i, 1000+i)
+	}
+	b.WriteString("endcidrange\nendcmap\n")
+
+	cm := d.parseCMap([]byte(b.String()), 0)
+	for _, code := range []uint32{0, 20, 21, 99, n - 1} {
+		if got := cm.Lookup(code); got != 1000+code {
+			t.Errorf("Lookup(%d) = %d, want %d", code, got, 1000+code)
+		}
+	}
+}
+
+// TestCMapOverlappingRanges checks that ranges which overlap keep the order
+// they were written in, where the first match wins, rather than being bisected.
+func TestCMapOverlappingRanges(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	cmapData := "/CIDInit /ProcSet findresource begin\n" +
+		"1 begincodespacerange <0000> <FFFF> endcodespacerange\n" +
+		"2 begincidrange <0000> <00ff> 100 <0010> <001f> 200 endcidrange\n" +
+		"endcmap\n"
+	cm := d.parseCMap([]byte(cmapData), 0)
+	if cm.sorted {
+		t.Error("overlapping ranges were sorted")
+	}
+	if got := cm.Lookup(0x18); got != 100+0x18 {
+		t.Errorf("Lookup(0x18) = %d, want %d", got, 100+0x18)
 	}
 }
 

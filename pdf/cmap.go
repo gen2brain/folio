@@ -1,6 +1,8 @@
 package pdf
 
 import (
+	"cmp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +36,10 @@ type CMap struct {
 	text     map[uint32]string
 	usecmap  *CMap
 	identity bool
+	entries  int
+	// sorted reports that ranges is ordered by low and no two overlap, which
+	// is what lets a lookup bisect them.
+	sorted bool
 }
 
 // identityCMap is Identity-H and Identity-V: two byte codes, CID equal to the
@@ -96,9 +102,25 @@ func (c *CMap) Lookup(code uint32) uint32 {
 	if v, ok := c.single[code]; ok {
 		return v
 	}
-	for _, r := range c.ranges {
-		if code >= r.low && code <= r.high {
+	if c.sorted {
+		i, j := 0, len(c.ranges)
+		for i < j {
+			h := (i + j) / 2
+			if c.ranges[h].high < code {
+				i = h + 1
+			} else {
+				j = h
+			}
+		}
+		if i < len(c.ranges) && code >= c.ranges[i].low {
+			r := c.ranges[i]
 			return r.cid + (code - r.low)
+		}
+	} else {
+		for _, r := range c.ranges {
+			if code >= r.low && code <= r.high {
+				return r.cid + (code - r.low)
+			}
 		}
 	}
 	if c.usecmap != nil {
@@ -115,11 +137,7 @@ func (d *Document) parseCMap(data []byte, depth int) *CMap {
 	p.AllowStreams(false)
 
 	var stack []Object
-	push := func(o Object) {
-		if len(stack) < 64 {
-			stack = append(stack, o)
-		}
-	}
+	var section syntax.Keyword
 	for {
 		obj, ok := p.Object()
 		if !ok {
@@ -127,58 +145,16 @@ func (d *Document) parseCMap(data []byte, depth int) *CMap {
 		}
 		kw, isKw := obj.(syntax.Keyword)
 		if !isKw {
-			push(obj)
+			if len(stack) < 64 {
+				stack = append(stack, obj)
+			}
+			if n := cmapArity(section); n > 0 && len(stack) >= n {
+				c.addEntry(section, stack)
+				stack = stack[:0]
+			}
 			continue
 		}
 		switch kw {
-		case "endcodespacerange":
-			for i := 0; i+1 < len(stack); i += 2 {
-				lo, ok1 := stack[i].(String)
-				hi, ok2 := stack[i+1].(String)
-				if ok1 && ok2 && len(lo) > 0 && len(lo) <= 4 {
-					c.spaces = append(c.spaces, codespace{
-						nbytes: len(lo), low: beCode(lo), high: beCode(hi),
-					})
-				}
-			}
-		case "endcidrange", "endbfrange":
-			for i := 0; i+2 < len(stack); i += 3 {
-				lo, ok1 := stack[i].(String)
-				hi, ok2 := stack[i+1].(String)
-				if !ok1 || !ok2 {
-					continue
-				}
-				switch v := stack[i+2].(type) {
-				case Integer:
-					c.ranges = append(c.ranges, cidRange{beCode(lo), beCode(hi), uint32(v)})
-				case String:
-					if len(v) > 2 {
-						c.addTextRange(beCode(lo), beCode(hi), v)
-					} else {
-						c.ranges = append(c.ranges, cidRange{beCode(lo), beCode(hi), beCode(v)})
-					}
-				case Array:
-					base := beCode(lo)
-					for j, e := range v {
-						if s, ok := e.(String); ok {
-							c.setText(base+uint32(j), s)
-						}
-					}
-				}
-			}
-		case "endcidchar", "endbfchar":
-			for i := 0; i+1 < len(stack); i += 2 {
-				code, ok := stack[i].(String)
-				if !ok {
-					continue
-				}
-				switch v := stack[i+1].(type) {
-				case Integer:
-					c.single[beCode(code)] = uint32(v)
-				case String:
-					c.setText(beCode(code), v)
-				}
-			}
 		case "usecmap":
 			if len(stack) > 0 && depth < maxNesting {
 				if n, ok := stack[len(stack)-1].(Name); ok {
@@ -192,17 +168,104 @@ func (d *Document) parseCMap(data []byte, depth int) *CMap {
 				}
 			}
 		}
-		switch kw {
-		case "begincodespacerange", "begincidrange", "begincidchar",
-			"beginbfrange", "beginbfchar", "endcodespacerange", "endcidrange",
-			"endcidchar", "endbfrange", "endbfchar", "def", "usecmap":
-			stack = stack[:0]
+		if cmapArity(kw) > 0 {
+			section = kw
+		} else {
+			section = ""
 		}
+		stack = stack[:0]
 	}
 	if len(c.spaces) == 0 {
 		c.spaces = append(c.spaces, codespace{nbytes: 2, low: 0, high: 0xffff})
 	}
+	c.sortRanges()
 	return c
+}
+
+// cmapArity is how many operands one entry of a CMap section takes, and zero
+// for a keyword that opens no section.
+func cmapArity(kw syntax.Keyword) int {
+	switch kw {
+	case "begincodespacerange", "begincidchar", "beginbfchar":
+		return 2
+	case "begincidrange", "beginbfrange":
+		return 3
+	}
+	return 0
+}
+
+// maxCMapEntries bounds what one CMap may record, over all its sections,
+// counting a range that expands to one destination per code as its length.
+const maxCMapEntries = 1 << 20
+
+// addEntry records one entry of a CMap section from its operands.
+func (c *CMap) addEntry(section syntax.Keyword, ops []Object) {
+	if c.entries >= maxCMapEntries {
+		return
+	}
+	c.entries++
+	switch section {
+	case "begincodespacerange":
+		lo, ok1 := ops[0].(String)
+		hi, ok2 := ops[1].(String)
+		if ok1 && ok2 && len(lo) > 0 && len(lo) <= 4 {
+			c.spaces = append(c.spaces, codespace{
+				nbytes: len(lo), low: beCode(lo), high: beCode(hi),
+			})
+		}
+	case "begincidrange", "beginbfrange":
+		lo, ok1 := ops[0].(String)
+		hi, ok2 := ops[1].(String)
+		if !ok1 || !ok2 {
+			return
+		}
+		switch v := ops[2].(type) {
+		case Integer:
+			c.ranges = append(c.ranges, cidRange{beCode(lo), beCode(hi), uint32(v)})
+		case String:
+			if len(v) > 2 {
+				if beCode(hi) > beCode(lo) {
+					c.entries += int(beCode(hi) - beCode(lo))
+				}
+				c.addTextRange(beCode(lo), beCode(hi), v)
+			} else {
+				c.ranges = append(c.ranges, cidRange{beCode(lo), beCode(hi), beCode(v)})
+			}
+		case Array:
+			base := beCode(lo)
+			c.entries += len(v)
+			for j, e := range v {
+				if s, ok := e.(String); ok {
+					c.setText(base+uint32(j), s)
+				}
+			}
+		}
+	case "begincidchar", "beginbfchar":
+		code, ok := ops[0].(String)
+		if !ok {
+			return
+		}
+		switch v := ops[1].(type) {
+		case Integer:
+			c.single[beCode(code)] = uint32(v)
+		case String:
+			c.setText(beCode(code), v)
+		}
+	}
+}
+
+// sortRanges orders the ranges so that a lookup may bisect them, which it can
+// only do when none of them overlap: where two do, the first written wins and
+// only a scan in that order finds it.
+func (c *CMap) sortRanges() {
+	r := slices.Clone(c.ranges)
+	slices.SortFunc(r, func(a, b cidRange) int { return cmp.Compare(a.low, b.low) })
+	for i := range r {
+		if r[i].high < r[i].low || (i > 0 && r[i].low <= r[i-1].high) {
+			return
+		}
+	}
+	c.ranges, c.sorted = r, true
 }
 
 // setText records a ToUnicode destination, which is UTF-16BE.
@@ -368,6 +431,7 @@ func builtinCMap(name string) (*CMap, bool) {
 	if len(c.spaces) == 0 {
 		c.spaces = append(c.spaces, codespace{nbytes: 2, low: 0, high: 0xffff})
 	}
+	c.sortRanges()
 	builtinCache[name] = c
 	return c, true
 }

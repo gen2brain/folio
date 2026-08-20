@@ -57,6 +57,8 @@ jobs:
             target: FuzzJBIG2
           - package: ./pdf
             target: FuzzJPX
+          - package: ./pdf
+            target: FuzzCMap
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
