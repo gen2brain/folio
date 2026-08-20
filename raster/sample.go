@@ -54,10 +54,12 @@ type imageBlitter struct {
 	clip     *Pixmap
 	ox, oy   int
 	inv      Matrix
+	span     []uint8
 	color    [5]uint8
 	alpha    uint8
 	smooth   bool
 	stencil  bool
+	direct   bool
 }
 
 func (b *imageBlitter) init(dst, src *Pixmap, inv Matrix, paint Paint, smooth bool) {
@@ -65,6 +67,7 @@ func (b *imageBlitter) init(dst, src *Pixmap, inv Matrix, paint Paint, smooth bo
 	b.ox, b.oy = dst.X, dst.Y
 	b.inv, b.alpha, b.smooth = inv, paint.Alpha, smooth
 	b.stencil = src.N == 0
+	b.direct = !b.stencil && !src.Alpha && !dst.Alpha && dst.N == src.N
 	b.color = [5]uint8{}
 	copy(b.color[:min(len(paint.Color), dst.N)], paint.Color)
 	if dst.Alpha {
@@ -73,47 +76,76 @@ func (b *imageBlitter) init(dst, src *Pixmap, inv Matrix, paint Paint, smooth bo
 }
 
 func (b *imageBlitter) BlitSolid(x, y, w int, cover uint8) {
-	for i := 0; i < w; i++ {
-		b.pixel(x+i, y, cover)
+	if a := mul255(b.alpha, cover); a != 0 {
+		b.blit(x, y, w, a, nil)
 	}
 }
 
 func (b *imageBlitter) BlitCover(x, y int, cover []uint8) {
-	for i, c := range cover {
-		b.pixel(x+i, y, c)
+	b.blit(x, y, len(cover), 0, cover)
+}
+
+// blit samples the source over a whole span before compositing it, so that
+// the transform and the sampler run in a loop of their own rather than once
+// per call.
+func (b *imageBlitter) blit(x, y, w int, flat uint8, cover []uint8) {
+	var mask []uint8
+	if b.clip != nil {
+		cy := y - b.clip.Y
+		if cy < 0 || cy >= b.clip.H {
+			return
+		}
+		lo := max(b.clip.X-x, 0)
+		hi := min(b.clip.X+b.clip.W-x, w)
+		if lo >= hi {
+			return
+		}
+		mask = b.clip.Samples[cy*b.clip.Stride+(x+lo-b.clip.X):][: hi-lo : hi-lo]
+		if cover != nil {
+			cover = cover[lo:hi]
+		}
+		x += lo
+		w = hi - lo
+	}
+
+	sn := b.src.Comps()
+	n := b.dst.Comps()
+	row := b.dst.Samples[(y-b.oy)*b.dst.Stride+(x-b.ox)*n:]
+
+	// An opaque image at full coverage over a destination of the same shape
+	// composites to itself, so it is sampled straight into the page.
+	if b.direct && flat == 255 && cover == nil && mask == nil {
+		b.sample(x, y, w, row)
+		return
+	}
+
+	if cap(b.span) < w*sn {
+		b.span = make([]uint8, w*sn)
+	}
+	span := b.span[:w*sn]
+	b.sample(x, y, w, span)
+
+	for i := range w {
+		a := flat
+		if cover != nil {
+			a = mul255(b.alpha, cover[i])
+		}
+		if mask != nil {
+			a = mul255(a, mask[i])
+		}
+		if a != 0 {
+			b.compose(row[:n:n], span[:sn:sn], a)
+		}
+		row = row[n:]
+		span = span[sn:]
 	}
 }
 
-func (b *imageBlitter) pixel(x, y int, cover uint8) {
-	a := mul255(b.alpha, cover)
-	if a == 0 {
-		return
-	}
-	if b.clip != nil {
-		cx, cy := x-b.clip.X, y-b.clip.Y
-		if cx < 0 || cy < 0 || cx >= b.clip.W || cy >= b.clip.H {
-			return
-		}
-		if a = mul255(a, b.clip.Samples[cy*b.clip.Stride+cx]); a == 0 {
-			return
-		}
-	}
-
-	fx := float32(x) + 0.5
-	fy := float32(y) + 0.5
-	u := float32(b.inv.A*fx) + float32(b.inv.C*fy) + b.inv.E
-	v := float32(b.inv.B*fx) + float32(b.inv.D*fy) + b.inv.F
-
-	var src [5]uint8
-	if b.smooth {
-		b.bilinear(u, v, &src)
-	} else {
-		b.nearest(u, v, &src)
-	}
-
+// compose puts one sampled pixel down. The source is premultiplied, which is
+// why the color takes the operation's alpha and only the destination takes
+// the source's.
+func (b *imageBlitter) compose(row, src []uint8, a uint8) {
 	n := b.dst.Comps()
-	row := b.dst.Samples[(y-b.oy)*b.dst.Stride+(x-b.ox)*n:][:n:n]
-
 	if b.stencil {
 		if sa := mul255(src[0], a); sa != 0 {
 			blendSpan(row, b.color[:n], sa)
@@ -129,8 +161,9 @@ func (b *imageBlitter) pixel(x, y int, cover uint8) {
 		}
 	}
 	inv := 255 - uint32(sa)
-	for c := 0; c < b.dst.N && c < b.src.N; c++ {
-		row[c] = div255(uint32(src[c])*uint32(a) + uint32(row[c])*inv)
+	m := min(b.dst.N, b.src.N)
+	for c, s := range src[:m:m] {
+		row[c] = div255(uint32(s)*uint32(a) + uint32(row[c])*inv)
 	}
 	if b.dst.Alpha {
 		s := uint32(255)
@@ -141,22 +174,87 @@ func (b *imageBlitter) pixel(x, y int, cover uint8) {
 	}
 }
 
-// nearest reads the sample the point lands in, clamped to the edge.
-func (b *imageBlitter) nearest(u, v float32, out *[5]uint8) {
+// sample reads one source pixel per destination pixel of the span. The
+// transform keeps the association the scalar had, because a float32 sum that
+// reassociates lands on a different sample at the seams.
+func (b *imageBlitter) sample(x, y, w int, out []uint8) {
 	n := b.src.Comps()
-	i := clampInt(int(floor32(u)), 0, b.src.W-1)
-	j := clampInt(int(floor32(v)), 0, b.src.H-1)
+	fy := float32(y) + 0.5
+	cu := float32(b.inv.C * fy)
+	cv := float32(b.inv.D * fy)
+	if b.smooth {
+		if b.inv.B == 0 {
+			b.bilinearRow(x, w, cu, cv+b.inv.F, out)
+			return
+		}
+		for i := range w {
+			fx := float32(x+i) + 0.5
+			u := float32(b.inv.A*fx) + cu + b.inv.E
+			v := float32(b.inv.B*fx) + cv + b.inv.F
+			b.bilinear(u, v, out[i*n:])
+		}
+		return
+	}
+	for i := range w {
+		fx := float32(x+i) + 0.5
+		u := float32(b.inv.A*fx) + cu + b.inv.E
+		v := float32(b.inv.B*fx) + cv + b.inv.F
+		b.nearest(u, v, out[i*n:])
+	}
+}
+
+// bilinearRow is the same weighted sum for a span whose source row does not
+// change along it, which is what an unrotated image is. The row, its
+// neighbour and the vertical weight come out of the loop, and only the
+// horizontal position is left in it.
+func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
+	n := b.src.Comps()
+	v -= 0.5
+	j0 := ifloor32(v)
+	fv := uint32((v - float32(j0)) * 256)
+	j1 := clampInt(j0+1, 0, b.src.H-1)
+	j0 = clampInt(j0, 0, b.src.H-1)
+	r0 := b.src.Samples[j0*b.src.Stride:]
+	r1 := b.src.Samples[j1*b.src.Stride:]
+	iv := 256 - fv
+	hi := b.src.W - 1
+
+	for i := range w {
+		u := float32(b.inv.A*(float32(x+i)+0.5)) + cu + b.inv.E - 0.5
+		i0 := ifloor32(u)
+		fu := uint32((u - float32(i0)) * 256)
+		i1 := clampInt(i0+1, 0, hi) * n
+		i0 = clampInt(i0, 0, hi) * n
+		iu := 256 - fu
+		a0 := r0[i0 : i0+n : i0+n]
+		a1 := r0[i1 : i1+n : i1+n]
+		c0 := r1[i0 : i0+n : i0+n]
+		c1 := r1[i1 : i1+n : i1+n]
+		p := out[i*n : i*n+n : i*n+n]
+		for c, s := range a0 {
+			top := uint32(s)*iu + uint32(a1[c])*fu
+			bot := uint32(c0[c])*iu + uint32(c1[c])*fu
+			p[c] = uint8((top*iv + bot*fv + 1<<15) >> 16)
+		}
+	}
+}
+
+// nearest reads the sample the point lands in, clamped to the edge.
+func (b *imageBlitter) nearest(u, v float32, out []uint8) {
+	n := b.src.Comps()
+	i := clampInt(ifloor32(u), 0, b.src.W-1)
+	j := clampInt(ifloor32(v), 0, b.src.H-1)
 	copy(out[:n], b.src.Samples[j*b.src.Stride+i*n:])
 }
 
 // bilinear weights the four samples around the point. The source is
 // premultiplied, which is what keeps a transparent edge from bleeding color.
-func (b *imageBlitter) bilinear(u, v float32, out *[5]uint8) {
+func (b *imageBlitter) bilinear(u, v float32, out []uint8) {
 	n := b.src.Comps()
 	u -= 0.5
 	v -= 0.5
-	i0 := int(floor32(u))
-	j0 := int(floor32(v))
+	i0 := ifloor32(u)
+	j0 := ifloor32(v)
 	fu := uint32((u - float32(i0)) * 256)
 	fv := uint32((v - float32(j0)) * 256)
 	i1, j1 := clampInt(i0+1, 0, b.src.W-1), clampInt(j0+1, 0, b.src.H-1)
@@ -164,15 +262,18 @@ func (b *imageBlitter) bilinear(u, v float32, out *[5]uint8) {
 
 	r0 := b.src.Samples[j0*b.src.Stride:]
 	r1 := b.src.Samples[j1*b.src.Stride:]
-	p00 := r0[i0*n:][:n:n]
-	p01 := r0[i1*n:][:n:n]
-	p10 := r1[i0*n:][:n:n]
-	p11 := r1[i1*n:][:n:n]
+	i0 *= n
+	i1 *= n
+	p00 := r0[i0 : i0+n : i0+n]
+	p01 := r0[i1 : i1+n : i1+n]
+	p10 := r1[i0 : i0+n : i0+n]
+	p11 := r1[i1 : i1+n : i1+n]
+	p := out[:n:n]
 	iu, iv := 256-fu, 256-fv
-	for c := 0; c < n; c++ {
-		top := uint32(p00[c])*iu + uint32(p01[c])*fu
+	for c, s := range p00 {
+		top := uint32(s)*iu + uint32(p01[c])*fu
 		bot := uint32(p10[c])*iu + uint32(p11[c])*fu
-		out[c] = uint8((top*iv + bot*fv + 1<<15) >> 16)
+		p[c] = uint8((top*iv + bot*fv + 1<<15) >> 16)
 	}
 }
 
@@ -189,6 +290,14 @@ func clampInt(v, lo, hi int) int {
 func floor32(v float32) float32 {
 	i := float32(int32(v))
 	if v < i {
+		i--
+	}
+	return i
+}
+
+func ifloor32(v float32) int {
+	i := int(int32(v))
+	if v < float32(i) {
 		i--
 	}
 	return i
