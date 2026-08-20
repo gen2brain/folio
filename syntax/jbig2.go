@@ -23,8 +23,16 @@ const (
 
 // jbBitmap is one byte a pixel, one for black, which is what the template
 // windows address and what the region operators combine.
+// A jbBitmap is one bit a pixel, like the page it is composited into. A region
+// the size of a page is the largest thing a stream asks for, and a byte a pixel
+// made it eight times what the page itself costs.
+//
+// xoff is where column zero sits inside the first byte of a row, which is what
+// lets sub share the samples of a bitmap it does not start at a byte boundary
+// of.
 type jbBitmap struct {
 	w, h, stride int
+	xoff         int
 	pix          []uint8
 }
 
@@ -32,30 +40,63 @@ func newJBBitmap(w, h int) (*jbBitmap, error) {
 	if w <= 0 || h <= 0 || w > maxJBPixels || h > maxJBPixels || int64(w)*int64(h) > maxJBPixels {
 		return nil, errInvalidf("JBIG2 bitmap is %dx%d", w, h)
 	}
-	return &jbBitmap{w: w, h: h, stride: w, pix: make([]uint8, w*h)}, nil
+	stride := (w + 7) / 8
+	return &jbBitmap{w: w, h: h, stride: stride, pix: make([]uint8, stride*h)}, nil
 }
 
-func (b *jbBitmap) row(y int) []uint8 { return b.pix[y*b.stride:][:b.w] }
+// row returns the bytes a row occupies, which is not the same as its pixels:
+// only a caller that means to work on the bits itself wants this.
+func (b *jbBitmap) row(y int) []uint8 { return b.pix[y*b.stride:][:b.stride] }
 
 func (b *jbBitmap) at(x, y int) uint8 {
 	if x < 0 || x >= b.w || y < 0 || y >= b.h {
 		return 0
 	}
-	return b.pix[y*b.stride+x]
+	i := b.xoff + x
+	return b.pix[y*b.stride+i>>3] >> uint(7-i&7) & 1
+}
+
+// bitAt reads a pixel the caller has already bounded, which the decoders can
+// do more cheaply than at because they know where the window sits.
+func (b *jbBitmap) bitAt(x, y int) uint32 {
+	i := b.xoff + x
+	return uint32(b.pix[y*b.stride+i>>3]>>uint(7-i&7)) & 1
+}
+
+func (b *jbBitmap) set(x, y int, v uint8) {
+	if x < 0 || x >= b.w || y < 0 || y >= b.h {
+		return
+	}
+	i := b.xoff + x
+	mask := uint8(0x80) >> uint(i&7)
+	if v != 0 {
+		b.pix[y*b.stride+i>>3] |= mask
+	} else {
+		b.pix[y*b.stride+i>>3] &^= mask
+	}
 }
 
 func (b *jbBitmap) fill(v uint8) {
+	fill := uint8(0)
+	if v != 0 {
+		fill = 0xff
+	}
+	if b.xoff == 0 && b.w == b.stride*8 {
+		for i := range b.pix {
+			b.pix[i] = fill
+		}
+		return
+	}
 	for y := 0; y < b.h; y++ {
-		r := b.row(y)
-		for x := range r {
-			r[x] = v
+		for x := 0; x < b.w; x++ {
+			b.set(x, y, v)
 		}
 	}
 }
 
 // sub returns the columns [x0, x1) of b, sharing its samples.
 func (b *jbBitmap) sub(x0, x1 int) *jbBitmap {
-	return &jbBitmap{w: x1 - x0, h: b.h, stride: b.stride, pix: b.pix[x0:]}
+	return &jbBitmap{w: x1 - x0, h: b.h, stride: b.stride, xoff: b.xoff + x0, pix: b.pix}
 }
 
 const (
@@ -259,15 +300,18 @@ func (c *jbCoder) bitmapTemplate0(w, h int) (*jbBitmap, error) {
 	}
 	const keep = 0x7bf7
 	ctx := c.generic()
-	get := func(row []uint8, i int) uint32 {
-		if i < len(row) {
-			return uint32(row[i])
+	// The two rows above are read through their own bytes rather than through
+	// at: the label carries the rest of the window along by shifting, so the
+	// only pixels this asks for are the two arriving at the right of it.
+	get := func(r []uint8, x int) uint32 {
+		if r == nil || x >= w {
+			return 0
 		}
-		return 0
+		return uint32(r[x>>3]>>uint(7-x&7)) & 1
 	}
 	for i := 0; i < h; i++ {
 		row := bm.row(i)
-		row1, row2 := row, row
+		var row1, row2 []uint8
 		if i >= 1 {
 			row1 = bm.row(i - 1)
 		}
@@ -277,16 +321,11 @@ func (c *jbCoder) bitmapTemplate0(w, h int) (*jbBitmap, error) {
 		label := get(row2, 0)<<13 | get(row2, 1)<<12 | get(row2, 2)<<11 |
 			get(row1, 0)<<7 | get(row1, 1)<<6 | get(row1, 2)<<5 | get(row1, 3)<<4
 		for j := 0; j < w; j++ {
-			pixel := uint8(c.mq.ReadBit(ctx, label))
-			row[j] = pixel
-			label = (label & keep) << 1
-			if j+3 < w {
-				label |= uint32(row2[j+3]) << 11
+			pixel := uint32(c.mq.ReadBit(ctx, label))
+			if pixel != 0 {
+				row[j>>3] |= 0x80 >> uint(j&7)
 			}
-			if j+4 < w {
-				label |= uint32(row1[j+4]) << 4
-			}
-			label |= uint32(pixel)
+			label = (label&keep)<<1 | get(row2, j+3)<<11 | get(row1, j+4)<<4 | pixel
 		}
 	}
 	return bm, nil
@@ -364,13 +403,12 @@ func (c *jbCoder) genericBitmap(w, h, template int, prediction bool, skip *jbBit
 		row := bm.row(i)
 		for j := 0; j < w; j++ {
 			if skip != nil && skip.at(j, i) != 0 {
-				row[j] = 0
 				continue
 			}
 			if j >= insideLeft && j < insideRight && i >= insideTop && i < insideBottom {
 				label = (label << 1) & reuse
 				for k := 0; k < nc; k++ {
-					if bm.pix[(i+changeY[k])*bm.stride+j+changeX[k]] != 0 {
+					if bm.bitAt(j+changeX[k], i+changeY[k]) != 0 {
 						label |= changeBit[k]
 					}
 				}
@@ -382,7 +420,9 @@ func (c *jbCoder) genericBitmap(w, h, template int, prediction bool, skip *jbBit
 					shift--
 				}
 			}
-			row[j] = uint8(c.mq.ReadBit(ctx, label))
+			if c.mq.ReadBit(ctx, label) != 0 {
+				row[j>>3] |= 0x80 >> uint(j&7)
+			}
 		}
 	}
 	return bm, nil
@@ -415,13 +455,12 @@ func (c *jbCoder) refinementBitmap(w, h, template int, ref *jbBitmap, dx, dy int
 		if prediction {
 			ltp ^= c.mq.ReadBit(ctx, pseudo)
 		}
-		row := bm.row(i)
 		for j := 0; j < w; j++ {
 			if ltp != 0 {
 				// 6.3.5.6, a pixel whose reference neighborhood is
 				// uniform takes that value without a decision.
 				if v, ok := jbTypical(ref, j-dx, i-dy); ok {
-					row[j] = v
+					bm.set(j, i, v)
 					continue
 				}
 			}
@@ -432,7 +471,7 @@ func (c *jbCoder) refinementBitmap(w, h, template int, ref *jbBitmap, dx, dy int
 			for _, p := range reference {
 				label = label<<1 | uint32(ref.at(j+int(p.x)-dx, i+int(p.y)-dy))
 			}
-			row[j] = uint8(c.mq.ReadBit(ctx, label))
+			bm.set(j, i, uint8(c.mq.ReadBit(ctx, label)))
 		}
 	}
 	return bm, nil
@@ -874,26 +913,23 @@ func jbStandardTable(n int) (*jbHuffTable, error) {
 
 // jbCombineRow applies one of the five region combination operators of 6.2.2
 // to a run of pixels.
-func jbCombineRow(dst, src []uint8, op int) {
-	switch op {
-	case 0:
-		for i, v := range src {
-			dst[i] |= v
+// jbCombine composites the columns [x0, x1) of row sy of src onto row dy of
+// dst, starting at column x + x0.
+func jbCombine(dst, src *jbBitmap, x, dy, sy, x0, x1, op int) {
+	for j := x0; j < x1; j++ {
+		v := src.at(j, sy)
+		d := dst.at(x+j, dy)
+		switch op {
+		case 0:
+			v = d | v
+		case 1:
+			v = d & v
+		case 2:
+			v = d ^ v
+		case 3:
+			v = ^(d ^ v) & 1
 		}
-	case 1:
-		for i, v := range src {
-			dst[i] &= v
-		}
-	case 2:
-		for i, v := range src {
-			dst[i] ^= v
-		}
-	case 3:
-		for i, v := range src {
-			dst[i] = ^(dst[i] ^ v) & 1
-		}
-	default:
-		copy(dst, src)
+		dst.set(x+j, dy, v)
 	}
 }
 
@@ -908,7 +944,7 @@ func (dst *jbBitmap) draw(src *jbBitmap, x, y, op int) {
 		if ty < 0 || ty >= dst.h {
 			continue
 		}
-		jbCombineRow(dst.row(ty)[x+x0:x+x1], src.row(i)[x0:x1], op)
+		jbCombine(dst, src, x, ty, i, x0, x1, op)
 	}
 }
 
@@ -1339,9 +1375,8 @@ func jbUncompressedBitmap(r *jbReader, w, h int) (*jbBitmap, error) {
 		return nil, err
 	}
 	for y := 0; y < h; y++ {
-		row := bm.row(y)
 		for x := 0; x < w; x++ {
-			row[x] = uint8(r.bit())
+			bm.set(x, y, uint8(r.bit()))
 		}
 		r.align()
 	}
@@ -1360,20 +1395,22 @@ func jbMMRBitmap(c *jbCoder, r *jbReader, w, h int, endOfBlock bool) (*jbBitmap,
 	}
 	g := newGroup4(r.next, w, h, endOfBlock)
 	eof := false
+	// Group 4 hands back a byte of eight pixels, which is the bitmap's own
+	// format, so a row is copied rather than taken apart and put back.
+	trailing := uint8(0xff)
+	if r := w & 7; r != 0 {
+		trailing = ^uint8(0) << uint(8-r)
+	}
 	for y := 0; y < h; y++ {
 		row := bm.row(y)
-		shift, cur := -1, 0
-		for x := 0; x < w; x++ {
-			if shift < 0 {
-				cur = g.next()
-				if cur < 0 {
-					cur, eof = 0, true
-				}
-				shift = 7
+		for i := range row {
+			v := g.next()
+			if v < 0 {
+				v, eof = 0, true
 			}
-			row[x] = uint8(cur>>uint(shift)) & 1
-			shift--
+			row[i] = uint8(v)
 		}
+		row[len(row)-1] &= trailing
 	}
 	if endOfBlock && !eof {
 		for i := 0; i < 5; i++ {
@@ -1454,12 +1491,11 @@ func jbHalftoneRegion(p *jbHalftone, patterns []*jbBitmap, c *jbCoder, r *jbRead
 			return nil, err
 		}
 		for m := 0; m < p.gridH; m++ {
-			row := skip.row(m)
 			for n := 0; n < p.gridW; n++ {
 				x := (int(p.gridX) + m*p.vectorY + n*p.vectorX) >> 8
 				y := (int(p.gridY) + m*p.vectorX - n*p.vectorY) >> 8
 				if x+patW <= 0 || x >= p.regionW || y+patH <= 0 || y >= p.regionH {
-					row[n] = 1
+					skip.set(n, m, 1)
 				}
 			}
 		}
@@ -1495,12 +1531,12 @@ func jbHalftoneRegion(p *jbHalftone, patterns []*jbBitmap, c *jbCoder, r *jbRead
 	// 6.6.5.2 Rendering the patterns.
 	for m := 0; m < p.gridH; m++ {
 		for n := 0; n < p.gridW; n++ {
-			if skip != nil && skip.row(m)[n] != 0 {
+			if skip != nil && skip.at(n, m) != 0 {
 				continue
 			}
 			bit, index := uint8(0), 0
 			for j := planes - 1; j >= 0; j-- {
-				bit ^= gray[j].row(m)[n]
+				bit ^= gray[j].at(n, m)
 				index |= int(bit) << uint(j)
 			}
 			if index >= len(patterns) {
@@ -1671,7 +1707,6 @@ func (p *jbPage) draw(info jbRegionInfo, bm *jbBitmap, op int) {
 		if y < 0 || y >= p.h {
 			continue
 		}
-		row := bm.row(i)
 		base := y * p.stride
 		for j := 0; j < bm.w; j++ {
 			x := info.x + j
@@ -1680,7 +1715,7 @@ func (p *jbPage) draw(info jbRegionInfo, bm *jbBitmap, op int) {
 			}
 			off := base + x>>3
 			mask := uint8(0x80) >> uint(x&7)
-			set := row[j] != 0
+			set := bm.at(j, i) != 0
 			switch op {
 			case 0:
 				if set {
@@ -1723,7 +1758,6 @@ func (p *jbPage) extract(info jbRegionInfo) (*jbBitmap, error) {
 		if y < 0 || y >= p.h {
 			continue
 		}
-		row := bm.row(i)
 		base := y * p.stride
 		for j := 0; j < info.w; j++ {
 			x := info.x + j
@@ -1731,7 +1765,7 @@ func (p *jbPage) extract(info jbRegionInfo) (*jbBitmap, error) {
 				continue
 			}
 			if p.buf[base+x>>3]&(uint8(0x80)>>uint(x&7)) != 0 {
-				row[j] = 1
+				bm.set(j, i, 1)
 			}
 		}
 	}
