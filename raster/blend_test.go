@@ -166,3 +166,28 @@ func TestBlendOverAlphaUnion(t *testing.T) {
 		}
 	}
 }
+
+// TestUnpremultiplyTable holds the reciprocal table to the division it stands
+// in for, over every alpha and every sample, including the two ends the table
+// absorbed: an opaque pixel comes back unchanged and a clear one comes back
+// zero.
+func TestUnpremultiplyTable(t *testing.T) {
+	out := make([]uint8, 1)
+	src := make([]uint8, 1)
+	for a := range 256 {
+		for v := range 256 {
+			src[0] = uint8(v)
+			unpremultiply(out, src, uint8(a))
+			want := uint8(0)
+			switch {
+			case a == 255:
+				want = uint8(v)
+			case a > 0:
+				want = uint8(min(255, uint32(v)*(255*256/uint32(a)+1)>>8))
+			}
+			if out[0] != want {
+				t.Fatalf("alpha %d sample %d unpremultiplies to %d, want %d", a, v, out[0], want)
+			}
+		}
+	}
+}

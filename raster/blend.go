@@ -126,21 +126,21 @@ func blendPixel(p *Pixmap, dst, src []uint8, sa uint8, n int, mode BlendMode, bu
 
 // unpremultiply divides a premultiplied pixel by its own alpha.
 func unpremultiply(out, src []uint8, a uint8) {
-	if a == 255 {
-		copy(out, src)
-		return
-	}
-	if a == 0 {
-		clear(out)
-		return
-	}
-	scale := 255*256/uint32(a) + 1
+	scale := unpremulScale[a]
 	for c := range out {
 		v := uint32(src[c]) * scale >> 8
 		if v > 255 {
 			v = 255
 		}
 		out[c] = uint8(v)
+	}
+}
+
+var unpremulScale [256]uint32
+
+func init() {
+	for a := 1; a < 256; a++ {
+		unpremulScale[a] = 255*256/uint32(a) + 1
 	}
 }
 
