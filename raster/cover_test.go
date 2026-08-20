@@ -141,3 +141,48 @@ func BenchmarkCoverBlend(b *testing.B) {
 		}
 	}
 }
+
+func bilinearInput(n, cols, seed int) []uint16 {
+	col := make([]uint16, cols*n+bilinearSlack)
+	s := uint32(seed)*2654435761 + 1
+	for i := range cols * n {
+		s = s*1664525 + 1013904223
+		col[i] = uint16(s>>16) % 65281
+	}
+	return col
+}
+
+// TestBilinearSpanMatchesScalar walks the span the way bilinearRow sets it up,
+// with the column table covering exactly the columns the span reaches.
+func TestBilinearSpanMatchesScalar(t *testing.T) {
+	ucoord := func(x int, a, cu, e float32) float32 {
+		return float32(a*(float32(x)+0.5)) + cu + e - 0.5
+	}
+	eachTier(t, func(t *testing.T) {
+		for n := 1; n <= 5; n++ {
+			for _, w := range []int{1, 2, 4, 5, 7, 8, 9, 16, 17, 33, 64} {
+				for _, a := range []float32{0.03125, 0.25, 0.5, 0.9, -0.25, -0.75} {
+					for _, cu := range []float32{0, 3.5, -1.25} {
+						const x, e = 5, 0.75
+						k0 := ifloor32(ucoord(x, a, cu, e))
+						k1 := ifloor32(ucoord(x+w-1, a, cu, e))
+						k0, k1 = min(k0, k1), max(k0, k1)
+						cols := k1 - k0 + 2
+						col := bilinearInput(n, cols, w*13+n)
+						got := make([]uint8, w*n+8)
+						want := make([]uint8, w*n+8)
+						for i := w * n; i < len(got); i++ {
+							got[i], want[i] = 0xA5, 0xA5
+						}
+						bilinearSpanScalar(want, col, w, n, k0, x, a, cu, e)
+						bilinearSpan(got, col, w, n, k0, x, a, cu, e)
+						if !bytes.Equal(got, want) {
+							t.Fatalf("n=%d w=%d a=%v cu=%v:\n got %v\nwant %v",
+								n, w, a, cu, got, want)
+						}
+					}
+				}
+			}
+		}
+	})
+}

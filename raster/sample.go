@@ -233,19 +233,7 @@ func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 	k0 := min(e0, e1)
 	if cols := max(e0, e1) - k0 + 2; cols < w {
 		col := b.column(r0, r1, k0, cols, n, iv, fv)
-		for i := range w {
-			u := b.ucoord(x+i, cu)
-			k := ifloor32(u)
-			fu := uint32((u - float32(k)) * 256)
-			iu := 256 - fu
-			i0 := (k - k0) * n
-			a0 := col[i0 : i0+n : i0+n]
-			a1 := col[i0+n : i0+n+n : i0+n+n]
-			p := out[i*n : i*n+n : i*n+n]
-			for c, s := range a0 {
-				p[c] = uint8((uint32(s)*iu + uint32(a1[c])*fu + 1<<15) >> 16)
-			}
-		}
+		bilinearSpan(out, col, w, n, k0, x, b.inv.A, cu, b.inv.E)
 		return
 	}
 
@@ -272,7 +260,8 @@ func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 // ucoord is where a destination pixel lands along the source row, less the
 // half pixel the sample grid is offset by. The sum keeps the association the
 // general path has, because a float32 sum that reassociates lands on a
-// different sample at the seams.
+// different sample at the seams, and it is the same sum bilinearSpanScalar
+// makes.
 func (b *imageBlitter) ucoord(x int, cu float32) float32 {
 	return float32(b.inv.A*(float32(x)+0.5)) + cu + b.inv.E - 0.5
 }
@@ -285,8 +274,8 @@ func (b *imageBlitter) ucoord(x int, cu float32) float32 {
 // is exact and is rounded once, where the horizontal weights are applied.
 func (b *imageBlitter) column(r0, r1 []uint8, k0, cols, n int, iv, fv uint32) []uint16 {
 	m := cols * n
-	if cap(b.col) < m {
-		b.col = make([]uint16, m)
+	if cap(b.col) < m+bilinearSlack {
+		b.col = make([]uint16, m+bilinearSlack)
 	}
 	col := b.col[:m:m]
 	hi := b.src.W - 1
