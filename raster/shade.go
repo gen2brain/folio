@@ -148,22 +148,34 @@ type GradientSpec struct {
 // shading and an SVG linearGradient or radialGradient all evaluate to, which
 // is why it is here and not in the document layer.
 type Gradient struct {
-	lut []uint8
-	n   int
-	inv Matrix
+	lut    []uint8
+	n      int
+	p      gradParams
+	radial bool
+	linear bool
+	ext0   bool
+	ext1   bool
+}
 
-	x0, y0, r0 float32
-	dx, dy, dr float32
-	// a is the quadratic's leading coefficient and invA its reciprocal, r0dr
-	// and r0sq the constant terms of the other two, and invLen2 the reciprocal
-	// of the axis length squared, which is what an axial gradient needs
-	// instead.
-	a, invA    float32
-	r0dr, r0sq float32
-	invLen2    float32
-	radial     bool
-	linear     bool
-	ext0, ext1 bool
+// gradParams is everything the parameter of a point depends on, in one block
+// of four byte fields so that a kernel can read it by offset. a is the
+// quadratic's leading coefficient and invA its reciprocal, r0dr and r0sq the
+// constant terms of the other two, invLen2 the reciprocal of the axis length
+// squared, which is what an axial gradient needs instead, and sgn which root
+// of the quadratic comes first. lo and hi are what the parameter is tested
+// against: zero and one, or an infinity where the gradient extends past that
+// end, which is the extend rule written as a comparison rather than a flag.
+type gradParams struct {
+	ia, ib, ic, id float32
+	ie, if_        float32
+	x0, y0         float32
+	dx, dy         float32
+	r0, dr         float32
+	a, invA        float32
+	r0dr, r0sq     float32
+	invLen2        float32
+	sgn            float32
+	lo, hi         float32
 }
 
 // NewGradient prepares a gradient for drawing, nil if it degenerates to
@@ -175,28 +187,44 @@ func NewGradient(s GradientSpec) *Gradient {
 		return nil
 	}
 	g := &Gradient{
-		lut: s.LUT, n: s.N, inv: inv,
-		x0: s.C0.X, y0: s.C0.Y, r0: s.R0,
-		dx: s.C1.X - s.C0.X, dy: s.C1.Y - s.C0.Y, dr: s.R1 - s.R0,
+		lut: s.LUT, n: s.N,
 		radial: s.Radial,
 		ext0:   s.Ext0, ext1: s.Ext1,
+		p: gradParams{
+			ia: inv.A, ib: inv.B, ic: inv.C, id: inv.D,
+			ie: inv.E, if_: inv.F,
+			x0: s.C0.X, y0: s.C0.Y,
+			dx: s.C1.X - s.C0.X, dy: s.C1.Y - s.C0.Y,
+			r0: s.R0, dr: s.R1 - s.R0,
+			sgn: 1,
+			lo:  0, hi: 1,
+		},
 	}
-	dx2 := float32(g.dx * g.dx)
-	dy2 := float32(g.dy * g.dy)
-	dr2 := float32(g.dr * g.dr)
+	if s.Ext0 {
+		g.p.lo = float32(math.Inf(-1))
+	}
+	if s.Ext1 {
+		g.p.hi = float32(math.Inf(1))
+	}
+	dx2 := float32(g.p.dx * g.p.dx)
+	dy2 := float32(g.p.dy * g.p.dy)
+	dr2 := float32(g.p.dr * g.p.dr)
 	if !g.radial {
 		if dx2+dy2 == 0 {
 			return nil
 		}
-		g.invLen2 = 1 / (dx2 + dy2)
+		g.p.invLen2 = 1 / (dx2 + dy2)
 		return g
 	}
-	g.a = dx2 + dy2 - dr2
-	g.r0dr = float32(g.r0 * g.dr)
-	g.r0sq = float32(g.r0 * g.r0)
-	g.linear = abs32(g.a) <= 1e-6*(dx2+dy2+dr2)
+	g.p.a = dx2 + dy2 - dr2
+	g.p.r0dr = float32(g.p.r0 * g.p.dr)
+	g.p.r0sq = float32(g.p.r0 * g.p.r0)
+	g.linear = abs32(g.p.a) <= 1e-6*(dx2+dy2+dr2)
 	if !g.linear {
-		g.invA = 1 / g.a
+		g.p.invA = 1 / g.p.a
+		if g.p.a < 0 {
+			g.p.sgn = -1
+		}
 	}
 	return g
 }
@@ -221,53 +249,72 @@ func (g *Gradient) ShadeRow(dst *Pixmap, x, y, w int) {
 
 // shade walks a span, writing m color components and an opaque alpha at ai
 // into every n bytes. blank says what an uncovered pixel gets: the span form
-// zeroes it, the row form leaves it. The two kinds of gradient are separate
-// loops because which one it is does not change along a span, and the axial
-// one is a dot product where the radial one is a quadratic.
+// zeroes it, the row form leaves it. The parameter of a whole run comes out
+// of index first, because that is the arithmetic and it has no branch in it.
 func (g *Gradient) shade(x, y, w int, out []uint8, n, m, ai int, blank bool) {
-	fy := float32(y) + 0.5
-	if g.radial {
-		for i := 0; i < w; i++ {
-			fx := float32(x+i) + 0.5
-			u := float32(g.inv.A*fx) + float32(g.inv.C*fy) + g.inv.E
-			v := float32(g.inv.B*fx) + float32(g.inv.D*fy) + g.inv.F
-			s, ok := g.radialParam(u-g.x0, v-g.y0)
-			g.put(out[:n:n], s, m, ai, ok, blank)
+	var buf [64]int32
+	for w > 0 {
+		k := min(w, len(buf))
+		g.index(x, y, k, buf[:k])
+		for _, e := range buf[:k] {
+			p := out[:n:n]
+			switch {
+			case e >= 0:
+				j := int(e) * g.n
+				for c, v := range g.lut[j : j+m : j+m] {
+					p[c] = v
+				}
+				if ai >= 0 {
+					p[ai] = 255
+				}
+			case blank:
+				for c := range p {
+					p[c] = 0
+				}
+			}
 			out = out[n:]
 		}
-		return
-	}
-	for i := 0; i < w; i++ {
-		fx := float32(x+i) + 0.5
-		u := float32(g.inv.A*fx) + float32(g.inv.C*fy) + g.inv.E
-		v := float32(g.inv.B*fx) + float32(g.inv.D*fy) + g.inv.F
-		s, ok := g.axialParam(u-g.x0, v-g.y0)
-		g.put(out[:n:n], s, m, ai, ok, blank)
-		out = out[n:]
+		x += k
+		w -= k
 	}
 }
 
-func (g *Gradient) put(out []uint8, s float32, m, ai int, ok, blank bool) {
-	if !ok {
-		if blank {
-			for c := range out {
-				out[c] = 0
+// indexScalar writes the entry of the color table each pixel of the span
+// takes, and -1 where the gradient does not reach it. It is the definition
+// every kernel is checked against.
+func (g *Gradient) indexScalar(x, y, w int, idx []int32) {
+	p := &g.p
+	fy := float32(y) + 0.5
+	cu := float32(p.ic * fy)
+	cv := float32(p.id * fy)
+	if g.radial {
+		for i := range idx[:w] {
+			fx := float32(x+i) + 0.5
+			u := float32(p.ia*fx) + cu + p.ie
+			v := float32(p.ib*fx) + cv + p.if_
+			if s, ok := g.radialParam(u-p.x0, v-p.y0); ok {
+				idx[i] = int32(s*255 + 0.5)
+			} else {
+				idx[i] = -1
 			}
 		}
 		return
 	}
-	k := int(s*255+0.5) * g.n
-	for c, v := range g.lut[k : k+m : k+m] {
-		out[c] = v
-	}
-	if ai >= 0 {
-		out[ai] = 255
+	for i := range idx[:w] {
+		fx := float32(x+i) + 0.5
+		u := float32(p.ia*fx) + cu + p.ie
+		v := float32(p.ib*fx) + cv + p.if_
+		if s, ok := g.axialParam(u-p.x0, v-p.y0); ok {
+			idx[i] = int32(s*255 + 0.5)
+		} else {
+			idx[i] = -1
+		}
 	}
 }
 
 // axialParam is where the point falls along the axis, in zero to one.
 func (g *Gradient) axialParam(px, py float32) (float32, bool) {
-	s := (float32(px*g.dx) + float32(py*g.dy)) * g.invLen2
+	s := (float32(px*g.p.dx) + float32(py*g.p.dy)) * g.p.invLen2
 	if s < 0 {
 		return 0, g.ext0
 	}
@@ -280,23 +327,20 @@ func (g *Gradient) axialParam(px, py float32) (float32, bool) {
 // radialParam solves the quadratic for the larger of the two circles that
 // reach the point, and takes the smaller one where the larger is off the end.
 func (g *Gradient) radialParam(px, py float32) (float32, bool) {
-	b := float32(px*g.dx) + float32(py*g.dy) + g.r0dr
-	c := float32(px*px) + float32(py*py) - g.r0sq
+	b := float32(px*g.p.dx) + float32(py*g.p.dy) + g.p.r0dr
+	c := float32(px*px) + float32(py*py) - g.p.r0sq
 	if g.linear {
 		if b == 0 {
 			return 0, false
 		}
 		return g.clampRadial(c / (2 * b))
 	}
-	disc := float32(b*b) - float32(g.a*c)
+	disc := float32(b*b) - float32(g.p.a*c)
 	if disc < 0 {
 		return 0, false
 	}
-	sq := float32(math.Sqrt(float64(disc)))
-	s0, s1 := float32((b+sq)*g.invA), float32((b-sq)*g.invA)
-	if g.a < 0 {
-		s0, s1 = s1, s0
-	}
+	sq := float32(math.Sqrt(float64(disc))) * g.p.sgn
+	s0, s1 := float32((b+sq)*g.p.invA), float32((b-sq)*g.p.invA)
 	if s, ok := g.clampRadial(s0); ok {
 		return s, true
 	}
@@ -306,7 +350,7 @@ func (g *Gradient) radialParam(px, py float32) (float32, bool) {
 // clampRadial applies the extend rules, and rejects a radius the parameter
 // would make negative.
 func (g *Gradient) clampRadial(s float32) (float32, bool) {
-	if g.r0+float32(s*g.dr) < 0 {
+	if g.p.r0+float32(s*g.p.dr) < 0 {
 		return 0, false
 	}
 	if s < 0 {

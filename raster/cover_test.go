@@ -186,3 +186,43 @@ func TestBilinearSpanMatchesScalar(t *testing.T) {
 		}
 	})
 }
+
+// TestGradientIndexMatchesScalar walks a radial gradient's parameter over a
+// span the way shade does, against the scalar it stands in for.
+func TestGradientIndexMatchesScalar(t *testing.T) {
+	lut := make([]uint8, 256*3)
+	specs := []GradientSpec{
+		{C0: Point{16, 12}, R0: 2, C1: Point{18, 13}, R1: 14, Radial: true},
+		{C0: Point{16, 12}, R0: 2, C1: Point{18, 13}, R1: 14, Radial: true, Ext0: true},
+		{C0: Point{16, 12}, R0: 2, C1: Point{18, 13}, R1: 14, Radial: true, Ext1: true},
+		{C0: Point{16, 12}, R0: 2, C1: Point{18, 13}, R1: 14, Radial: true, Ext0: true, Ext1: true},
+		{C0: Point{16, 12}, R0: 14, C1: Point{18, 13}, R1: 2, Radial: true, Ext0: true},
+		{C0: Point{9, 9}, R0: 0, C1: Point{9, 9}, R1: 20, Radial: true},
+		{C0: Point{-40, 3}, R0: 1, C1: Point{60, 90}, R1: 3, Radial: true, Ext1: true},
+	}
+	eachTier(t, func(t *testing.T) {
+		for i, spec := range specs {
+			for _, m := range []Matrix{Identity, Scale(1.3, 0.9), Rotate(20), {0.5, 0.2, -0.3, 0.7, 4, -9}} {
+				spec.Matrix, spec.LUT, spec.N = m, lut, 3
+				g := NewGradient(spec)
+				if g == nil {
+					t.Fatalf("spec %d built nothing", i)
+				}
+				for _, w := range []int{1, 3, 4, 5, 8, 17, 64} {
+					for _, y := range []int{-3, 0, 11} {
+						got := make([]int32, w)
+						want := make([]int32, w)
+						g.indexScalar(-7, y, w, want)
+						g.index(-7, y, w, got)
+						for k := range got {
+							if got[k] != want[k] {
+								t.Fatalf("spec %d m=%v w=%d y=%d pixel %d: got %d, want %d",
+									i, m, w, y, k, got[k], want[k])
+							}
+						}
+					}
+				}
+			}
+		}
+	})
+}

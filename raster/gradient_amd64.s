@@ -1,0 +1,185 @@
+//go:build amd64 && !noasm
+
+#include "textflag.h"
+
+#define IA      0(R8)
+#define IB      16(R8)
+#define IE      64(R8)
+#define IF      80(R8)
+#define GX0     96(R8)
+#define GY0     112(R8)
+#define GDX     128(R8)
+#define GDY     144(R8)
+#define GR0     160(R8)
+#define GDR     176(R8)
+#define GA      192(R8)
+#define INVA    208(R8)
+#define R0DR    224(R8)
+#define R0SQ    240(R8)
+#define SGN     272(R8)
+#define GLO     288(R8)
+#define GHI     304(R8)
+#define GCU     320(R8)
+#define GCV     336(R8)
+#define HALF    352(R8)
+#define F255    368(R8)
+#define ONE     384(R8)
+#define FOUR    400(R8)
+#define SEQ     416(R8)
+
+// func gradRadialSSE(p *gradParams, cu, cv float32, x int, idx *int32, w int)
+TEXT ·gradRadialSSE(SB), NOSPLIT, $448-40
+	MOVQ p+0(FP), BX
+	MOVQ idx+24(FP), DI
+	MOVQ w+32(FP), CX
+	SHRQ $2, CX
+	JZ   done
+
+	LEAQ block-448(SP), R8
+	ADDQ $15, R8
+	ANDQ $-16, R8
+
+	XORQ AX, AX
+
+bcast:
+	MOVSS  (BX)(AX*4), X0
+	SHUFPS $0, X0, X0
+	MOVQ   AX, DX
+	SHLQ   $4, DX
+	MOVUPS X0, (R8)(DX*1)
+	INCQ   AX
+	CMPQ   AX, $20
+	JLT    bcast
+
+	MOVSS  cu+8(FP), X0
+	SHUFPS $0, X0, X0
+	MOVUPS X0, GCU
+	MOVSS  cv+12(FP), X0
+	SHUFPS $0, X0, X0
+	MOVUPS X0, GCV
+
+	MOVL   $0x3F000000, AX
+	MOVD   AX, X0
+	SHUFPS $0, X0, X0
+	MOVUPS X0, HALF
+	MOVL   $0x437F0000, AX
+	MOVD   AX, X0
+	SHUFPS $0, X0, X0
+	MOVUPS X0, F255
+	MOVL   $0x3F800000, AX
+	MOVD   AX, X0
+	SHUFPS $0, X0, X0
+	MOVUPS X0, ONE
+	MOVL   $4, AX
+	MOVD   AX, X0
+	PSHUFD $0, X0, X0
+	MOVUPS X0, FOUR
+
+	MOVL   $0, AX
+	MOVD   AX, X0
+	MOVL   $1, AX
+	PINSRD $1, AX, X0
+	MOVL   $2, AX
+	PINSRD $2, AX, X0
+	MOVL   $3, AX
+	PINSRD $3, AX, X0
+	MOVUPS X0, SEQ
+
+	MOVQ   x+16(FP), SI
+	MOVL   SI, AX
+	MOVD   AX, X15
+	PSHUFD $0, X15, X15
+	PADDL  SEQ, X15
+
+loop:
+	CVTPL2PS X15, X0
+	ADDPS    HALF, X0
+
+	MOVUPS X0, X1
+	MULPS  IA, X1
+	ADDPS  GCU, X1
+	ADDPS  IE, X1
+	SUBPS  GX0, X1
+
+	MOVUPS X0, X2
+	MULPS  IB, X2
+	ADDPS  GCV, X2
+	ADDPS  IF, X2
+	SUBPS  GY0, X2
+
+	MOVUPS X1, X3
+	MULPS  GDX, X3
+	MOVUPS X2, X4
+	MULPS  GDY, X4
+	ADDPS  X4, X3
+	ADDPS  R0DR, X3
+
+	MULPS X1, X1
+	MULPS X2, X2
+	ADDPS X2, X1
+	SUBPS R0SQ, X1
+
+	MOVUPS X3, X5
+	MULPS  X3, X5
+	MULPS  GA, X1
+	SUBPS  X1, X5
+	SQRTPS X5, X5
+	MULPS  SGN, X5
+
+	MOVUPS X3, X6
+	ADDPS  X5, X6
+	MULPS  INVA, X6
+	SUBPS  X5, X3
+	MULPS  INVA, X3
+
+	MOVUPS X6, X7
+	MULPS  GDR, X7
+	ADDPS  GR0, X7
+	PXOR   X8, X8
+	CMPPS  X7, X8, $2
+	MOVUPS GLO, X9
+	CMPPS  X6, X9, $2
+	ANDPS  X9, X8
+	MOVUPS X6, X10
+	CMPPS  GHI, X10, $2
+	ANDPS  X10, X8
+
+	MOVUPS X3, X7
+	MULPS  GDR, X7
+	ADDPS  GR0, X7
+	PXOR   X12, X12
+	CMPPS  X7, X12, $2
+	MOVUPS GLO, X13
+	CMPPS  X3, X13, $2
+	ANDPS  X13, X12
+	MOVUPS X3, X14
+	CMPPS  GHI, X14, $2
+	ANDPS  X14, X12
+
+	ANDPS  X8, X6
+	MOVUPS X8, X13
+	ANDNPS X3, X13
+	ORPS   X13, X6
+	ORPS   X12, X8
+
+	PXOR  X11, X11
+	MAXPS X11, X6
+	MINPS ONE, X6
+
+	MULPS     F255, X6
+	ADDPS     HALF, X6
+	CVTTPS2PL X6, X6
+
+	PCMPEQL X13, X13
+	PAND    X8, X6
+	PANDN   X13, X8
+	POR     X8, X6
+	MOVUPS  X6, (DI)
+
+	ADDQ  $16, DI
+	PADDL FOUR, X15
+	SUBQ  $1, CX
+	JNZ   loop
+
+done:
+	RET
