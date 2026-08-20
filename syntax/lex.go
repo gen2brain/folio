@@ -269,6 +269,31 @@ func (l *Lexer) numberValue(neg bool, intPart int64, frac float64, isReal bool, 
 
 // literalString reads a (...) string. The opening parenthesis is consumed.
 func (l *Lexer) literalString() String {
+	if s, ok := l.plainString(); ok {
+		return s
+	}
+	return l.escapedString()
+}
+
+// plainString takes a string that is a run of the input as one, rather than
+// copying it a byte at a time. Almost every string in a content stream is: an
+// escape, a nested parenthesis or a bare carriage return, which the reader
+// turns into a newline, are what make a copy necessary.
+func (l *Lexer) plainString() (String, bool) {
+	for i := l.pos; i < len(l.buf); i++ {
+		switch l.buf[i] {
+		case ')':
+			s := String(l.buf[l.pos:i])
+			l.pos = i + 1
+			return s, true
+		case '\\', '(', '\r':
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+func (l *Lexer) escapedString() String {
 	var out []byte
 	depth := 1
 	for l.pos < len(l.buf) {
