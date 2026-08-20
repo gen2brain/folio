@@ -1,0 +1,178 @@
+//go:build amd64 && !noasm
+
+#include "textflag.h"
+
+// func coverBlendSSE(dst, src, cover, idxa, idxs *byte, m, step, gn int)
+TEXT ·coverBlendSSE(SB), NOSPLIT, $0-64
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ cover+16(FP), DX
+	MOVQ idxa+24(FP), R8
+	MOVQ idxs+32(FP), R9
+	MOVQ m+40(FP), CX
+	MOVQ step+48(FP), BX
+	MOVQ gn+56(FP), R10
+
+	MOVOU (SI), X15
+	MOVOU (R8), X11
+	MOVOU (R9), X10
+	PXOR  X14, X14
+	PCMPEQB X13, X13
+
+	MOVL    $128, AX
+	MOVD    AX, X12
+	PSHUFLW $0, X12, X12
+	PSHUFD  $0, X12, X12
+
+loop:
+	CMPQ BX, $16
+	JEQ  sse16
+	CMPQ BX, $8
+	JEQ  sse8
+	CMPQ BX, $4
+	JEQ  sse4
+	MOVWLZX (DX), AX
+	MOVQ    AX, X0
+	JMP     ssedone
+
+sse4:
+	MOVL (DX), AX
+	MOVQ AX, X0
+	JMP  ssedone
+
+sse8:
+	MOVQ (DX), AX
+	MOVQ AX, X0
+	JMP  ssedone
+
+sse16:
+	MOVOU (DX), X0
+
+ssedone:
+
+	MOVOU  X0, X1
+	PSHUFB X11, X1
+	MOVOU  X15, X2
+	PSHUFB X10, X2
+	MOVOU  (DI), X3
+
+	MOVOU X1, X4
+	PXOR  X13, X4
+
+	MOVOU     X1, X5
+	PUNPCKLBW X14, X5
+	PUNPCKHBW X14, X1
+	MOVOU     X2, X6
+	PUNPCKLBW X14, X6
+	PUNPCKHBW X14, X2
+	MOVOU     X3, X7
+	PUNPCKLBW X14, X7
+	PUNPCKHBW X14, X3
+	MOVOU     X4, X8
+	PUNPCKLBW X14, X8
+	PUNPCKHBW X14, X4
+
+	PMULLW X5, X6
+	PMULLW X8, X7
+	PADDW  X7, X6
+	PMULLW X1, X2
+	PMULLW X4, X3
+	PADDW  X3, X2
+
+	PADDW X12, X6
+	MOVOU X6, X9
+	PSRLW $8, X9
+	PADDW X9, X6
+	PSRLW $8, X6
+
+	PADDW X12, X2
+	MOVOU X2, X9
+	PSRLW $8, X9
+	PADDW X9, X2
+	PSRLW $8, X2
+
+	PACKUSWB X2, X6
+	MOVOU    X6, (DI)
+
+	ADDQ R10, DI
+	ADDQ BX, DX
+	SUBQ $1, CX
+	JNZ  loop
+
+	RET
+
+// func coverBlendAVX2(dst, src, cover, idxa, idxs *byte, m, step, gn int)
+TEXT ·coverBlendAVX2(SB), NOSPLIT, $0-64
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ cover+16(FP), DX
+	MOVQ idxa+24(FP), R8
+	MOVQ idxs+32(FP), R9
+	MOVQ m+40(FP), CX
+	MOVQ step+48(FP), BX
+	MOVQ gn+56(FP), R10
+
+	VMOVDQU  (SI), X15
+	VMOVDQU  (R8), X11
+	VMOVDQU  (R9), X10
+	VPCMPEQB X13, X13, X13
+
+	MOVL         $128, AX
+	MOVQ         AX, X12
+	VPBROADCASTW X12, Y12
+
+loop:
+	CMPQ BX, $16
+	JEQ  avx16
+	CMPQ BX, $8
+	JEQ  avx8
+	CMPQ BX, $4
+	JEQ  avx4
+	MOVWLZX (DX), AX
+	MOVQ    AX, X0
+	JMP     avxdone
+
+avx4:
+	MOVL (DX), AX
+	MOVQ AX, X0
+	JMP  avxdone
+
+avx8:
+	MOVQ (DX), AX
+	MOVQ AX, X0
+	JMP  avxdone
+
+avx16:
+	MOVOU (DX), X0
+
+avxdone:
+
+	VPSHUFB X11, X0, X1
+	VPSHUFB X10, X15, X2
+	VPXOR   X13, X1, X4
+
+	VPMOVZXBW X1, Y5
+	VPMOVZXBW X2, Y6
+	VPMOVZXBW (DI), Y7
+	VPMOVZXBW X4, Y8
+
+	VPMULLW Y5, Y6, Y6
+	VPMULLW Y8, Y7, Y7
+	VPADDW  Y7, Y6, Y6
+
+	VPADDW Y12, Y6, Y6
+	VPSRLW $8, Y6, Y9
+	VPADDW Y9, Y6, Y6
+	VPSRLW $8, Y6, Y6
+
+	VPACKUSWB Y6, Y6, Y6
+	VPERMQ    $0xD8, Y6, Y6
+	VMOVDQU   X6, (DI)
+
+	ADDQ R10, DI
+	ADDQ BX, DX
+	SUBQ $1, CX
+	JNZ  loop
+
+	VZEROUPPER
+	RET

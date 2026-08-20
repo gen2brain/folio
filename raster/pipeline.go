@@ -70,9 +70,7 @@ func (p *Pixmap) MulMask(m *Pixmap) {
 		clear(row[:x0-p.X])
 		clear(row[x1-p.X:])
 		src := m.Samples[(y-m.Y)*m.Stride+(x0-m.X):]
-		for i, v := range src[:x1-x0] {
-			row[x0-p.X+i] = mul255(row[x0-p.X+i], v)
-		}
+		mulRow(row[x0-p.X:x1-p.X], src[:x1-x0])
 	}
 }
 
@@ -85,22 +83,22 @@ type solidBlitter struct {
 	stride  int
 	base    int
 	comps   int
-	src     [5]uint8
-	n       int
+	lo      int
+	src     [16]uint8
 	alpha   uint8
 }
 
 func (b *solidBlitter) init(dst *Pixmap, paint Paint) {
 	b.dst, b.clip, b.alpha = dst, paint.Clip, paint.Alpha
 	b.samples, b.stride = dst.Samples, dst.Stride
-	b.src = [5]uint8{}
+	b.src = [16]uint8{}
 	copy(b.src[:min(len(paint.Color), dst.N)], paint.Color)
-	b.n = dst.N
+	b.comps = dst.N
 	if dst.Alpha {
-		b.src[b.n] = 255
-		b.n++
+		b.src[b.comps] = 255
+		b.comps++
 	}
-	b.comps = b.n
+	b.lo = coverLimit(b.comps)
 	b.base = -dst.Y*dst.Stride - dst.X*b.comps
 }
 
@@ -116,42 +114,72 @@ func (b *solidBlitter) BlitSolid(x, y, w int, cover uint8) {
 	n := b.comps
 	row := b.samples[b.base+y*b.stride+x*n:][: w*n : w*n]
 	if a == 255 {
-		copy(row, b.src[:b.n])
+		copy(row, b.src[:b.comps])
 		for done := n; done < len(row); {
 			done += copy(row[done:], row[:done])
 		}
 		return
 	}
 	for i := 0; i < len(row); i += n {
-		blendSpan(row[i:i+n], b.src[:b.n], a)
+		blendSpan(row[i:i+n], b.src[:b.comps], a)
 	}
 }
 
 func (b *solidBlitter) BlitCover(x, y int, cover []uint8) {
+	row := b.samples[b.base+y*b.stride+x*b.comps:]
+	if b.clip == nil && b.alpha == 255 {
+		if len(cover) >= b.lo && len(row) >= 16 {
+			coverBlendVec(row, &b.src, cover, b.comps)
+		} else {
+			coverBlendScalar(row, &b.src, cover, b.comps)
+		}
+		return
+	}
 	if b.clip != nil {
 		b.clipped(x, y, len(cover), 0, cover)
 		return
 	}
+	b.blend(row, cover, b.alpha, nil)
+}
+
+// blend composites the source into a row of len(cover) pixels, folding the
+// constant alpha and the clip mask into the coverage a chunk at a time so
+// that the kernel sees one byte per pixel and nothing is allocated.
+func (b *solidBlitter) blend(row, cover []uint8, alpha uint8, mask []uint8) {
 	n := b.comps
-	row := b.samples[b.base+y*b.stride+x*n:]
-	if b.alpha == 255 {
-		for _, c := range cover {
-			if c == 255 {
-				copy(row[:n], b.src[:b.n])
-			} else if c != 0 {
-				blendSpan(row[:n], b.src[:b.n], c)
+	if alpha == 255 && mask == nil {
+		coverBlend(row, &b.src, cover, n)
+		return
+	}
+	if len(cover) < b.lo || len(row) < 16 {
+		for i, c := range cover {
+			a := mul255(alpha, c)
+			if mask != nil {
+				a = mul255(a, mask[i])
+			}
+			if a != 0 {
+				blendSpan(row[:n], b.src[:n], a)
 			}
 			row = row[n:]
 		}
 		return
 	}
-	for _, c := range cover {
-		if a := mul255(b.alpha, c); a == 255 {
-			copy(row[:n], b.src[:b.n])
-		} else if a != 0 {
-			blendSpan(row[:n], b.src[:b.n], a)
+	var buf [256]uint8
+	for len(cover) > 0 {
+		w := min(len(cover), len(buf))
+		a := buf[:w]
+		if alpha == 255 {
+			copy(a, cover[:w])
+		} else {
+			scaleRow(a, cover[:w], alpha)
 		}
-		row = row[n:]
+		if mask != nil {
+			mulRow(a, mask[:w])
+			mask = mask[w:]
+		}
+		coverBlend(row, &b.src, a, n)
+		row = row[w*n:]
+		cover = cover[w:]
 	}
 }
 
@@ -178,20 +206,12 @@ func (b *solidBlitter) clipped(x, y, w int, flat uint8, cover []uint8) {
 		return
 	}
 	mask := b.clip.Samples[cy*b.clip.Stride+cx:][:w]
-	n := b.comps
-	row := b.samples[b.base+y*b.stride+x*n:]
-	for i, m := range mask {
-		a := flat
-		if cover != nil {
-			a = mul255(b.alpha, cover[i])
-		}
-		if a = mul255(a, m); a == 255 {
-			copy(row[:n], b.src[:b.n])
-		} else if a != 0 {
-			blendSpan(row[:n], b.src[:b.n], a)
-		}
-		row = row[n:]
+	row := b.samples[b.base+y*b.stride+x*b.comps:]
+	if cover == nil {
+		b.blend(row, mask, flat, nil)
+		return
 	}
+	b.blend(row, cover[:w], b.alpha, mask)
 }
 
 type maskBlitter struct {
