@@ -55,6 +55,7 @@ type imageBlitter struct {
 	ox, oy   int
 	inv      Matrix
 	span     []uint8
+	col      []uint16
 	color    [5]uint8
 	alpha    uint8
 	smooth   bool
@@ -207,6 +208,14 @@ func (b *imageBlitter) sample(x, y, w int, out []uint8) {
 // change along it, which is what an unrotated image is. The row, its
 // neighbour and the vertical weight come out of the loop, and only the
 // horizontal position is left in it.
+//
+// The four products regroup exactly: iu*(r0*iv + r1*fv) + fu*(r0'*iv +
+// r1'*fv), so the vertical blend of a source column does not depend on which
+// destination pixel reads it and is worth doing once per column instead of
+// once per pixel. That halves the multiplies wherever a column is read more
+// than once, which is every image drawn larger than it is stored, and it is an
+// identity rather than an approximation: the rounding still happens once, at
+// the end.
 func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 	n := b.src.Comps()
 	v -= 0.5
@@ -219,8 +228,29 @@ func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 	iv := 256 - fv
 	hi := b.src.W - 1
 
+	e0 := ifloor32(b.ucoord(x, cu))
+	e1 := ifloor32(b.ucoord(x+w-1, cu))
+	k0 := min(e0, e1)
+	if cols := max(e0, e1) - k0 + 2; cols < w {
+		col := b.column(r0, r1, k0, cols, n, iv, fv)
+		for i := range w {
+			u := b.ucoord(x+i, cu)
+			k := ifloor32(u)
+			fu := uint32((u - float32(k)) * 256)
+			iu := 256 - fu
+			i0 := (k - k0) * n
+			a0 := col[i0 : i0+n : i0+n]
+			a1 := col[i0+n : i0+n+n : i0+n+n]
+			p := out[i*n : i*n+n : i*n+n]
+			for c, s := range a0 {
+				p[c] = uint8((uint32(s)*iu + uint32(a1[c])*fu + 1<<15) >> 16)
+			}
+		}
+		return
+	}
+
 	for i := range w {
-		u := float32(b.inv.A*(float32(x+i)+0.5)) + cu + b.inv.E - 0.5
+		u := b.ucoord(x+i, cu)
 		i0 := ifloor32(u)
 		fu := uint32((u - float32(i0)) * 256)
 		i1 := clampInt(i0+1, 0, hi) * n
@@ -237,6 +267,39 @@ func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 			p[c] = uint8((top*iv + bot*fv + 1<<15) >> 16)
 		}
 	}
+}
+
+// ucoord is where a destination pixel lands along the source row, less the
+// half pixel the sample grid is offset by. The sum keeps the association the
+// general path has, because a float32 sum that reassociates lands on a
+// different sample at the seams.
+func (b *imageBlitter) ucoord(x int, cu float32) float32 {
+	return float32(b.inv.A*(float32(x)+0.5)) + cu + b.inv.E - 0.5
+}
+
+// column blends the two source rows into the one the span reads, over the
+// columns the span reaches whether or not the image has them: an index outside
+// the image repeats the edge here rather than being clamped once per pixel.
+// Nothing overflows, because the weights sum to 256 and the samples are bytes,
+// so a blended column is at most 65280, and no rounding happens here — the sum
+// is exact and is rounded once, where the horizontal weights are applied.
+func (b *imageBlitter) column(r0, r1 []uint8, k0, cols, n int, iv, fv uint32) []uint16 {
+	m := cols * n
+	if cap(b.col) < m {
+		b.col = make([]uint16, m)
+	}
+	col := b.col[:m:m]
+	hi := b.src.W - 1
+	for k := range cols {
+		s := clampInt(k0+k, 0, hi) * n
+		a := r0[s : s+n : s+n]
+		c := r1[s : s+n : s+n]
+		d := col[k*n : k*n+n : k*n+n]
+		for j, v := range a {
+			d[j] = uint16(uint32(v)*iv + uint32(c[j])*fv)
+		}
+	}
+	return col
 }
 
 // nearest reads the sample the point lands in, clamped to the edge.

@@ -1,6 +1,7 @@
 package raster
 
 import (
+	"bytes"
 	"math"
 	"testing"
 )
@@ -377,5 +378,43 @@ func TestShrinkerShortRow(t *testing.T) {
 	}
 	if got := px.Row(1)[0]; got != 0 {
 		t.Errorf("an unfilled row reads %d, want 0", got)
+	}
+}
+
+// TestBilinearRowMatchesGeneral holds the column blend to the four product
+// form it regroups, over every scale that picks one path or the other and
+// both directions along the row.
+func TestBilinearRowMatchesGeneral(t *testing.T) {
+	const sw, sh = 23, 17
+	for _, n := range []int{1, 3, 4} {
+		src := newPixmap(ModelRGB, n, sw, sh, false)
+		seed := uint32(7)
+		for i := range src.Samples {
+			seed = seed*1664525 + 1013904223
+			src.Samples[i] = uint8(seed >> 24)
+		}
+		for _, scale := range []float32{0.31, 0.5, 0.97, 1, 1.03, 2, 3.7, 11} {
+			for _, flip := range []bool{false, true} {
+				for _, off := range []float32{0, 0.25, -3.5, 7.125} {
+					a := scale
+					if flip {
+						a = -scale
+					}
+					w := 40
+					b := imageBlitter{src: src, inv: Matrix{A: a, D: scale, E: off, F: 1.5}}
+					got := make([]uint8, w*n)
+					b.bilinearRow(3, w, 0, 2.5, got)
+
+					want := make([]uint8, w*n)
+					for i := range w {
+						u := b.ucoord(3+i, 0) + 0.5
+						b.bilinear(u, 2.5, want[i*n:])
+					}
+					if !bytes.Equal(got, want) {
+						t.Fatalf("n=%d a=%v off=%v:\n got %v\nwant %v", n, a, off, got, want)
+					}
+				}
+			}
+		}
 	}
 }
