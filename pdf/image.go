@@ -381,6 +381,48 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *
 	return px.Subsample(shrink), nil
 }
 
+// bilevel unpacks a one bit image, which is what a scan is, eight samples at
+// a time through a table of every byte's worth of them. A page of one is a
+// hundred and fifty million samples and the loop that reads them one at a
+// time is the single largest cost in rendering a corpus.
+func (u *unpacker) bilevel(lut []uint8, rowBytes int) {
+	i, px := u.img, u.px
+	n := px.N
+	exp := make([]uint8, 256*8*n)
+	for b := range 256 {
+		for k := range 8 {
+			v := (b >> (7 - k)) & 1
+			copy(exp[(b*8+k)*n:], lut[v*n:(v+1)*n])
+		}
+	}
+	group := 8 * n
+	for y := 0; y < i.Height; y++ {
+		row := u.sh.Row()
+		if row == nil {
+			return
+		}
+		start := y * rowBytes
+		if start >= len(u.data) {
+			return
+		}
+		src := u.data[start:min(start+rowBytes, len(u.data))]
+		width := i.Width * n
+		o := 0
+		for _, b := range src {
+			if o+group > width {
+				break
+			}
+			copy(row[o:o+group], exp[int(b)*group:])
+			o += group
+		}
+		if k := o / group; o < width && k < len(src) {
+			// the last byte of the row holds fewer than eight samples
+			copy(row[o:width], exp[int(src[k])*group:])
+		}
+		u.sh.Commit()
+	}
+}
+
 // unpacker turns packed samples into destination components.
 type unpacker struct {
 	img    *Image
@@ -404,6 +446,10 @@ func (u *unpacker) run() {
 	maxVal := float32(uint32(1)<<uint(u.bpc)) - 1
 
 	if lut := u.table(); lut != nil {
+		if u.bpc == 1 && !px.Alpha && n == px.N {
+			u.bilevel(lut, rowBytes)
+			return
+		}
 		for y := 0; y < i.Height; y++ {
 			row := u.sh.Row()
 			if row == nil {
