@@ -58,70 +58,120 @@ func (p *Pixmap) BlendOver(src *Pixmap, alpha uint8, mode BlendMode) {
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
-	n := min(p.N, src.N)
-	dn, sn := p.Comps(), src.Comps()
-	var buf blendBuf
+	b := blender{
+		model:     p.Model,
+		mode:      mode,
+		alpha:     alpha,
+		separable: mode.Separable(),
+		n:         min(p.N, src.N),
+		pn:        p.N,
+		sn:        src.Comps(),
+		dn:        p.Comps(),
+		sa:        src.N,
+		dalpha:    p.Alpha,
+		salpha:    src.Alpha,
+	}
+	for i := range b.scale {
+		b.scale[i] = mul255(uint8(i), alpha)
+	}
+	sa, dn, sn := b.sa, b.dn, b.sn
 	for y := y0; y < y1; y++ {
 		dst := p.Samples[(y-p.Y)*p.Stride+(x0-p.X)*dn:]
 		row := src.Samples[(y-src.Y)*src.Stride+(x0-src.X)*sn:]
-		for x := x0; x < x1; x++ {
-			if sa := mul255(row[src.N], alpha); sa != 0 {
-				if mode == BlendNormal {
-					normalPixel(p, dst[:dn:dn], row[:sn:sn], alpha, sa, n)
-				} else {
-					blendPixel(p, dst[:dn:dn], row[:sn:sn], sa, n, mode, &buf)
-				}
+		for range x1 - x0 {
+			if a := b.scale[row[sa]]; a != 0 {
+				b.pixel(dst[:dn:dn], row[:sn:sn], a)
 			}
 			dst, row = dst[dn:], row[sn:]
 		}
 	}
 }
 
-// normalPixel composites one premultiplied pixel over another.
-func normalPixel(p *Pixmap, dst, src []uint8, alpha, sa uint8, n int) {
-	isa := 255 - uint32(sa)
-	for c := 0; c < n; c++ {
-		dst[c] = div255(uint32(mul255(src[c], alpha))*255 + uint32(dst[c])*isa)
+// blender is what one call to BlendOver knows before it starts, so that the
+// pixel loop reads none of it out of a Pixmap again, and the scratch a non
+// separable mode needs to go through RGB with.
+type blender struct {
+	model          Model
+	buf            blendBuf
+	scale          [256]uint8
+	mode           BlendMode
+	alpha          uint8
+	n, pn, sn, dn  int
+	sa             int
+	separable      bool
+	dalpha, salpha bool
+}
+
+func (b *blender) pixel(dst, src []uint8, a uint8) {
+	if b.mode == BlendNormal {
+		b.normal(dst, src, a)
+		return
 	}
-	if p.Alpha {
-		dst[p.N] = div255(uint32(sa)*255 + uint32(dst[p.N])*isa)
+	if !b.dalpha || dst[b.pn] == 255 {
+		b.opaque(dst, src, a)
+		return
+	}
+	b.general(dst, src, a)
+}
+
+// normal composites one premultiplied pixel over another.
+func (b *blender) normal(dst, src []uint8, a uint8) {
+	isa := 255 - uint32(a)
+	for c := range b.n {
+		dst[c] = div255(uint32(mul255(src[c], b.alpha))*255 + uint32(dst[c])*isa)
+	}
+	if b.dalpha {
+		dst[b.pn] = div255(uint32(a)*255 + uint32(dst[b.pn])*isa)
 	}
 }
 
-// blendPixel composites one source pixel over one destination pixel. src is
-// premultiplied by its own alpha, which sa has already scaled; dst is
-// premultiplied by its own, or opaque when the pixmap has no alpha channel.
-func blendPixel(p *Pixmap, dst, src []uint8, sa uint8, n int, mode BlendMode, buf *blendBuf) {
-	cs, cb, cr := &buf.cs, &buf.cb, &buf.cr
-	ba := uint8(255)
-	if p.Alpha {
-		ba = dst[p.N]
+// opaque is the blend against a backdrop that is already opaque, which is
+// every page and most of a group. Nothing has to leave premultiplied form on
+// the destination side, and the union of the two alphas is opaque as well.
+func (b *blender) opaque(dst, src []uint8, a uint8) {
+	cs, cr := &b.buf.cs, &b.buf.cr
+	unpremultiply(cs[:b.n], src, src[b.sa])
+	if b.separable {
+		blendSeparable(b.mode, dst[:b.n], cs[:b.n], cr[:b.n])
+	} else {
+		blend(b.mode, b.model, dst[:b.n], cs[:b.n], cr[:b.n], &b.buf)
 	}
-	unpremultiply(cs[:n], src, src[len(src)-1])
+
+	isa := 255 - uint32(a)
+	for c := range b.n {
+		dst[c] = div255(uint32(cr[c])*uint32(a) + uint32(dst[c])*isa)
+	}
+	if b.dalpha {
+		dst[b.pn] = 255
+	}
+}
+
+// general is the blend against a backdrop that is neither clear nor opaque,
+// where both sides have to be divided by their own alpha and the result
+// weighted back toward the source by how much backdrop there was.
+func (b *blender) general(dst, src []uint8, a uint8) {
+	cs, cb, cr := &b.buf.cs, &b.buf.cb, &b.buf.cr
+	ba := dst[b.pn]
+	unpremultiply(cs[:b.n], src, src[b.sa])
 	if ba == 0 {
-		for c := 0; c < n; c++ {
-			dst[c] = mul255(cs[c], sa)
+		for c := range b.n {
+			dst[c] = mul255(cs[c], a)
 		}
-		dst[p.N] = sa
+		dst[b.pn] = a
 		return
 	}
-	unpremultiply(cb[:n], dst, ba)
+	unpremultiply(cb[:b.n], dst, ba)
+	blend(b.mode, b.model, cb[:b.n], cs[:b.n], cr[:b.n], &b.buf)
 
-	blend(mode, p.Model, cb[:n], cs[:n], cr[:n], buf)
-	if ba != 255 {
-		inv := 255 - uint32(ba)
-		for c := 0; c < n; c++ {
-			cr[c] = div255(uint32(cs[c])*inv + uint32(cr[c])*uint32(ba))
-		}
+	inv := 255 - uint32(ba)
+	for c := range b.n {
+		cr[c] = div255(uint32(cs[c])*inv + uint32(cr[c])*uint32(ba))
 	}
-
-	isa := 255 - uint32(sa)
-	for c := 0; c < n; c++ {
-		dst[c] = div255(uint32(cr[c])*uint32(sa) + uint32(dst[c])*isa)
+	isa := 255 - uint32(a)
+	for c := range b.n {
+		dst[c] = div255(uint32(cr[c])*uint32(a) + uint32(dst[c])*isa)
 	}
-	if p.Alpha {
-		dst[p.N] = uint8(uint32(sa) + uint32(mul255(ba, 255-sa)))
-	}
+	dst[b.pn] = uint8(uint32(a) + uint32(mul255(ba, 255-a)))
 }
 
 // unpremultiply divides a premultiplied pixel by its own alpha.
@@ -155,9 +205,7 @@ type blendBuf struct {
 // defined on RGB, so a destination in any other model goes through it.
 func blend(mode BlendMode, model Model, cb, cs, out []uint8, buf *blendBuf) {
 	if mode.Separable() {
-		for c := range out {
-			out[c] = blendComponent(mode, cb[c], cs[c])
-		}
+		blendSeparable(mode, cb, cs, out)
 		return
 	}
 	toRGB(model, buf.rb[:], cb)
@@ -192,47 +240,94 @@ func fromRGB(model Model, dst, src []uint8) {
 	}
 }
 
-func blendComponent(mode BlendMode, b, s uint8) uint8 {
+// blendSeparable applies one of the twelve component-at-a-time modes to a
+// whole color. The mode is the same for every component of every pixel of a
+// group, so it is chosen once and the loop is inside the choice; a switch per
+// component was a call per component and a fifth of a page of transparency.
+func blendSeparable(mode BlendMode, cb, cs, out []uint8) {
 	switch mode {
 	case BlendMultiply:
-		return mul255(b, s)
+		for c, s := range cs {
+			out[c] = mul255(cb[c], s)
+		}
 	case BlendScreen:
-		return uint8(uint32(b) + uint32(s) - uint32(mul255(b, s)))
+		for c, s := range cs {
+			out[c] = screen(cb[c], s)
+		}
 	case BlendOverlay:
-		return hardLight(s, b)
+		for c, s := range cs {
+			out[c] = hardLight(s, cb[c])
+		}
 	case BlendDarken:
-		return min(b, s)
+		for c, s := range cs {
+			out[c] = min(cb[c], s)
+		}
 	case BlendLighten:
-		return max(b, s)
+		for c, s := range cs {
+			out[c] = max(cb[c], s)
+		}
 	case BlendColorDodge:
-		switch {
-		case b == 0:
-			return 0
-		case s == 255:
-			return 255
+		for c, s := range cs {
+			out[c] = colorDodge(cb[c], s)
 		}
-		return uint8(min(255, uint32(b)*255/uint32(255-s)))
 	case BlendColorBurn:
-		switch {
-		case b == 255:
-			return 255
-		case s == 0:
-			return 0
+		for c, s := range cs {
+			out[c] = colorBurn(cb[c], s)
 		}
-		return uint8(255 - min(255, uint32(255-b)*255/uint32(s)))
 	case BlendHardLight:
-		return hardLight(b, s)
-	case BlendSoftLight:
-		return softLight(b, s)
-	case BlendDifference:
-		if b > s {
-			return b - s
+		for c, s := range cs {
+			out[c] = hardLight(cb[c], s)
 		}
-		return s - b
+	case BlendSoftLight:
+		for c, s := range cs {
+			out[c] = softLight(cb[c], s)
+		}
+	case BlendDifference:
+		for c, s := range cs {
+			out[c] = difference(cb[c], s)
+		}
 	case BlendExclusion:
-		return uint8(uint32(b) + uint32(s) - 2*uint32(mul255(b, s)))
+		for c, s := range cs {
+			out[c] = exclusion(cb[c], s)
+		}
+	default:
+		copy(out, cs)
 	}
-	return s
+}
+
+func screen(b, s uint8) uint8 {
+	return uint8(uint32(b) + uint32(s) - uint32(mul255(b, s)))
+}
+
+func colorDodge(b, s uint8) uint8 {
+	switch {
+	case b == 0:
+		return 0
+	case s == 255:
+		return 255
+	}
+	return uint8(min(255, uint32(b)*255/uint32(255-s)))
+}
+
+func colorBurn(b, s uint8) uint8 {
+	switch {
+	case b == 255:
+		return 255
+	case s == 0:
+		return 0
+	}
+	return uint8(255 - min(255, uint32(255-b)*255/uint32(s)))
+}
+
+func difference(b, s uint8) uint8 {
+	if b > s {
+		return b - s
+	}
+	return s - b
+}
+
+func exclusion(b, s uint8) uint8 {
+	return uint8(uint32(b) + uint32(s) - 2*uint32(mul255(b, s)))
 }
 
 func hardLight(b, s uint8) uint8 {

@@ -26,7 +26,9 @@ func TestBlendComponents(t *testing.T) {
 		{BlendOverlay, 0, 200, 0},
 		{BlendSoftLight, 128, 128, 128},
 	} {
-		if got := blendComponent(tc.mode, tc.b, tc.s); got != tc.want {
+		out := make([]uint8, 1)
+		blendSeparable(tc.mode, []uint8{tc.b}, []uint8{tc.s}, out)
+		if got := out[0]; got != tc.want {
 			t.Errorf("%v(%d, %d) = %d, want %d", tc.mode, tc.b, tc.s, got, tc.want)
 		}
 	}
