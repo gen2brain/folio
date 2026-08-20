@@ -17,15 +17,17 @@ func (r *Rasterizer) FillShader(dst *Pixmap, rule FillRule, sh Shader, paint Pai
 }
 
 type shaderBlitter struct {
-	dst   *Pixmap
-	clip  *Pixmap
-	sh    Shader
-	alpha uint8
-	span  []uint8
+	dst    *Pixmap
+	clip   *Pixmap
+	ox, oy int
+	sh     Shader
+	alpha  uint8
+	span   []uint8
 }
 
 func (b *shaderBlitter) init(dst *Pixmap, sh Shader, paint Paint) {
 	b.dst, b.clip, b.sh, b.alpha = dst, paint.Clip, sh, paint.Alpha
+	b.ox, b.oy = dst.X, dst.Y
 	if n := dst.W * (dst.N + 1); cap(b.span) < n {
 		b.span = make([]uint8, n)
 	} else {
@@ -49,7 +51,7 @@ func (b *shaderBlitter) blit(x, y, w int, flat uint8, cover []uint8) {
 	b.sh.Shade(x, y, w, span)
 
 	n := b.dst.Comps()
-	row := b.dst.Samples[y*b.dst.Stride+x*n:]
+	row := b.dst.Samples[(y-b.oy)*b.dst.Stride+(x-b.ox)*n:]
 	if cover == nil && flat == 255 && b.clip == nil {
 		b.opaque(row, span, w, sn, n)
 		return

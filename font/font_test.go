@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -229,4 +230,26 @@ func FuzzParse(fu *testing.F) {
 			f.GlyphPath(gid)
 		}
 	})
+}
+
+// TestStandardConcurrent checks that two documents rendering at the same time
+// can both reach the same standard font. Standard hands out one parsed program
+// for all of them, and it fills a glyph outline cache as it is asked.
+func TestStandardConcurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f := Standard("Helvetica")
+			if f == nil {
+				t.Error("no Helvetica")
+				return
+			}
+			for gid := 0; gid < 64; gid++ {
+				f.GlyphPath(gid)
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -113,7 +113,7 @@ func (d *BBoxDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace
 }
 
 // EndMask implements Device.
-func (d *BBoxDevice) EndMask() {}
+func (d *BBoxDevice) EndMask(*Function) {}
 
 // BeginTile implements Device.
 func (d *BBoxDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int {

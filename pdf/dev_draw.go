@@ -28,6 +28,9 @@ type DrawDevice struct {
 	// this device does not paint. Clips are still tracked, so the stacks stay
 	// balanced.
 	off int
+	// knockout is set while the destination is a knockout group, whose
+	// elements replace one another rather than layering.
+	knockout bool
 
 	flat    float32
 	stroked raster.Path
@@ -44,9 +47,30 @@ type clipState struct {
 	mask *raster.Pixmap
 }
 
+// drawFrame is one entry of the clip and group stack: what to put back, and
+// what to do with anything drawn while it was open.
 type drawFrame struct {
 	clip clipState
 	off  bool
+	// dst is the destination to go back to, and group what was opened, when
+	// the frame opened a transparency group or a soft mask.
+	dst   *raster.Pixmap
+	group *groupFrame
+}
+
+// groupFrame is a transparency group or a soft mask being drawn into.
+type groupFrame struct {
+	px    *raster.Pixmap
+	box   raster.Rect
+	blend raster.BlendMode
+	alpha uint8
+	// mask and luminosity describe a soft mask, which ends as a clip rather
+	// than as something composited onto the page.
+	mask       bool
+	luminosity bool
+	// knockout is what the destination this group closes into was, which is
+	// also how this group has to composite into it.
+	knockout bool
 }
 
 // NewDrawDevice returns a device that renders a page of doc into dst. The
@@ -236,7 +260,8 @@ func (d *DrawDevice) push(c clipState) {
 	d.clip = c
 }
 
-// PopClip implements Device.
+// PopClip implements Device. It also closes a group, because a content stream
+// that leaves its stack unbalanced has to leave the device balanced anyway.
 func (d *DrawDevice) PopClip() {
 	n := len(d.stack)
 	if n == 0 {
@@ -247,6 +272,19 @@ func (d *DrawDevice) PopClip() {
 	d.clip = f.clip
 	if f.off {
 		d.off--
+	}
+	if f.dst != nil {
+		d.dst = f.dst
+	}
+	if g := f.group; g != nil {
+		d.knockout = g.knockout
+		if !g.mask {
+			if g.knockout {
+				d.dst.KnockoutOver(g.px, g.alpha)
+			} else {
+				d.dst.BlendOver(g.px, g.alpha, g.blend)
+			}
+		}
 	}
 }
 
@@ -357,30 +395,129 @@ func (d *DrawDevice) meshShader(sh *Shade, m raster.Matrix, box raster.Rect) *pi
 	}
 }
 
-// BeginMask implements Device. A soft mask is not composited yet, so what it
-// draws is thrown away rather than painted onto the page.
+// BeginMask implements Device. The mask group draws into a pixmap of its own,
+// which EndMask turns into the clip that narrows what comes next.
 func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams) {
-	d.stack = append(d.stack, drawFrame{clip: d.clip, off: true})
-	d.off++
+	if d.off > 0 {
+		d.pushOff()
+		return
+	}
+	box := area.Intersect(d.clip.rect)
+	g := &groupFrame{box: box, mask: true, luminosity: luminosity, alpha: 255, knockout: d.knockout}
+	g.px = d.groupPixmap(box, !luminosity)
+	if g.px != nil && luminosity {
+		col := make([]uint8, d.dst.N)
+		convertColor(cs, backdrop, col)
+		g.px.FillRect(g.px.X, g.px.Y, g.px.X+g.px.W, g.px.Y+g.px.H,
+			raster.Paint{Color: col, Alpha: 255})
+	}
+	if g.px == nil {
+		d.stack = append(d.stack, drawFrame{clip: d.clip, dst: d.dst, group: g, off: true})
+		d.off++
+		return
+	}
+	d.stack = append(d.stack, drawFrame{clip: d.clip, dst: d.dst, group: g})
+	d.dst = g.px
+	d.knockout = false
+	d.clip = clipState{rect: box, mask: d.clip.mask}
 }
 
-// EndMask implements Device. The frame stays on the stack, because the mask
-// is a clip and the interpreter pops it.
-func (d *DrawDevice) EndMask() {
-	if n := len(d.stack); n > 0 && d.stack[n-1].off {
-		d.stack[n-1].off = false
+// EndMask implements Device. The frame stays on the stack, because the mask is
+// a clip and the interpreter pops it.
+func (d *DrawDevice) EndMask(transfer *Function) {
+	n := len(d.stack)
+	if n == 0 {
+		return
+	}
+	f := &d.stack[n-1]
+	if f.off {
+		f.off = false
 		d.off--
 	}
+	g := f.group
+	if g == nil || !g.mask {
+		return
+	}
+	f.group = nil
+	d.dst = f.dst
+	d.knockout = g.knockout
+	if g.px == nil {
+		d.clip = clipState{rect: raster.EmptyRect}
+		return
+	}
+	m := g.px.Mask(g.luminosity, transferTable(transfer))
+	if m == nil {
+		d.clip = clipState{rect: raster.EmptyRect}
+		return
+	}
+	m.MulMask(f.clip.mask)
+	d.clip = clipState{rect: g.box, mask: m}
 }
 
-// BeginGroup implements Device. Groups do not composite separately yet, so
-// the group draws straight into the page.
+// transferTable evaluates a soft mask's /TR into the 256 values a mask can
+// take, nil when the function is the identity or unusable.
+func transferTable(fn *Function) *[256]uint8 {
+	if fn == nil {
+		return nil
+	}
+	var t [256]uint8
+	var out [1]float32
+	for i := range t {
+		fn.Eval1(out[:], float64(i)/255)
+		t[i] = clamp8(out[0])
+	}
+	return &t
+}
+
+// BeginGroup implements Device. A group that cannot see what is under it, or
+// that has something to do when it closes, draws into a pixmap of its own;
+// a non-isolated group with no alpha, no blend mode and no knockout on either
+// side draws straight through, which is exactly the same result.
 func (d *DrawDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knockout bool, blend BlendMode, alpha float32) {
-	d.push(d.clip)
+	a := alphaByte(alpha)
+	through := !isolated && !knockout && !d.knockout && blend == BlendNormal && a == 255
+	if d.off > 0 || through {
+		d.push(d.clip)
+		return
+	}
+	box := area.Intersect(d.clip.rect)
+	px := d.groupPixmap(box, true)
+	if px == nil {
+		d.pushOff()
+		return
+	}
+	d.stack = append(d.stack, drawFrame{
+		clip: d.clip, dst: d.dst,
+		group: &groupFrame{px: px, box: box, blend: blend, alpha: a, knockout: d.knockout},
+	})
+	d.dst = px
+	d.knockout = knockout
+	d.clip = clipState{rect: box, mask: d.clip.mask}
 }
 
 // EndGroup implements Device.
 func (d *DrawDevice) EndGroup() { d.PopClip() }
+
+// groupPixmap allocates the destination a group draws into, covering the whole
+// pixels of its area and positioned there, so that everything drawing into it
+// keeps working in the page's own coordinates.
+func (d *DrawDevice) groupPixmap(box raster.Rect, alpha bool) *raster.Pixmap {
+	x0, y0, x1, y1 := outerBox(box)
+	if x1 <= x0 || y1 <= y0 {
+		return nil
+	}
+	px := raster.NewPixmap(d.dst.Model, x1-x0, y1-y0, alpha)
+	if px == nil {
+		return nil
+	}
+	px.X, px.Y = x0, y0
+	return px
+}
+
+func (d *DrawDevice) pushOff() {
+	d.stack = append(d.stack, drawFrame{clip: d.clip, off: true})
+	d.off++
+}
 
 // BeginTile implements Device. Returning zero asks the interpreter to run the
 // pattern's content once for every repetition, which is what draws it.

@@ -387,8 +387,12 @@ func renderContent(t *testing.T, content string, o *Options) *raster.Pixmap {
 		"Type":     Name("Page"),
 		"MediaBox": Array{Integer(0), Integer(0), Integer(200), Integer(100)},
 		"Resources": Dict{
-			"Font":      Dict{"F1": Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica")}},
-			"ExtGState": Dict{"GS1": Dict{"ca": Real(0.5), "CA": Real(0.5)}},
+			"Font": Dict{"F1": Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica")}},
+			"ExtGState": Dict{
+				"GS1": Dict{"ca": Real(0.5), "CA": Real(0.5)},
+				"Mul": Dict{"BM": Name("Multiply")},
+				"Scr": Dict{"BM": Name("Screen")},
+			},
 		},
 	}
 	p := &Page{doc: d, dict: page}
@@ -706,14 +710,21 @@ func TestImageOptions(t *testing.T) {
 			t.Fatalf("%v: bounds %v", tc.o, got)
 		}
 		r, g, b, _ := img.At(40, 80).RGBA()
-		if tc.o != nil && tc.o.ColorSpace == DeviceGray {
+		switch {
+		case tc.o != nil && tc.o.ColorSpace == DeviceGray:
 			if r != g || g != b || r > 0x4000 {
 				t.Fatalf("gray: the blue rectangle came out %v %v %v", r, g, b)
 			}
-			continue
-		}
-		if r > 0x2000 || g > 0x2000 || b < 0xd000 {
-			t.Fatalf("%v: the blue rectangle came out %v %v %v", tc.o, r, g, b)
+		case tc.o != nil && tc.o.ColorSpace == DeviceCMYK && tc.o.Alpha:
+			// Composited in CMYK and converted back through the document's
+			// own lattice, which is what blue looks like on paper.
+			if b < g+0x4000 || b < r+0x4000 {
+				t.Fatalf("cmyk: the blue rectangle came out %v %v %v", r, g, b)
+			}
+		default:
+			if r > 0x2000 || g > 0x2000 || b < 0xd000 {
+				t.Fatalf("%v: the blue rectangle came out %v %v %v", tc.o, r, g, b)
+			}
 		}
 	}
 }
@@ -1016,6 +1027,45 @@ func BenchmarkRenderShading(b *testing.B) {
 	}
 }
 
+func BenchmarkRenderTransparency(b *testing.B) {
+	// The same curves as RenderPaths, but under a blend mode, so that every
+	// one of them opens a group of its own and composites it back.
+	var content strings.Builder
+	content.WriteString("/GS gs 0.2 0.4 0.8 rg\n")
+	seed := uint32(1)
+	next := func(m int) int {
+		seed = seed*1664525 + 1013904223
+		return int(seed>>16) % m
+	}
+	for i := 0; i < 400; i++ {
+		x, y := next(500), next(700)
+		fmt.Fprintf(&content, "%d %d m %d %d %d %d %d %d c f\n",
+			x, y, x+next(80), y+next(80), x+next(80), y+next(80), x+next(80), y+next(80))
+	}
+	d := buildPDFB(b, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R" +
+			" /Resources << /ExtGState << /GS 5 0 R >> >> >>",
+		streamObj("", content.String()),
+		"<< /Type /ExtGState /BM /Multiply /ca 0.5 >>",
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctm := p.Matrix(150)
+	px := raster.NewPixmap(DeviceRGB.Model(), 1275, 1650, false)
+	b.ResetTimer()
+	for b.Loop() {
+		px.ClearWhite()
+		dev := NewDrawDevice(d, px)
+		ip := p.newInterp(dev, ctm)
+		ip.run(p.Contents())
+		ip.finish()
+	}
+}
+
 // buildPDFB is buildPDF for a benchmark.
 func buildPDFB(b *testing.B, objs []string) *Document {
 	b.Helper()
@@ -1255,5 +1305,172 @@ func TestOptionalContentOff(t *testing.T) {
 	}
 	if got := pixel(px, 80, 50); !same(got, 255, 255, 255) {
 		t.Errorf("the hidden group = %v, want white", got)
+	}
+}
+
+// groupPDF builds a one page document whose content draws a form XObject,
+// with the extra objects appended after it.
+func groupPDF(t *testing.T, content, formDict, formBody string, extra ...string) *Document {
+	t.Helper()
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Fm 5 0 R >> /ExtGState << /GS 6 0 R >> >> >>",
+		streamObj("", content),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 100 100] "+formDict, formBody),
+	}
+	return buildPDF(t, append(objs, extra...))
+}
+
+// TestGroupAlpha checks that a transparency group composites as one object:
+// two overlapping opaque squares inside a group at half alpha have to come out
+// the same shade everywhere, not twice as dark where they overlap.
+func TestGroupAlpha(t *testing.T) {
+	d := groupPDF(t, "/GS gs /Fm Do",
+		"/Group << /S /Transparency /CS /DeviceRGB /I true >>",
+		"0 0 1 rg 10 10 40 40 re f 30 30 40 40 re f",
+		"<< /Type /ExtGState /ca 0.5 >>")
+	px := renderDoc(t, d, nil)
+	one := pixel(px, 20, 70)
+	both := pixel(px, 40, 50)
+	if !same(one, both...) {
+		t.Fatalf("the overlap is %v and the rest %v, want one shade", both, one)
+	}
+	if one[2] < 250 || one[0] < 120 || one[0] > 135 {
+		t.Fatalf("half of blue over white = %v, want about 127 127 255", one)
+	}
+}
+
+// TestBlendMultiply checks a blend mode against what the backdrop under it
+// already holds.
+func TestBlendMultiply(t *testing.T) {
+	px := renderContent(t, "1 0 0 rg 0 0 200 100 re f /Mul gs 0 0 1 rg 0 0 100 100 re f", nil)
+	if got := pixel(px, 50, 50); !same(got, 0, 0, 0) {
+		t.Errorf("blue multiplied by red = %v, want black", got)
+	}
+	if got := pixel(px, 150, 50); !same(got, 255, 0, 0) {
+		t.Errorf("outside the blend = %v, want red", got)
+	}
+}
+
+// TestBlendScreen is the same the other way: Screen against white is white,
+// which is what says the backdrop reaches the blend at all.
+func TestBlendScreen(t *testing.T) {
+	px := renderContent(t, "/Scr gs 0 0 1 rg 0 0 100 100 re f", nil)
+	if got := pixel(px, 50, 50); !same(got, 255, 255, 255) {
+		t.Errorf("blue screened onto white = %v, want white", got)
+	}
+}
+
+// TestSoftMaskLuminosity checks that a luminosity soft mask lets through what
+// its group painted white and stops what it painted black.
+func TestSoftMaskLuminosity(t *testing.T) {
+	// The mask group paints its left half white and leaves the rest at the
+	// black its backdrop defaults to.
+	d := groupPDF(t, "/GS gs 1 0 0 rg 0 0 100 100 re f",
+		"/Group << /S /Transparency /CS /DeviceGray >>",
+		"1 g 0 0 50 100 re f",
+		"<< /Type /ExtGState /SMask << /S /Luminosity /G 5 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 20, 50); !same(got, 255, 0, 0) {
+		t.Errorf("under the white half of the mask = %v, want red", got)
+	}
+	if got := pixel(px, 80, 50); !same(got, 255, 255, 255) {
+		t.Errorf("under the black half = %v, want the page", got)
+	}
+}
+
+// TestSoftMaskPathIsolation checks that the form a soft mask renders does not
+// reach the path it is masking. The mask is rendered from inside the painting
+// operator, so both are building into the interpreter's one path.
+func TestSoftMaskPathIsolation(t *testing.T) {
+	d := groupPDF(t, "/GS gs 1 0 0 rg 20 20 60 60 re f",
+		"/Group << /S /Transparency /CS /DeviceGray >>",
+		"1 g 0 0 100 100 re f",
+		"<< /Type /ExtGState /SMask << /S /Luminosity /G 5 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 50, 50); !same(got, 255, 0, 0) {
+		t.Errorf("inside the masked path = %v, want red", got)
+	}
+	if got := pixel(px, 5, 5); !same(got, 255, 255, 255) {
+		t.Errorf("outside the masked path = %v, want white", got)
+	}
+}
+
+// TestSoftMaskAlpha checks the other kind of soft mask, which reads what the
+// group painted rather than how bright it is.
+func TestSoftMaskAlpha(t *testing.T) {
+	d := groupPDF(t, "/GS gs 1 0 0 rg 0 0 100 100 re f",
+		"/Group << /S /Transparency /CS /DeviceGray >>",
+		"0 g 0 0 50 100 re f",
+		"<< /Type /ExtGState /SMask << /S /Alpha /G 5 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 20, 50); !same(got, 255, 0, 0) {
+		t.Errorf("where the mask group painted = %v, want red", got)
+	}
+	if got := pixel(px, 80, 50); !same(got, 255, 255, 255) {
+		t.Errorf("where it painted nothing = %v, want the page", got)
+	}
+}
+
+// TestSoftMaskTransfer checks that /TR is applied to the mask, here inverting
+// it so that the half the group painted white is the half that is hidden.
+func TestSoftMaskTransfer(t *testing.T) {
+	d := groupPDF(t, "/GS gs 1 0 0 rg 0 0 100 100 re f",
+		"/Group << /S /Transparency /CS /DeviceGray >>",
+		"1 g 0 0 50 100 re f",
+		"<< /Type /ExtGState /SMask << /S /Luminosity /G 5 0 R /TR 7 0 R >> >>",
+		"<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 20, 50); !same(got, 255, 255, 255) {
+		t.Errorf("under the white half, inverted = %v, want the page", got)
+	}
+	if got := pixel(px, 80, 50); !same(got, 255, 0, 0) {
+		t.Errorf("under the black half, inverted = %v, want red", got)
+	}
+}
+
+// TestGroupBlendInside checks that a blend mode inside a non-isolated group
+// still sees what is under the group, which is what makes such a group worth
+// keeping straight rather than turning into a pixmap of its own.
+func TestGroupBlendInside(t *testing.T) {
+	d := groupPDF(t, "0 1 0 rg 0 0 100 100 re f /Fm Do",
+		"/Group << /S /Transparency /CS /DeviceRGB /I false >>",
+		"/GS gs 1 1 0 rg 0 0 100 100 re f",
+		"<< /Type /ExtGState /BM /Multiply >>")
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 50, 50); !same(got, 0, 255, 0) {
+		t.Errorf("yellow multiplied by green = %v, want green", got)
+	}
+}
+
+// TestGroupKnockout checks that an element of a knockout group composites
+// against the backdrop the group opened with rather than against the element
+// before it. The inner group blends, so it says which backdrop it saw: red
+// over nothing, black if it saw the blue underneath.
+func TestGroupKnockout(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Outer 5 0 R >> >> >>",
+		streamObj("", "/Outer Do"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 100 100]"+
+			" /Group << /S /Transparency /CS /DeviceRGB /I true /K true >>"+
+			" /Resources << /XObject << /Inner 6 0 R >> >>",
+			"0 0 1 rg 0 0 100 100 re f /Inner Do"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 100 100]"+
+			" /Group << /S /Transparency /CS /DeviceRGB /I false /K false >>"+
+			" /Resources << /ExtGState << /GS 7 0 R >> >>",
+			"/GS gs 1 0 0 rg 20 20 60 60 re f"),
+		"<< /Type /ExtGState /BM /Multiply >>",
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 50, 50); !same(got, 255, 0, 0) {
+		t.Errorf("inside the knocked out element = %v, want red", got)
+	}
+	if got := pixel(px, 5, 5); !same(got, 0, 0, 255) {
+		t.Errorf("outside it = %v, want the blue the group put down", got)
 	}
 }

@@ -387,7 +387,7 @@ func (d *TraceDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpac
 }
 
 // EndMask implements Device.
-func (d *TraceDevice) EndMask() {
+func (d *TraceDevice) EndMask(transfer *Function) {
 	if d.depth > 0 {
 		d.depth--
 	}

@@ -31,6 +31,9 @@ type interp struct {
 	defaultsSet   []bool
 
 	path raster.Path
+	// spare is the path buffer an interpreter re-entered from inside a
+	// painting operator builds into.
+	spare raster.Path
 	// clip is the pending clip set by W or W*, applied by the next painting
 	// operator.
 	clip    int
@@ -442,42 +445,45 @@ func (ip *interp) newline() {
 
 // paint applies the pending clip and hands the current path to the device.
 func (ip *interp) paint(fill, stroke, evenOdd bool) {
+	path, clip := ip.path, ip.clip
+	ip.path, ip.clip = ip.spare, clipNone
+	ip.path.Reset()
 	defer func() {
-		ip.path.Reset()
-		ip.clip = clipNone
+		path.Reset()
+		ip.spare, ip.path, ip.clip = ip.path, path, clipNone
 	}()
 
 	if ip.hidden > 0 {
 		fill, stroke = false, false
 	}
-	if !ip.path.IsEmpty() && (fill || stroke) {
-		bbox := ip.path.Bounds(ip.gs.ctm)
+	if !path.IsEmpty() && (fill || stroke) {
+		bbox := path.Bounds(ip.gs.ctm)
 		if stroke {
-			bbox = ip.path.StrokeBounds(&ip.gs.stroke, ip.gs.ctm)
+			bbox = path.StrokeBounds(&ip.gs.stroke, ip.gs.ctm)
 		}
 		d := ip.beginDraw(bbox)
 		if fill {
 			if ip.gs.fill.cs.IsPattern() {
-				ip.fillWithPattern(&ip.path, evenOdd, false)
+				ip.fillWithPattern(&path, evenOdd, false)
 			} else {
-				ip.dev.FillPath(&ip.path, evenOdd, ip.gs.ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
+				ip.dev.FillPath(&path, evenOdd, ip.gs.ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
 			}
 		}
 		if stroke {
 			if ip.gs.strokeColor.cs.IsPattern() {
-				ip.fillWithPattern(&ip.path, evenOdd, true)
+				ip.fillWithPattern(&path, evenOdd, true)
 			} else {
-				ip.dev.StrokePath(&ip.path, &ip.gs.stroke, ip.gs.ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
+				ip.dev.StrokePath(&path, &ip.gs.stroke, ip.gs.ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
 			}
 		}
 		ip.endDraw(d)
 	}
 
-	if ip.clip != clipNone {
-		if ip.path.IsEmpty() {
-			ip.path.MoveTo(0, 0)
+	if clip != clipNone {
+		if path.IsEmpty() {
+			path.MoveTo(0, 0)
 		}
-		ip.dev.ClipPath(&ip.path, ip.clip == clipEvenOdd, ip.gs.ctm, ip.scissor)
+		ip.dev.ClipPath(&path, clip == clipEvenOdd, ip.gs.ctm, ip.scissor)
 		ip.gs.clipDepth++
 	}
 }
@@ -543,7 +549,7 @@ func (ip *interp) beginSoftMask(bbox raster.Rect) bool {
 	ip.gs = saved
 	ip.res = savedRes
 
-	ip.dev.EndMask()
+	ip.dev.EndMask(sm.transfer)
 	return true
 }
 

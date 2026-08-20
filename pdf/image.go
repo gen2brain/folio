@@ -108,17 +108,11 @@ func (ip *interp) paintImage(img *Image) {
 	bbox := ctm.ApplyRect(raster.Rect{X1: 1, Y1: 1})
 
 	if mask := img.MaskImage(); mask != nil {
-		group := false
-		if ip.gs.blend != BlendNormal {
-			ip.dev.BeginGroup(bbox, nil, false, false, ip.gs.blend, 1)
-			group = true
-		}
+		d := ip.beginDraw(bbox)
 		ip.dev.ClipImageMask(mask, ctm, bbox)
 		ip.drawImageBody(img, ctm)
 		ip.dev.PopClip()
-		if group {
-			ip.dev.EndGroup()
-		}
+		ip.endDraw(d)
 		return
 	}
 

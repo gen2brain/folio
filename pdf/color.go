@@ -211,7 +211,7 @@ func adobeCMYK(c, m, y, k float32) (float32, float32, float32) {
 	sr, sg, sb := cmykLattice(cIdx, mIdx, yIdx, kIdx)
 	fr, fg, fb := int(sr)<<8, int(sg)<<8, int(sb)<<8
 
-	neighbour := func(fix, idx int) int {
+	neighbor := func(fix, idx int) int {
 		n := fix >> 13
 		if n == idx {
 			if n == 8 {
@@ -227,19 +227,19 @@ func adobeCMYK(c, m, y, k float32) (float32, float32, float32) {
 		fb += (int(sb) - int(nb)) * rate / 32
 	}
 
-	c1 := neighbour(fixC, cIdx)
+	c1 := neighbor(fixC, cIdx)
 	nr, ng, nb := cmykLattice(c1, mIdx, yIdx, kIdx)
 	mix(nr, ng, nb, (fixC-(cIdx<<13))*(cIdx-c1))
 
-	m1 := neighbour(fixM, mIdx)
+	m1 := neighbor(fixM, mIdx)
 	nr, ng, nb = cmykLattice(cIdx, m1, yIdx, kIdx)
 	mix(nr, ng, nb, (fixM-(mIdx<<13))*(mIdx-m1))
 
-	y1 := neighbour(fixY, yIdx)
+	y1 := neighbor(fixY, yIdx)
 	nr, ng, nb = cmykLattice(cIdx, mIdx, y1, kIdx)
 	mix(nr, ng, nb, (fixY-(yIdx<<13))*(yIdx-y1))
 
-	k1 := neighbour(fixK, kIdx)
+	k1 := neighbor(fixK, kIdx)
 	nr, ng, nb = cmykLattice(cIdx, mIdx, yIdx, k1)
 	mix(nr, ng, nb, (fixK-(kIdx<<13))*(kIdx-k1))
 

@@ -52,6 +52,7 @@ func (p *Pixmap) halve() *Pixmap {
 type imageBlitter struct {
 	dst, src *Pixmap
 	clip     *Pixmap
+	ox, oy   int
 	inv      Matrix
 	color    [5]uint8
 	alpha    uint8
@@ -61,6 +62,7 @@ type imageBlitter struct {
 
 func (b *imageBlitter) init(dst, src *Pixmap, inv Matrix, paint Paint, smooth bool) {
 	b.dst, b.src, b.clip = dst, src, paint.Clip
+	b.ox, b.oy = dst.X, dst.Y
 	b.inv, b.alpha, b.smooth = inv, paint.Alpha, smooth
 	b.stencil = src.N == 0
 	b.color = [5]uint8{}
@@ -110,7 +112,7 @@ func (b *imageBlitter) pixel(x, y int, cover uint8) {
 	}
 
 	n := b.dst.Comps()
-	row := b.dst.Samples[y*b.dst.Stride+x*n:][:n:n]
+	row := b.dst.Samples[(y-b.oy)*b.dst.Stride+(x-b.ox)*n:][:n:n]
 
 	if b.stencil {
 		if sa := mul255(src[0], a); sa != 0 {

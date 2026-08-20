@@ -296,8 +296,6 @@ func (cs *ColorSpace) Model() raster.Model {
 		return raster.ModelGray
 	case KindRGB:
 		return raster.ModelRGB
-	case KindCMYK:
-		return raster.ModelCMYK
 	}
 	return colorModel{cs}
 }
@@ -309,8 +307,9 @@ type colorModel struct{ cs *ColorSpace }
 func (m colorModel) Components() int { return m.cs.N }
 
 func (m colorModel) ToRGB(dst, src []uint8) {
-	n := m.cs.N
-	buf := make([]float32, n)
+	var comps [maxComponents]float32
+	n := min(m.cs.N, len(comps))
+	buf := comps[:n]
 	for i, o := 0, 0; i+n <= len(src) && o+3 <= len(dst); i, o = i+n, o+3 {
 		for j := range buf {
 			buf[j] = float32(src[i+j]) / 255
@@ -321,17 +320,16 @@ func (m colorModel) ToRGB(dst, src []uint8) {
 }
 
 func (m colorModel) FromRGB(dst, src []uint8) {
-	n := m.cs.N
-	tmp := make([]uint8, len(src)/3*n)
-	switch n {
+	switch m.cs.N {
 	case 1:
-		raster.ModelGray.FromRGB(tmp, src)
+		raster.ModelGray.FromRGB(dst, src)
 	case 4:
-		raster.ModelCMYK.FromRGB(tmp, src)
+		raster.ModelCMYK.FromRGB(dst, src)
+	case 3:
+		copy(dst, src)
 	default:
-		copy(tmp, src)
+		clear(dst)
 	}
-	copy(dst, tmp)
 }
 
 func clamp8(v float32) uint8 {

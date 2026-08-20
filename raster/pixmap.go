@@ -114,21 +114,11 @@ func (p *Pixmap) ClearWhite() {
 	}
 }
 
-// FillRect composites a paint over a rectangle of the pixmap, in pixmap local
-// coordinates.
+// FillRect composites a paint over a rectangle, in the coordinates the
+// pixmap's own X and Y place it in.
 func (p *Pixmap) FillRect(x0, y0, x1, y1 int, paint Paint) {
-	if x0 < 0 {
-		x0 = 0
-	}
-	if y0 < 0 {
-		y0 = 0
-	}
-	if x1 > p.W {
-		x1 = p.W
-	}
-	if y1 > p.H {
-		y1 = p.H
-	}
+	x0, y0 = max(x0, p.X), max(y0, p.Y)
+	x1, y1 = min(x1, p.X+p.W), min(y1, p.Y+p.H)
 	if x0 >= x1 || y0 >= y1 || paint.Alpha == 0 {
 		return
 	}

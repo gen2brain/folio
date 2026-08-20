@@ -29,7 +29,8 @@ func (r *Rasterizer) Fill(dst *Pixmap, rule FillRule, paint Paint) {
 }
 
 // MaskBlitter returns a blitter that writes coverage into an alpha only
-// pixmap, replacing what is there.
+// pixmap, replacing what is there. It writes in the pixmap's own coordinates,
+// because what fills a mask has already been moved into them.
 func (p *Pixmap) MaskBlitter() Blitter { return &maskBlitter{dst: p} }
 
 // DrawMask composites the paint through an alpha mask, which its own X and Y
@@ -38,8 +39,8 @@ func (p *Pixmap) DrawMask(mask *Pixmap, paint Paint) {
 	if mask == nil || paint.Alpha == 0 {
 		return
 	}
-	y0, y1 := max(mask.Y, 0), min(mask.Y+mask.H, p.H)
-	x0, x1 := max(mask.X, 0), min(mask.X+mask.W, p.W)
+	y0, y1 := max(mask.Y, p.Y), min(mask.Y+mask.H, p.Y+p.H)
+	x0, x1 := max(mask.X, p.X), min(mask.X+mask.W, p.X+p.W)
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
@@ -76,15 +77,22 @@ func (p *Pixmap) MulMask(m *Pixmap) {
 }
 
 type solidBlitter struct {
-	dst   *Pixmap
-	clip  *Pixmap
-	src   [5]uint8
-	n     int
-	alpha uint8
+	dst  *Pixmap
+	clip *Pixmap
+	// samples, stride and base address the destination directly; base is where
+	// the pixmap's own X and Y put its first sample.
+	samples []uint8
+	stride  int
+	base    int
+	comps   int
+	src     [5]uint8
+	n       int
+	alpha   uint8
 }
 
 func (b *solidBlitter) init(dst *Pixmap, paint Paint) {
 	b.dst, b.clip, b.alpha = dst, paint.Clip, paint.Alpha
+	b.samples, b.stride = dst.Samples, dst.Stride
 	b.src = [5]uint8{}
 	copy(b.src[:min(len(paint.Color), dst.N)], paint.Color)
 	b.n = dst.N
@@ -92,6 +100,8 @@ func (b *solidBlitter) init(dst *Pixmap, paint Paint) {
 		b.src[b.n] = 255
 		b.n++
 	}
+	b.comps = b.n
+	b.base = -dst.Y*dst.Stride - dst.X*b.comps
 }
 
 func (b *solidBlitter) BlitSolid(x, y, w int, cover uint8) {
@@ -103,8 +113,8 @@ func (b *solidBlitter) BlitSolid(x, y, w int, cover uint8) {
 		b.clipped(x, y, w, a, nil)
 		return
 	}
-	n := b.dst.Comps()
-	row := b.dst.Samples[y*b.dst.Stride+x*n:][: w*n : w*n]
+	n := b.comps
+	row := b.samples[b.base+y*b.stride+x*n:][: w*n : w*n]
 	if a == 255 {
 		copy(row, b.src[:b.n])
 		for done := n; done < len(row); {
@@ -122,8 +132,8 @@ func (b *solidBlitter) BlitCover(x, y int, cover []uint8) {
 		b.clipped(x, y, len(cover), 0, cover)
 		return
 	}
-	n := b.dst.Comps()
-	row := b.dst.Samples[y*b.dst.Stride+x*n:]
+	n := b.comps
+	row := b.samples[b.base+y*b.stride+x*n:]
 	if b.alpha == 255 {
 		for _, c := range cover {
 			if c == 255 {
@@ -168,8 +178,8 @@ func (b *solidBlitter) clipped(x, y, w int, flat uint8, cover []uint8) {
 		return
 	}
 	mask := b.clip.Samples[cy*b.clip.Stride+cx:][:w]
-	n := b.dst.Comps()
-	row := b.dst.Samples[y*b.dst.Stride+x*n:]
+	n := b.comps
+	row := b.samples[b.base+y*b.stride+x*n:]
 	for i, m := range mask {
 		a := flat
 		if cover != nil {

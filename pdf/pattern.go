@@ -129,8 +129,6 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 	ip.gs = ip.gs.clone()
 	savedBase := ip.base
 	savedStack := len(ip.gstack)
-	savedPath, savedClip := ip.path, ip.clip
-	ip.path, ip.clip = raster.Path{}, clipNone
 	ip.depth++
 	ip.gs.fillAlpha, ip.gs.strokeAlpha = alpha, alpha
 	ip.gs.softMask = nil
@@ -169,7 +167,6 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 	ip.depth--
 	ip.gs = saved
 	ip.base = savedBase
-	ip.path, ip.clip = savedPath, savedClip
 
 	ip.dev.EndTile()
 }

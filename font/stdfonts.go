@@ -1,6 +1,9 @@
 package font
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 // The fourteen fonts every reader must have, ISO 32000-1 9.6.2.2. The
 // substitutes are PDFium's, which are metrically compatible with the
@@ -22,28 +25,36 @@ var stdFontFile = map[string]string{
 	"ZapfDingbats":          "FoxitDingbats",
 }
 
-var stdCache = map[string]*Font{}
+var (
+	stdMu    sync.Mutex
+	stdCache = map[string]*Font{}
+)
 
 // Standard returns one of the fourteen fonts by its canonical name, or nil.
+// The parsed program is shared, but the caches a font fills as it is used are
+// not, so two documents can render at the same time.
 func Standard(name string) *Font {
 	file, ok := stdFontFile[name]
 	if !ok {
 		return nil
 	}
-	if f, ok := stdCache[file]; ok {
-		return f
+	stdMu.Lock()
+	f, ok := stdCache[file]
+	if !ok {
+		data := stdFontData[file]
+		if data != "" {
+			f, _ = Parse([]byte(data))
+		}
+		stdCache[file] = f
 	}
-	data := stdFontData[file]
-	if data == "" {
+	stdMu.Unlock()
+	if f == nil {
 		return nil
 	}
-	f, err := Parse([]byte(data))
-	if err != nil {
-		return nil
-	}
-	f.Name = name
-	stdCache[file] = f
-	return f
+	g := *f
+	g.Name = name
+	g.names, g.cache = nil, nil
+	return &g
 }
 
 // StandardName maps a font name onto one of the fourteen, using the flags of

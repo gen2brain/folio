@@ -2,43 +2,33 @@ package pdf
 
 import "github.com/gen2brain/pdf/raster"
 
-// BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5.
-type BlendMode int
+// BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5. It is
+// raster's, because a blend mode is a function of two colors and nothing about
+// it is particular to PDF.
+type BlendMode = raster.BlendMode
 
 // The separable blend modes, then the four non-separable ones.
 const (
-	BlendNormal BlendMode = iota
-	BlendMultiply
-	BlendScreen
-	BlendOverlay
-	BlendDarken
-	BlendLighten
-	BlendColorDodge
-	BlendColorBurn
-	BlendHardLight
-	BlendSoftLight
-	BlendDifference
-	BlendExclusion
-	BlendHue
-	BlendSaturation
-	BlendColor
-	BlendLuminosity
+	BlendNormal     = raster.BlendNormal
+	BlendMultiply   = raster.BlendMultiply
+	BlendScreen     = raster.BlendScreen
+	BlendOverlay    = raster.BlendOverlay
+	BlendDarken     = raster.BlendDarken
+	BlendLighten    = raster.BlendLighten
+	BlendColorDodge = raster.BlendColorDodge
+	BlendColorBurn  = raster.BlendColorBurn
+	BlendHardLight  = raster.BlendHardLight
+	BlendSoftLight  = raster.BlendSoftLight
+	BlendDifference = raster.BlendDifference
+	BlendExclusion  = raster.BlendExclusion
+	BlendHue        = raster.BlendHue
+	BlendSaturation = raster.BlendSaturation
+	BlendColor      = raster.BlendColor
+	BlendLuminosity = raster.BlendLuminosity
 )
 
-var blendNames = [...]string{
-	"Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
-	"ColorDodge", "ColorBurn", "HardLight", "SoftLight", "Difference",
-	"Exclusion", "Hue", "Saturation", "Color", "Luminosity",
-}
-
-// String returns the name the blend mode has in a PDF file.
-func (b BlendMode) String() string {
-	if b < 0 || int(b) >= len(blendNames) {
-		return "Normal"
-	}
-	return blendNames[b]
-}
-
+// blendMode reads a /BM name. A name this does not know is Normal, and an
+// array of them means the first one that is known.
 func blendMode(n Name) (BlendMode, bool) {
 	switch n {
 	case "Compatible":
@@ -46,9 +36,9 @@ func blendMode(n Name) (BlendMode, bool) {
 	case "":
 		return BlendNormal, false
 	}
-	for i, s := range blendNames {
-		if string(n) == s {
-			return BlendMode(i), true
+	for i := BlendNormal; i <= BlendLuminosity; i++ {
+		if string(n) == i.String() {
+			return i, true
 		}
 	}
 	return BlendNormal, false
@@ -206,8 +196,12 @@ type Device interface {
 	// /DefaultGray, /DefaultRGB and /DefaultCMYK.
 	SetDefaultColorSpaces(d *DefaultColorSpaces)
 
+	// BeginMask opens a soft mask group. What is drawn until EndMask is the
+	// mask, not the page: EndMask turns it into a clip that stays in force
+	// until the interpreter pops it, reading either the luminosity of each
+	// pixel against backdrop or its alpha, through the transfer function.
 	BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams)
-	EndMask()
+	EndMask(transfer *Function)
 	BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knockout bool, blend BlendMode, alpha float32)
 	EndGroup()
 	BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int
@@ -247,7 +241,7 @@ func (BaseDevice) ClipImageMask(*Image, raster.Matrix, raster.Rect)             
 func (BaseDevice) PopClip()                                                                {}
 func (BaseDevice) SetDefaultColorSpaces(*DefaultColorSpaces)                               {}
 func (BaseDevice) BeginMask(raster.Rect, bool, *ColorSpace, []float32, ColorParams)        {}
-func (BaseDevice) EndMask()                                                                {}
+func (BaseDevice) EndMask(*Function)                                                       {}
 func (BaseDevice) BeginGroup(raster.Rect, *ColorSpace, bool, bool, BlendMode, float32)     {}
 func (BaseDevice) EndGroup()                                                               {}
 func (BaseDevice) BeginTile(raster.Rect, raster.Rect, float32, float32, raster.Matrix) int { return 0 }
