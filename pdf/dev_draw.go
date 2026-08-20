@@ -1,0 +1,511 @@
+package pdf
+
+import (
+	"math"
+
+	"github.com/gen2brain/pdf/font"
+	"github.com/gen2brain/pdf/raster"
+)
+
+// maxCachedGlyph is the area above which a glyph is drawn straight into the
+// page rather than rendered to a mask and remembered.
+const maxCachedGlyph = 100 * 100
+
+// DrawDevice renders into a raster.Pixmap. Everything it is given is in the
+// pixmap's own coordinates, so a caller rendering part of a page translates
+// the transform rather than the device.
+type DrawDevice struct {
+	BaseDevice
+
+	doc *Document
+	dst *raster.Pixmap
+	ras *raster.Rasterizer
+	mas *raster.Rasterizer
+
+	clip  clipState
+	stack []drawFrame
+	// off counts the reasons not to draw: a soft mask being built, or a tile
+	// this device does not paint. Clips are still tracked, so the stacks stay
+	// balanced.
+	off int
+
+	flat    float32
+	stroked raster.Path
+	// src is the destination color of the operation being drawn, valid only
+	// until the next one; a nested interpreter takes its own.
+	src   []uint8
+	res   Dict
+	depth int
+}
+
+// clipState is the clip in force: a rectangle, and an optional mask over it.
+type clipState struct {
+	rect raster.Rect
+	mask *raster.Pixmap
+}
+
+type drawFrame struct {
+	clip clipState
+	off  bool
+}
+
+// NewDrawDevice returns a device that renders a page of doc into dst. The
+// document is needed for the glyph cache and for Type3 glyph procedures,
+// which are content streams and have to be interpreted where they are drawn.
+func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
+	return &DrawDevice{
+		doc: doc,
+		dst: dst,
+		ras: raster.NewRasterizer(dst.W, dst.H),
+		clip: clipState{rect: raster.Rect{
+			X0: 0, Y0: 0, X1: float32(dst.W), Y1: float32(dst.H),
+		}},
+		src: make([]uint8, 0, 8),
+	}
+}
+
+// Pixmap returns what has been drawn.
+func (d *DrawDevice) Pixmap() *raster.Pixmap { return d.dst }
+
+// SetFlatness sets how far a flattened curve may stray from the true one, in
+// device pixels.
+func (d *DrawDevice) SetFlatness(tol float32) {
+	d.flat = tol
+	d.ras.SetFlatness(tol)
+}
+
+func (d *DrawDevice) paint(cs *ColorSpace, col []float32, alpha float32) raster.Paint {
+	if n := d.dst.N; cap(d.src) < n {
+		d.src = make([]uint8, n)
+	} else {
+		d.src = d.src[:n]
+	}
+	convertColor(cs, col, d.src)
+	return raster.Paint{Color: d.src, Alpha: alphaByte(alpha), Clip: d.clip.mask}
+}
+
+func alphaByte(a float32) uint8 {
+	switch {
+	case a <= 0:
+		return 0
+	case a >= 1:
+		return 255
+	}
+	return uint8(a*255 + 0.5)
+}
+
+// convertColor turns a color in cs into the components of the destination.
+func convertColor(cs *ColorSpace, col []float32, out []uint8) {
+	if cs == nil {
+		cs = DeviceGray
+		col = nil
+	}
+	switch len(out) {
+	case 1:
+		out[0] = clamp8(cs.Gray(col))
+	case 4:
+		c, m, y, k := cs.CMYK(col)
+		out[0], out[1], out[2], out[3] = clamp8(c), clamp8(m), clamp8(y), clamp8(k)
+	default:
+		r, g, b := cs.RGB(col)
+		if len(out) >= 3 {
+			out[0], out[1], out[2] = clamp8(r), clamp8(g), clamp8(b)
+		}
+	}
+}
+
+func (d *DrawDevice) drawing() bool { return d.off == 0 && !d.clip.rect.IsEmpty() }
+
+// fillPath rasterizes a path in device space and blits the paint through it.
+func (d *DrawDevice) fillPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, paint raster.Paint) {
+	rule := raster.NonZero
+	if evenOdd {
+		rule = raster.EvenOdd
+	}
+	d.ras.Reset()
+	d.ras.SetClip(d.clip.rect)
+	d.ras.AddPath(p, ctm)
+	d.ras.Fill(d.dst, rule, paint)
+}
+
+// strokeOutline turns a stroke into the path that fills it, in the space the
+// path is already in. The result lives until the next stroke.
+func (d *DrawDevice) strokeOutline(p *raster.Path, s *raster.Stroke, ctm raster.Matrix) *raster.Path {
+	return s.OutlineInto(&d.stroked, p, ctm.Expansion())
+}
+
+// deviceStroke strokes a path that is not in user space, a glyph outline, by
+// moving it into device space and scaling the stroke to match.
+func deviceStroke(p *raster.Path, s *raster.Stroke, m raster.Matrix, scale float32) *raster.Path {
+	sd := *s
+	sd.Width *= scale
+	sd.DashPhase *= scale
+	if len(s.Dash) > 0 {
+		sd.Dash = make([]float32, len(s.Dash))
+		for i, v := range s.Dash {
+			sd.Dash[i] = v * scale
+		}
+	}
+	return sd.Outline(p.Transform(m), 1)
+}
+
+// FillPath implements Device.
+func (d *DrawDevice) FillPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
+	if !d.drawing() {
+		return
+	}
+	d.fillPath(p, evenOdd, ctm, d.paint(cs, col, alpha))
+}
+
+// StrokePath implements Device.
+func (d *DrawDevice) StrokePath(p *raster.Path, s *raster.Stroke, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
+	if !d.drawing() {
+		return
+	}
+	d.fillPath(d.strokeOutline(p, s, ctm), false, ctm, d.paint(cs, col, alpha))
+}
+
+// ClipPath implements Device.
+func (d *DrawDevice) ClipPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, scissor raster.Rect) {
+	d.pushPathClip(p, evenOdd, ctm)
+}
+
+// ClipStrokePath implements Device.
+func (d *DrawDevice) ClipStrokePath(p *raster.Path, s *raster.Stroke, ctm raster.Matrix, scissor raster.Rect) {
+	d.pushPathClip(d.strokeOutline(p, s, ctm), false, ctm)
+}
+
+func (d *DrawDevice) pushPathClip(p *raster.Path, evenOdd bool, ctm raster.Matrix) {
+	if r, ok := p.AsRect(ctm); ok {
+		d.push(clipState{rect: d.clip.rect.Intersect(r), mask: d.clip.mask})
+		return
+	}
+	d.push(d.maskClip(p.Bounds(ctm), func(r *raster.Rasterizer, ox, oy int) {
+		m := ctm
+		m.E -= float32(ox)
+		m.F -= float32(oy)
+		r.AddPath(p, m)
+	}, evenOdd))
+}
+
+// maskClip renders geometry into a clip mask covering its own bounding box,
+// narrowed by whatever clip is already in force.
+func (d *DrawDevice) maskClip(bounds raster.Rect, add func(*raster.Rasterizer, int, int), evenOdd bool) clipState {
+	box := bounds.Intersect(d.clip.rect)
+	x0, y0, x1, y1 := outerBox(box)
+	if x1 <= x0 || y1 <= y0 {
+		return clipState{rect: raster.EmptyRect}
+	}
+	mask := raster.NewMask(x1-x0, y1-y0)
+	if mask == nil {
+		return clipState{rect: raster.EmptyRect}
+	}
+	mask.X, mask.Y = x0, y0
+
+	if d.mas == nil {
+		d.mas = raster.NewRasterizer(mask.W, mask.H)
+	} else {
+		d.mas.SetSize(mask.W, mask.H)
+	}
+	d.mas.SetFlatness(d.flat)
+	d.mas.SetClip(raster.Rect{
+		X0: box.X0 - float32(x0), Y0: box.Y0 - float32(y0),
+		X1: box.X1 - float32(x0), Y1: box.Y1 - float32(y0),
+	})
+	rule := raster.NonZero
+	if evenOdd {
+		rule = raster.EvenOdd
+	}
+	add(d.mas, x0, y0)
+	d.mas.Sweep(rule, mask.MaskBlitter())
+
+	mask.MulMask(d.clip.mask)
+	return clipState{rect: box, mask: mask}
+}
+
+func outerBox(r raster.Rect) (x0, y0, x1, y1 int) {
+	if r.IsEmpty() {
+		return 0, 0, 0, 0
+	}
+	return int(math.Floor(float64(r.X0))), int(math.Floor(float64(r.Y0))),
+		int(math.Ceil(float64(r.X1))), int(math.Ceil(float64(r.Y1)))
+}
+
+func (d *DrawDevice) push(c clipState) {
+	d.stack = append(d.stack, drawFrame{clip: d.clip})
+	d.clip = c
+}
+
+// PopClip implements Device.
+func (d *DrawDevice) PopClip() {
+	n := len(d.stack)
+	if n == 0 {
+		return
+	}
+	f := d.stack[n-1]
+	d.stack = d.stack[:n-1]
+	d.clip = f.clip
+	if f.off {
+		d.off--
+	}
+}
+
+// ClipImageMask implements Device. Images are not sampled yet, so the stencil
+// clips to its own rectangle rather than to its one bit shape.
+func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
+	r := ctm.ApplyRect(raster.Rect{X1: 1, Y1: 1})
+	d.push(clipState{rect: d.clip.rect.Intersect(r), mask: d.clip.mask})
+}
+
+// BeginMask implements Device. A soft mask is not composited yet, so what it
+// draws is thrown away rather than painted onto the page.
+func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams) {
+	d.stack = append(d.stack, drawFrame{clip: d.clip, off: true})
+	d.off++
+}
+
+// EndMask implements Device. The frame stays on the stack, because the mask
+// is a clip and the interpreter pops it.
+func (d *DrawDevice) EndMask() {
+	if n := len(d.stack); n > 0 && d.stack[n-1].off {
+		d.stack[n-1].off = false
+		d.off--
+	}
+}
+
+// BeginGroup implements Device. Groups do not composite separately yet, so
+// the group draws straight into the page.
+func (d *DrawDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knockout bool, blend BlendMode, alpha float32) {
+	d.push(d.clip)
+}
+
+// EndGroup implements Device.
+func (d *DrawDevice) EndGroup() { d.PopClip() }
+
+// BeginTile implements Device. Tiling patterns are not painted yet.
+func (d *DrawDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int {
+	d.stack = append(d.stack, drawFrame{clip: d.clip, off: true})
+	d.off++
+	return 0
+}
+
+// EndTile implements Device.
+func (d *DrawDevice) EndTile() { d.PopClip() }
+
+// FillText implements Device.
+func (d *DrawDevice) FillText(t *Text, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
+	if !d.drawing() {
+		return
+	}
+	paint := d.paint(cs, col, alpha)
+	d.eachGlyph(t, ctm, func(f *Font, prog *font.Font, gid int, m raster.Matrix) {
+		if f.Type3 {
+			d.type3Glyph(f, gid, m, cs, col, alpha)
+			return
+		}
+		d.drawGlyph(prog, gid, m, paint)
+	})
+}
+
+// StrokeText implements Device.
+func (d *DrawDevice) StrokeText(t *Text, s *raster.Stroke, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
+	if !d.drawing() {
+		return
+	}
+	paint := d.paint(cs, col, alpha)
+	d.eachGlyph(t, ctm, func(f *Font, prog *font.Font, gid int, m raster.Matrix) {
+		if f.Type3 {
+			return
+		}
+		p := prog.GlyphPath(gid)
+		if p == nil {
+			return
+		}
+		full := raster.Concat(prog.Matrix, m)
+		d.fillPath(deviceStroke(p, s, full, ctm.Expansion()), false, raster.Identity, paint)
+	})
+}
+
+// ClipText implements Device.
+func (d *DrawDevice) ClipText(t *Text, ctm raster.Matrix, scissor raster.Rect) {
+	d.pushTextClip(t, ctm, nil)
+}
+
+// ClipStrokeText implements Device.
+func (d *DrawDevice) ClipStrokeText(t *Text, s *raster.Stroke, ctm raster.Matrix, scissor raster.Rect) {
+	d.pushTextClip(t, ctm, s)
+}
+
+func (d *DrawDevice) pushTextClip(t *Text, ctm raster.Matrix, s *raster.Stroke) {
+	d.push(d.maskClip(t.Bounds(ctm), func(r *raster.Rasterizer, ox, oy int) {
+		d.eachGlyph(t, ctm, func(f *Font, prog *font.Font, gid int, m raster.Matrix) {
+			if f.Type3 {
+				return
+			}
+			p := prog.GlyphPath(gid)
+			if p == nil {
+				return
+			}
+			full := raster.Concat(prog.Matrix, m)
+			full.E -= float32(ox)
+			full.F -= float32(oy)
+			if s != nil {
+				r.AddPath(deviceStroke(p, s, full, ctm.Expansion()), raster.Identity)
+				return
+			}
+			r.AddPath(p, full)
+		})
+	}, false))
+}
+
+// eachGlyph walks the glyphs of a text object, handing each its transform in
+// device space.
+func (d *DrawDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(*Font, *font.Font, int, raster.Matrix)) {
+	for i := range t.Spans {
+		sp := &t.Spans[i]
+		if sp.Font == nil {
+			continue
+		}
+		prog := sp.Font.Program()
+		if prog == nil && !sp.Font.Type3 {
+			continue
+		}
+		for _, it := range sp.Items {
+			if it.GID < 0 {
+				continue
+			}
+			m := raster.Concat(raster.Matrix{
+				A: sp.Trm.A, B: sp.Trm.B, C: sp.Trm.C, D: sp.Trm.D,
+				E: it.X, F: it.Y,
+			}, ctm)
+			fn(sp.Font, prog, it.GID, m)
+		}
+	}
+}
+
+// drawGlyph stamps one glyph, from the cache when it is small enough to be
+// worth remembering.
+func (d *DrawDevice) drawGlyph(prog *font.Font, gid int, m raster.Matrix, paint raster.Paint) {
+	p := prog.GlyphPath(gid)
+	if p == nil {
+		return
+	}
+	full := raster.Concat(prog.Matrix, m)
+
+	ix, sx := subPixel(full.E)
+	iy, sy := subPixel(full.F)
+	phase := full
+	phase.E, phase.F = float32(sx)/raster.SubPixels, float32(sy)/raster.SubPixels
+
+	box := p.Bounds(phase)
+	x0, y0, x1, y1 := outerBox(box)
+	if d.doc == nil || (x1-x0)*(y1-y0) > maxCachedGlyph || x1 <= x0 || y1 <= y0 {
+		d.fillPath(p, false, full, paint)
+		return
+	}
+
+	cache := d.doc.glyphCache()
+	key := raster.GlyphKey{
+		Font: prog, GID: int32(gid),
+		A: full.A, B: full.B, C: full.C, D: full.D,
+		SubX: sx, SubY: sy,
+	}
+	mask := cache.Get(key)
+	if mask == nil {
+		mask = d.renderGlyph(p, phase, x0, y0, x1, y1)
+		cache.Put(key, mask)
+	}
+	if mask == nil {
+		return
+	}
+	stamp := *mask
+	stamp.X += ix
+	stamp.Y += iy
+	d.dst.DrawMask(&stamp, paint)
+}
+
+func (d *DrawDevice) renderGlyph(p *raster.Path, m raster.Matrix, x0, y0, x1, y1 int) *raster.Pixmap {
+	mask := raster.NewMask(x1-x0, y1-y0)
+	if mask == nil {
+		return nil
+	}
+	mask.X, mask.Y = x0, y0
+	if d.mas == nil {
+		d.mas = raster.NewRasterizer(mask.W, mask.H)
+	} else {
+		d.mas.SetSize(mask.W, mask.H)
+	}
+	d.mas.SetFlatness(d.flat)
+	m.E -= float32(x0)
+	m.F -= float32(y0)
+	d.mas.AddPath(p, m)
+	d.mas.Sweep(raster.NonZero, mask.MaskBlitter())
+	return mask
+}
+
+// subPixel splits a device coordinate into the pixel it lands in and the
+// phase inside it, in quarter pixels.
+func subPixel(v float32) (int, uint8) {
+	f := math.Floor(float64(v))
+	i := int(f)
+	s := uint8((float64(v) - f) * raster.SubPixels)
+	if s >= raster.SubPixels {
+		s = raster.SubPixels - 1
+	}
+	return i, s
+}
+
+// type3Glyph interprets a glyph procedure where the glyph goes. A Type3 glyph
+// is a content stream, so the only thing that can draw it is the interpreter.
+func (d *DrawDevice) type3Glyph(f *Font, code int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32) {
+	if d.doc == nil || d.depth >= maxNesting || code < 0 || code > 255 {
+		return
+	}
+	name := f.GlyphName(uint32(code))
+	if name == "" {
+		return
+	}
+	proc := d.doc.f.GetStream(d.doc.f.Lookup(f.CharProcs, name))
+	if proc == nil {
+		return
+	}
+	data, err := proc.Data()
+	if err != nil {
+		d.doc.errorf("Type3 glyph %s: %v", name, err)
+		return
+	}
+	res := f.Resources
+	if res == nil {
+		res = d.res
+	}
+	if res == nil {
+		res = Dict{}
+	}
+
+	ctm := raster.Concat(f.FontMatrix, m)
+	var ops int64
+	ip := &interp{
+		doc:      d.doc,
+		dev:      d,
+		gs:       newGState(ctm),
+		base:     ctm,
+		res:      res,
+		defaults: &DefaultColorSpaces{},
+		scissor:  raster.InfiniteRect,
+		ops:      &ops,
+		depth:    d.depth + 1,
+	}
+	ip.gs.fill.cs = cs
+	ip.gs.fill.value = append([]float32(nil), col...)
+	ip.gs.strokeColor.cs = cs
+	ip.gs.strokeColor.value = append([]float32(nil), col...)
+	ip.gs.fillAlpha, ip.gs.strokeAlpha = alpha, alpha
+
+	saved := d.src
+	d.src = nil
+	d.depth++
+	ip.run(data)
+	ip.finish()
+	d.depth--
+	d.src = saved
+}

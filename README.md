@@ -1,0 +1,56 @@
+## pdf
+
+[PDF](https://en.wikipedia.org/wiki/PDF) renderer in pure Go. No CGo, no dependencies.
+
+Work in progress: paths, strokes, clips and text render; images and shadings do not.
+
+The object layer is held to MuPDF, poppler and qpdf over 4382 files, the interpreter to
+`mutool trace` call for call, and the font engine to `mutool draw -F svg` glyph for glyph. The
+2D engine is byte-exact against AGG 2.3, and rendered pages are scored against MuPDF, poppler,
+cairo and Ghostscript.
+
+### Rendering
+
+```go
+doc, err := pdf.Open("file.pdf")
+defer doc.Close()
+
+p, err := doc.Page(0)
+img, err := p.Image(150)
+```
+
+A page composites in the document's own color space and converts once, at the end:
+
+```go
+img, err := p.ImageOptions(150, &pdf.Options{ColorSpace: pdf.DeviceCMYK})
+img, err := p.ImageOptions(150, &pdf.Options{Alpha: true})
+px, err := p.Render(p.Matrix(150), nil)
+```
+
+`Options` also carries the pixel limit, strictness and flatness. `Page.Run` drives any device:
+the renderer, a trace, a bounding box, or another.
+
+### Packages
+
+`raster` is the 2D engine and `font` reads font programs; neither knows anything about PDF.
+`syntax` is the file format with no graphics in it. `pdf` is the interpreter, the devices and
+the public API.
+
+### Supported
+
+Paths, strokes and dashes, clipping by path and by text, text in embedded TrueType, CFF, Type1
+and CID keyed fonts, the fourteen standard substitutes, every color space and function type,
+annotation appearances, optional content, encryption, and files damaged enough that the
+cross-reference table has to be rebuilt.
+
+### Not implemented
+
+Images, shadings, tiling patterns, transparency groups, blend modes and soft masks. JBIG2 and
+JPX.
+
+Out of scope: writing or editing PDF, form field values, JavaScript, XFA, signature validation
+and PDF/A validation.
+
+### License
+
+Apache-2.0. `NOTICE` lists what this derives from.

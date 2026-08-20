@@ -1,0 +1,824 @@
+package pdf
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/gen2brain/pdf/raster"
+)
+
+func open(t *testing.T, name string) *Document {
+	t.Helper()
+	d, err := Open(filepath.Join("..", "testdata", name))
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+func TestPageGeometry(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := p.Bounds(), (raster.Rect{X1: 200, Y1: 100}); got != want {
+		t.Errorf("Bounds = %v, want %v", got, want)
+	}
+	if got, want := p.Matrix(72), (raster.Matrix{A: 1, D: -1, F: 100}); got != want {
+		t.Errorf("Matrix = %v, want %v", got, want)
+	}
+	if got, want := p.Matrix(144), (raster.Matrix{A: 2, D: -2, F: 200}); got != want {
+		t.Errorf("Matrix(144) = %v, want %v", got, want)
+	}
+	if got, want := p.DeviceBounds(72), (raster.Rect{X1: 200, Y1: 100}); got != want {
+		t.Errorf("DeviceBounds = %v, want %v", got, want)
+	}
+}
+
+func TestRotation(t *testing.T) {
+	for _, rot := range []int{0, 90, 180, 270} {
+		page := Dict{
+			"MediaBox": Array{Integer(0), Integer(0), Integer(200), Integer(100)},
+			"Rotate":   Integer(rot),
+		}
+		p := &Page{doc: &Document{}, dict: page}
+		p.doc.f = open(t, "minimal.pdf").f
+		b := p.DeviceBounds(72)
+		if b.X0 != 0 || b.Y0 != 0 {
+			t.Errorf("rotate %d: bounds start at %v", rot, b)
+		}
+		w, h := b.X1-b.X0, b.Y1-b.Y0
+		if rot == 90 || rot == 270 {
+			w, h = h, w
+		}
+		if w != 200 || h != 100 {
+			t.Errorf("rotate %d: %gx%g, want 200x100", rot, w, h)
+		}
+	}
+}
+
+// TestTrace runs the bundled files through the trace device and checks what
+// the interpreter produced. The corpus comparison against MuPDF is in
+// tools/tracecmp; this is the part that runs without it.
+func TestTrace(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, _ := d.Page(0)
+	var buf bytes.Buffer
+	if err := p.Run(NewTraceDevice(&buf), p.Matrix(72)); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		`<fill_text colorspace="DeviceGray" color="0" ri="1" bp="1" op="0" opm="0" transform="1 0 0 -1 0 100">`,
+		`<span font="Helvetica" wmode="0" bidi="0" trm="24 0 0 24">`,
+		`<g unicode="H" glyph="H" x="20" y="40" adv="0.722"/>`,
+		`<g unicode="i" glyph="i" x="37.328" y="40" adv="0.222"/>`,
+		`<fill_path winding="nonzero" colorspace="DeviceRGB" color="0 0 1"`,
+		`<moveto x="10" y="10"/>`,
+		`<lineto x="60" y="10"/>`,
+		`<closepath/>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("trace is missing %s\ngot:\n%s", want, got)
+		}
+	}
+}
+
+func TestBBoxDevice(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, _ := d.Page(0)
+	dev := NewBBoxDevice()
+	p.Run(dev, p.Matrix(72))
+	b := dev.Bounds()
+	if b.X0 != 10 || b.Y1 != 90 {
+		t.Errorf("bounds = %v", b)
+	}
+	if b.IsEmpty() || b.X1 > 200 || b.Y0 < 0 {
+		t.Errorf("bounds = %v, outside the page", b)
+	}
+}
+
+// TestInterpreter drives one content stream per case and checks what reaches
+// the device.
+func TestInterpreter(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+		absent  []string
+	}{
+		{
+			name:    "rect fill",
+			content: "1 0 0 rg 10 20 30 40 re f",
+			want:    []string{`fill_path`, `color="1 0 0"`, `<moveto x="10" y="20"/>`, `<closepath/>`},
+		},
+		{
+			name:    "even odd fill",
+			content: "0 0 100 100 re 20 20 60 60 re f*",
+			want:    []string{`winding="eofill"`},
+		},
+		{
+			name:    "stroke state",
+			content: "5 w 1 J 2 j 3 M [2 3] 1 d 0 0 m 10 10 l S",
+			want: []string{`linewidth="5"`, `linecap="1,1,1"`, `linejoin="2"`,
+				`miterlimit="3"`, `dash_phase="1" dash="2 3"`},
+		},
+		{
+			name:    "cm concatenates",
+			content: "2 0 0 2 5 5 cm 0 0 10 10 re f",
+			want:    []string{`transform="2 0 0 -2 5 95"`},
+		},
+		{
+			name:    "q restores",
+			content: "q 2 0 0 2 0 0 cm Q 0 0 10 10 re f",
+			want:    []string{`transform="1 0 0 -1 0 100"`},
+		},
+		{
+			name:    "clip then pop",
+			content: "q 0 0 50 50 re W n 0 0 10 10 re f Q",
+			want:    []string{`<clip_path winding="nonzero"`, `<pop_clip/>`},
+		},
+		{
+			name:    "curves",
+			content: "0 0 m 1 2 3 4 5 6 c 7 8 9 10 v 11 12 13 14 y f",
+			want: []string{`<curveto x1="1" y1="2" x2="3" y2="4" x3="5" y3="6"/>`,
+				`<curveto x1="5" y1="6" x2="7" y2="8" x3="9" y3="10"/>`,
+				`<curveto x1="11" y1="12" x2="13" y2="14" x3="13" y3="14"/>`},
+		},
+		{
+			name:    "alpha and blend",
+			content: "/GS1 gs 0 0 10 10 re f",
+			want:    []string{`alpha="0.5"`, `<group`, `blendmode="Multiply"`},
+		},
+		{
+			name:    "invisible text is ignored",
+			content: "BT /F1 12 Tf 3 Tr (hi) Tj ET",
+			want:    []string{`<ignore_text`},
+			absent:  []string{`<fill_text`},
+		},
+		{
+			name:    "text clipping",
+			content: "BT /F1 12 Tf 7 Tr (hi) Tj ET",
+			want:    []string{`<clip_text`},
+		},
+		{
+			name:    "unbalanced q is closed",
+			content: "q 0 0 50 50 re W n 0 0 10 10 re f",
+			want:    []string{`<pop_clip/>`},
+		},
+		{
+			name:    "inline image",
+			content: "BI /W 2 /H 2 /CS /G /BPC 8 ID \x00\x01\x02\x03 EI",
+			want:    []string{`<fill_image`, `width="2" height="2"`},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runContent(t, tc.content)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("missing %q in\n%s", w, got)
+				}
+			}
+			for _, w := range tc.absent {
+				if strings.Contains(got, w) {
+					t.Errorf("unexpected %q in\n%s", w, got)
+				}
+			}
+		})
+	}
+}
+
+// runContent builds a one page document around a content stream and returns
+// its trace.
+func runContent(t *testing.T, content string) string {
+	t.Helper()
+	d := open(t, "minimal.pdf")
+	page := Dict{
+		"Type":     Name("Page"),
+		"MediaBox": Array{Integer(0), Integer(0), Integer(200), Integer(100)},
+		"Resources": Dict{
+			"Font": Dict{"F1": Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica")}},
+			"ExtGState": Dict{"GS1": Dict{
+				"ca": Real(0.5), "CA": Real(0.5), "BM": Name("Multiply"),
+			}},
+		},
+	}
+	p := &Page{doc: d, dict: page}
+
+	var buf bytes.Buffer
+	dev := NewTraceDevice(&buf)
+	ip := p.newInterp(dev, p.Matrix(72))
+	ip.run([]byte(content))
+	ip.finish()
+	dev.Close()
+	return buf.String()
+}
+
+// TestMalformedContent feeds the interpreter broken content streams. None may
+// panic, hang or leave the device stack unbalanced.
+func TestMalformedContent(t *testing.T) {
+	for _, content := range []string{
+		"", "q", "Q", "Q Q Q Q", "BT", "ET", "f", "S", "W n",
+		"1 0 0 1 0 0 cm cm cm", "/Nonexistent Do", "/Nope gs", "/Nope sh",
+		"BI ID", "BI /W 5 /H 5 ID abc", "BI /W 1 /H 1 /BPC 8 /CS /G ID",
+		"BI /W 1 /H 1 /BPC 8 /CS /G ID ", "BI /W 9 /H 9 /L 9999 ID x", "BT (x) Tj", "BT /F1 Tf (x) Tj ET",
+		"0 0 m 1 1 l h h h f", "[ 1 2 3 ] 0 d 0 0 m 1 1 l S",
+		strings.Repeat("q ", 200) + strings.Repeat("Q ", 200),
+		strings.Repeat("q ", 1000),
+		strings.Repeat("BT ", 100) + "(x) Tj",
+		"1e400 1e400 m 1e400 1e400 l f",
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("%q: panic: %v", content, r)
+				}
+			}()
+			runContent(t, content)
+		}()
+	}
+}
+
+func FuzzContent(f *testing.F) {
+	f.Add("q 1 0 0 1 5 5 cm 0 0 10 10 re f Q")
+	f.Add("BT /F1 12 Tf (hi) Tj ET")
+	f.Add("BI /W 2 /H 2 /CS /G /BPC 8 ID \x00\x01\x02\x03 EI")
+	f.Fuzz(func(t *testing.T, content string) {
+		d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
+		if err != nil {
+			t.Skip()
+		}
+		defer d.Close()
+		p, err := d.Page(0)
+		if err != nil {
+			t.Skip()
+		}
+		ip := p.newInterp(NewTraceDevice(&bytes.Buffer{}), p.Matrix(72))
+		ip.run([]byte(content))
+		ip.finish()
+	})
+}
+
+func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+// TestFontMapping checks that a code reaches the right glyph, character and
+// width through each kind of font dictionary.
+func TestFontMapping(t *testing.T) {
+	tests := []struct {
+		name    string
+		font    Dict
+		text    string
+		wantRun string
+		wantAdv float32
+	}{
+		{
+			name: "base 14 with no widths",
+			font: Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica")},
+			text: "H", wantRun: "H", wantAdv: 0.722,
+		},
+		{
+			name: "base 14 with widths",
+			font: Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica"),
+				"FirstChar": Integer(72), "Widths": Array{Integer(500)}},
+			text: "H", wantRun: "H", wantAdv: 0.5,
+		},
+		{
+			name: "differences rename a code",
+			font: Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica"),
+				"Encoding": Dict{"Differences": Array{Integer(72), Name("bullet")}}},
+			text: "H", wantRun: "•",
+		},
+		{
+			name: "winansi encoding",
+			font: Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica"),
+				"Encoding": Name("WinAnsiEncoding")},
+			text: "\xa9", wantRun: "©",
+		},
+		{
+			name: "symbol font",
+			font: Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Symbol")},
+			text: "a", wantRun: "α",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := open(t, "minimal.pdf")
+			ft := d.font(tc.font)
+			if ft == nil {
+				t.Fatal("font did not load")
+			}
+			cs := ft.Decode([]byte(tc.text))
+			if len(cs) != len(tc.text) {
+				t.Fatalf("decoded %d characters from %q", len(cs), tc.text)
+			}
+			c := cs[0]
+			if got := string(ft.Rune(c)); got != tc.wantRun {
+				t.Errorf("rune = %q, want %q", got, tc.wantRun)
+			}
+			if ft.Glyph(c) <= 0 {
+				t.Errorf("glyph = %d", ft.Glyph(c))
+			}
+			if tc.wantAdv != 0 && c.Width != tc.wantAdv {
+				t.Errorf("width = %g, want %g", c.Width, tc.wantAdv)
+			}
+		})
+	}
+}
+
+// TestToUnicodeLigature checks the one to many mapping that a ligature needs.
+func TestToUnicodeLigature(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	cmapData := "/CIDInit /ProcSet findresource begin\n" +
+		"1 begincodespacerange <00> <FF> endcodespacerange\n" +
+		"2 beginbfchar <41> <00660066> <42> <0042> endbfchar\n" +
+		"endcmap\n"
+	cm := d.parseCMap([]byte(cmapData), 0)
+	if got := cm.Text('A'); got != "ff" {
+		t.Errorf("Text('A') = %q, want %q", got, "ff")
+	}
+	if got := cm.Text('B'); got != "B" {
+		t.Errorf("Text('B') = %q, want %q", got, "B")
+	}
+}
+
+// TestPredefinedCMap checks a built in byte encoding, which decides how many
+// bytes a character code takes.
+func TestPredefinedCMap(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	cm := d.predefinedCMap("90ms-RKSJ-H", 0)
+	if cm == nil {
+		t.Fatal("no CMap")
+	}
+	// Shift-JIS: one byte for ASCII, two for the kana and kanji ranges.
+	for _, tc := range []struct {
+		in    string
+		bytes int
+	}{
+		{"A", 1},
+		{"\x82\xa0", 2},
+		{"\x88\x9f", 2},
+	} {
+		_, n, cid := cm.Next([]byte(tc.in))
+		if n != tc.bytes {
+			t.Errorf("%q took %d bytes, want %d", tc.in, n, tc.bytes)
+		}
+		if cid == 0 {
+			t.Errorf("%q mapped to CID 0", tc.in)
+		}
+	}
+}
+
+// renderContent draws a content stream onto the synthetic 200 by 100 page
+// runContent uses, so that a test can assert pixels.
+func renderContent(t *testing.T, content string, o *Options) *raster.Pixmap {
+	t.Helper()
+	d := open(t, "minimal.pdf")
+	page := Dict{
+		"Type":     Name("Page"),
+		"MediaBox": Array{Integer(0), Integer(0), Integer(200), Integer(100)},
+		"Resources": Dict{
+			"Font":      Dict{"F1": Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica")}},
+			"ExtGState": Dict{"GS1": Dict{"ca": Real(0.5), "CA": Real(0.5)}},
+		},
+	}
+	p := &Page{doc: d, dict: page}
+
+	px := raster.NewPixmap(o.colorSpace().Model(), 200, 100, o.alpha())
+	if o.alpha() {
+		px.Clear()
+	} else {
+		px.ClearWhite()
+	}
+	dev := NewDrawDevice(d, px)
+	dev.res = p.Resources()
+	ip := p.newInterp(dev, p.Matrix(72))
+	ip.run([]byte(content))
+	ip.finish()
+	return px
+}
+
+func pixel(px *raster.Pixmap, x, y int) []uint8 {
+	n := px.Comps()
+	return px.Samples[y*px.Stride+x*n : y*px.Stride+x*n+n]
+}
+
+func same(a []uint8, b ...uint8) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestDrawFill(t *testing.T) {
+	px := renderContent(t, "0 0 1 rg 10 20 30 40 re f", nil)
+	if got := pixel(px, 20, 50); !same(got, 0, 0, 255) {
+		t.Fatalf("inside the rectangle = %v, want blue", got)
+	}
+	if got := pixel(px, 20, 30); !same(got, 255, 255, 255) {
+		t.Fatalf("above the rectangle = %v, want white", got)
+	}
+	if got := pixel(px, 5, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("left of the rectangle = %v, want white", got)
+	}
+	if got := pixel(px, 39, 41); !same(got, 0, 0, 255) {
+		t.Fatalf("last pixel inside = %v, want blue", got)
+	}
+}
+
+func TestDrawEvenOdd(t *testing.T) {
+	px := renderContent(t, "0 g 0 0 100 100 re 20 20 60 60 re f*", nil)
+	if got := pixel(px, 50, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("hole = %v, want white", got)
+	}
+	if got := pixel(px, 10, 50); !same(got, 0, 0, 0) {
+		t.Fatalf("ring = %v, want black", got)
+	}
+}
+
+func TestDrawStroke(t *testing.T) {
+	px := renderContent(t, "4 w 0 g 10 50 m 190 50 l S", nil)
+	for _, y := range []int{49, 50} {
+		if got := pixel(px, 100, y); !same(got, 0, 0, 0) {
+			t.Fatalf("on the line at y=%d = %v, want black", y, got)
+		}
+	}
+	if got := pixel(px, 100, 45); !same(got, 255, 255, 255) {
+		t.Fatalf("off the line = %v, want white", got)
+	}
+	if got := pixel(px, 5, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("past the end = %v, want white", got)
+	}
+}
+
+func TestDrawClipRect(t *testing.T) {
+	px := renderContent(t, "0 0 100 100 re W n 1 0 0 rg 0 0 200 100 re f", nil)
+	if got := pixel(px, 50, 50); !same(got, 255, 0, 0) {
+		t.Fatalf("inside the clip = %v, want red", got)
+	}
+	if got := pixel(px, 150, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("outside the clip = %v, want white", got)
+	}
+}
+
+func TestDrawClipPath(t *testing.T) {
+	px := renderContent(t, "0 0 m 100 0 l 0 100 l h W n 0 g 0 0 200 100 re f", nil)
+	if got := pixel(px, 10, 90); !same(got, 0, 0, 0) {
+		t.Fatalf("inside the triangle = %v, want black", got)
+	}
+	if got := pixel(px, 90, 10); !same(got, 255, 255, 255) {
+		t.Fatalf("outside the triangle = %v, want white", got)
+	}
+	if got := pixel(px, 150, 50); !same(got, 255, 255, 255) {
+		t.Fatalf("outside the clip box = %v, want white", got)
+	}
+}
+
+func TestDrawNestedClip(t *testing.T) {
+	px := renderContent(t, `q 0 0 100 100 re W n
+		0 0 m 200 0 l 200 100 l h W n
+		0 g 0 0 200 100 re f Q`, nil)
+	if got := pixel(px, 80, 90); !same(got, 0, 0, 0) {
+		t.Fatalf("inside both clips = %v, want black", got)
+	}
+	if got := pixel(px, 10, 10); !same(got, 255, 255, 255) {
+		t.Fatalf("outside the triangle = %v, want white", got)
+	}
+	if got := pixel(px, 150, 90); !same(got, 255, 255, 255) {
+		t.Fatalf("outside the rectangle = %v, want white", got)
+	}
+}
+
+func TestDrawAlpha(t *testing.T) {
+	px := renderContent(t, "/GS1 gs 0 g 0 0 200 100 re f", nil)
+	if got := pixel(px, 100, 50); !same(got, 127, 127, 127) {
+		t.Fatalf("half alpha black on white = %v, want 127", got)
+	}
+}
+
+func TestDrawText(t *testing.T) {
+	px := renderContent(t, "BT /F1 48 Tf 10 30 Td (Hi) Tj ET", nil)
+	dark := 0
+	for y := 0; y < px.H; y++ {
+		for x := 0; x < px.W; x++ {
+			if pixel(px, x, y)[0] < 128 {
+				dark++
+			}
+		}
+	}
+	if dark < 100 {
+		t.Fatalf("text drew %d dark pixels", dark)
+	}
+	blank := renderContent(t, "BT /F1 48 Tf 10 30 Td 3 Tr (Hi) Tj ET", nil)
+	for i, v := range blank.Samples {
+		if v != 255 {
+			t.Fatalf("invisible text drew at sample %d: %d", i, v)
+		}
+	}
+}
+
+func TestDrawTextClip(t *testing.T) {
+	px := renderContent(t, "BT /F1 48 Tf 10 30 Td 7 Tr (Hi) Tj ET 0 0 1 rg 0 0 200 100 re f", nil)
+	blue := 0
+	for y := 0; y < px.H; y++ {
+		for x := 0; x < px.W; x++ {
+			if same(pixel(px, x, y), 0, 0, 255) {
+				blue++
+			}
+		}
+	}
+	if blue == 0 || blue > 4000 {
+		t.Fatalf("text clip let %d pixels through", blue)
+	}
+}
+
+func TestDrawColorSpaces(t *testing.T) {
+	gray := renderContent(t, "0.25 g 0 0 200 100 re f", &Options{ColorSpace: DeviceGray})
+	if got := pixel(gray, 100, 50); !same(got, 64) {
+		t.Fatalf("gray destination = %v, want 64", got)
+	}
+	cmyk := renderContent(t, "1 0 0 rg 0 0 200 100 re f", &Options{ColorSpace: DeviceCMYK})
+	if got := pixel(cmyk, 100, 50); !same(got, 0, 255, 255, 0) {
+		t.Fatalf("cmyk destination = %v, want red", got)
+	}
+	alpha := renderContent(t, "0 0 1 rg 0 0 100 100 re f", &Options{Alpha: true})
+	if got := pixel(alpha, 50, 50); !same(got, 0, 0, 255, 255) {
+		t.Fatalf("painted pixel with alpha = %v", got)
+	}
+	if got := pixel(alpha, 150, 50); !same(got, 0, 0, 0, 0) {
+		t.Fatalf("untouched pixel with alpha = %v, want transparent", got)
+	}
+}
+
+func TestRenderPage(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := p.Image(72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := img.Bounds().Max, (image.Point{X: 200, Y: 100}); got != want {
+		t.Fatalf("bounds = %v, want %v", got, want)
+	}
+	if r, g, b, a := img.At(40, 80).RGBA(); r != 0 || g != 0 || b != 0xffff || a != 0xffff {
+		t.Fatalf("the blue rectangle is %v %v %v %v", r, g, b, a)
+	}
+	if r, _, _, _ := img.At(180, 20).RGBA(); r != 0xffff {
+		t.Fatalf("the background is not white")
+	}
+}
+
+func TestRenderLimits(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Render(p.Matrix(72), &Options{PixelLimit: 100}); err == nil {
+		t.Fatal("the pixel limit did not stop a 200x100 page")
+	}
+	if _, err := p.Render(p.Matrix(72), &Options{ColorSpace: &ColorSpace{Name: "Two", N: 2}}); err == nil {
+		t.Fatal("a two component destination was accepted")
+	}
+	px, err := p.Render(p.Matrix(0.5), nil)
+	if err != nil {
+		t.Fatalf("a page smaller than a pixel: %v", err)
+	}
+	if px.W < 1 || px.H < 1 {
+		t.Fatalf("a page smaller than a pixel rendered %dx%d", px.W, px.H)
+	}
+}
+
+func BenchmarkRenderText(b *testing.B) {
+	d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer d.Close()
+	page := Dict{
+		"Type":     Name("Page"),
+		"MediaBox": Array{Integer(0), Integer(0), Integer(612), Integer(792)},
+		"Resources": Dict{
+			"Font": Dict{"F1": Dict{"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name("Helvetica")}},
+		},
+	}
+	p := &Page{doc: d, dict: page}
+	var content strings.Builder
+	content.WriteString("BT /F1 11 Tf 14 TL 36 750 Td\n")
+	for i := 0; i < 50; i++ {
+		content.WriteString("(The quick brown fox jumps over the lazy dog, 0123456789.) Tj T*\n")
+	}
+	content.WriteString("ET\n")
+	data := []byte(content.String())
+
+	ctm := p.Matrix(150)
+	px := raster.NewPixmap(DeviceRGB.Model(), 1275, 1650, false)
+	b.ResetTimer()
+	for b.Loop() {
+		px.ClearWhite()
+		dev := NewDrawDevice(d, px)
+		ip := p.newInterp(dev, ctm)
+		ip.run(data)
+		ip.finish()
+	}
+}
+
+func BenchmarkRenderPaths(b *testing.B) {
+	d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer d.Close()
+	page := Dict{
+		"Type":     Name("Page"),
+		"MediaBox": Array{Integer(0), Integer(0), Integer(612), Integer(792)},
+	}
+	p := &Page{doc: d, dict: page}
+	var content strings.Builder
+	seed := uint32(1)
+	next := func(n int) int {
+		seed = seed*1664525 + 1013904223
+		return int(seed>>8) % n
+	}
+	for i := 0; i < 400; i++ {
+		x, y := next(520), next(700)
+		content.WriteString(fmt.Sprintf("0.%d 0.%d 0.%d rg %d %d m %d %d l %d %d %d %d %d %d c %d %d l f\n",
+			next(9), next(9), next(9),
+			x, y, x+next(80), y+next(80),
+			x+next(80), y+next(80), x+next(80), y+next(80), x+next(80), y+next(80),
+			x+next(80), y+next(80)))
+	}
+	data := []byte(content.String())
+
+	ctm := p.Matrix(150)
+	px := raster.NewPixmap(DeviceRGB.Model(), 1275, 1650, false)
+	b.ResetTimer()
+	for b.Loop() {
+		px.ClearWhite()
+		dev := NewDrawDevice(d, px)
+		ip := p.newInterp(dev, ctm)
+		ip.run(data)
+		ip.finish()
+	}
+}
+
+func TestImageOptions(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		o    *Options
+		want string
+	}{
+		{nil, "*image.RGBA"},
+		{&Options{ColorSpace: DeviceGray}, "*image.Gray"},
+		{&Options{ColorSpace: DeviceCMYK}, "*image.CMYK"},
+		{&Options{Alpha: true}, "*image.RGBA"},
+		{&Options{ColorSpace: DeviceCMYK, Alpha: true}, "*image.RGBA"},
+	} {
+		img, err := p.ImageOptions(72, tc.o)
+		if err != nil {
+			t.Fatalf("%v: %v", tc.o, err)
+		}
+		if got := fmt.Sprintf("%T", img); got != tc.want {
+			t.Fatalf("%v: got %s, want %s", tc.o, got, tc.want)
+		}
+		if got := img.Bounds().Max; got != (image.Point{X: 200, Y: 100}) {
+			t.Fatalf("%v: bounds %v", tc.o, got)
+		}
+		r, g, b, _ := img.At(40, 80).RGBA()
+		if tc.o != nil && tc.o.ColorSpace == DeviceGray {
+			if r != g || g != b || r > 0x4000 {
+				t.Fatalf("gray: the blue rectangle came out %v %v %v", r, g, b)
+			}
+			continue
+		}
+		if r > 0x2000 || g > 0x2000 || b < 0xd000 {
+			t.Fatalf("%v: the blue rectangle came out %v %v %v", tc.o, r, g, b)
+		}
+	}
+}
+
+func TestRenderTo(t *testing.T) {
+	d := open(t, "minimal.pdf")
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, 300, 200))
+	if err := p.RenderTo(dst, p.Matrix(72), nil); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _, _ := dst.At(250, 150).RGBA(); r != 0 {
+		t.Fatal("RenderTo painted outside the page")
+	}
+	if _, _, b, _ := dst.At(40, 80).RGBA(); b != 0xffff {
+		t.Fatal("RenderTo did not paint the page")
+	}
+}
+
+// buildPDF assembles a document from object bodies numbered from one, so that
+// a test can exercise the things that need a real stream: forms, patterns and
+// Type3 glyph procedures.
+func buildPDF(t *testing.T, objs []string) *Document {
+	t.Helper()
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n")
+	offs := make([]int, len(objs)+1)
+	for i, o := range objs {
+		offs[i+1] = buf.Len()
+		fmt.Fprintf(&buf, "%d 0 obj\n%s\nendobj\n", i+1, o)
+	}
+	start := buf.Len()
+	fmt.Fprintf(&buf, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for i := 1; i <= len(objs); i++ {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", offs[i])
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n",
+		len(objs)+1, start)
+
+	d, err := Load(buf.Bytes(), "")
+	if err != nil {
+		t.Fatalf("building a document: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+func streamObj(dict, data string) string {
+	return fmt.Sprintf("<< %s /Length %d >>\nstream\n%s\nendstream", dict, len(data), data)
+}
+
+func renderDoc(t *testing.T, d *Document, o *Options) *raster.Pixmap {
+	t.Helper()
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	px, err := p.Render(p.Matrix(72), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return px
+}
+
+// TestNestedColorIsolation checks that a form, a pattern or a glyph procedure
+// setting a color does not reach back into the state that invoked it. The
+// color operators write their operands into the slice the graphics state
+// already holds, so a nested context has to be given its own.
+func TestNestedColorIsolation(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Fm 5 0 R >> >> >>",
+		streamObj("", "/DeviceRGB cs 0 0 1 sc 1 0 0 1 10 10 cm /Fm Do 40 40 50 50 re f"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 20 20]",
+			"1 0 0 sc 0 0 20 20 re f"),
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 20, 80); !same(got, 255, 0, 0) {
+		t.Fatalf("the form drew %v, want red", got)
+	}
+	if got := pixel(px, 70, 20); !same(got, 0, 0, 255) {
+		t.Fatalf("after the form the fill is %v, want the blue it selected", got)
+	}
+}
+
+// TestNestedDashIsolation is the same hazard on the dash array, which the d
+// operator also rewrites in place.
+func TestNestedDashIsolation(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /Fm 5 0 R >> >> >>",
+		streamObj("", "0 g 4 w [100 100] 0 d /Fm Do 0 50 m 100 50 l S"),
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", "[1 1] 0 d"),
+	})
+	px := renderDoc(t, d, nil)
+	for x := 2; x < 20; x++ {
+		if got := pixel(px, x, 50); !same(got, 0, 0, 0) {
+			t.Fatalf("the line is dashed at x=%d: %v", x, got)
+		}
+	}
+}

@@ -1,0 +1,61 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 100 100] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /CS0 10 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+/CS0 cs 0.6 0.25 scn
+0 0 100 100 re f
+endstream
+endobj
+5 0 obj
+null
+endobj
+6 0 obj
+null
+endobj
+7 0 obj
+null
+endobj
+8 0 obj
+null
+endobj
+9 0 obj
+null
+endobj
+10 0 obj
+[/DeviceN [/A /B] /DeviceGray 11 0 R]
+endobj
+11 0 obj
+<< /FunctionType 4 /Domain [0 1 0 1] /Range [0 1] /Length 24 >>
+stream
+{ exch pop 1 exch sub }
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000145 00000 n 
+0000000255 00000 n 
+0000000342 00000 n 
+0000000362 00000 n 
+0000000382 00000 n 
+0000000402 00000 n 
+0000000422 00000 n 
+0000000442 00000 n 
+0000000496 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+617
+%%EOF
