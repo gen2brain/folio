@@ -45,12 +45,7 @@ func (ip *interp) runForm(st *Stream, asMask bool) {
 	savedStack := len(ip.gstack)
 	ip.depth++
 
-	if m := f.GetFloats(st.Dict["Matrix"]); len(m) == 6 {
-		ip.gs.ctm = raster.Concat(raster.Matrix{
-			A: float32(m[0]), B: float32(m[1]), C: float32(m[2]),
-			D: float32(m[3]), E: float32(m[4]), F: float32(m[5]),
-		}, ip.gs.ctm)
-	}
+	ip.gs.ctm = raster.Concat(ip.doc.matrix(st.Dict["Matrix"], raster.Identity), ip.gs.ctm)
 
 	group, masked := false, false
 	if g := f.GetDict(st.Dict["Group"]); g != nil && f.GetName(g["S"]) == "Transparency" {

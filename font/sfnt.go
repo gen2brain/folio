@@ -350,12 +350,3 @@ func (s *sfnt) glyphName(gid int) string {
 }
 
 func (s *sfnt) hasNames() bool { return s != nil && len(s.postNames) > 0 }
-
-// Table returns a raw table, for a caller that needs one this package does
-// not read.
-func (s *sfnt) Table(name string) []byte {
-	if s == nil {
-		return nil
-	}
-	return s.tables[name]
-}

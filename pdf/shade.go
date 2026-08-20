@@ -92,13 +92,7 @@ func (d *Document) shade(obj Object, res Dict) *Shade {
 		sh.Extend[1] = f.GetBool(e[1], false)
 	}
 	if sh.Type == 1 {
-		sh.FuncMatrix = raster.Identity
-		if m := f.GetFloats(dict["Matrix"]); len(m) == 6 {
-			sh.FuncMatrix = raster.Matrix{
-				A: float32(m[0]), B: float32(m[1]), C: float32(m[2]),
-				D: float32(m[3]), E: float32(m[4]), F: float32(m[5]),
-			}
-		}
+		sh.FuncMatrix = d.matrix(dict["Matrix"], raster.Identity)
 		sh.XDivs, sh.YDivs = 32, 32
 	}
 	switch fn := f.Resolve(dict["Function"]).(type) {

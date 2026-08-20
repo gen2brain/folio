@@ -44,7 +44,6 @@ func (p *Page) RunAnnotations(dev Device, ctm raster.Matrix) {
 // The device is told the page's default color spaces first whether or not
 // anything is then drawn, which is where MuPDF tells it.
 func (p *Page) runAnnotation(dev Device, ctm raster.Matrix, dict Dict) {
-	f := p.doc.f
 	dev.SetDefaultColorSpaces(p.defaultSpaces())
 
 	ap := p.appearance(dict)
@@ -57,13 +56,7 @@ func (p *Page) runAnnotation(dev Device, ctm raster.Matrix, dict Dict) {
 	}
 
 	bbox := p.doc.rect(ap.Dict["BBox"])
-	m := raster.Identity
-	if fm := f.GetFloats(ap.Dict["Matrix"]); len(fm) == 6 {
-		m = raster.Matrix{
-			A: float32(fm[0]), B: float32(fm[1]), C: float32(fm[2]),
-			D: float32(fm[3]), E: float32(fm[4]), F: float32(fm[5]),
-		}
-	}
+	m := p.doc.matrix(ap.Dict["Matrix"], raster.Identity)
 	fit := raster.Identity
 	if !bbox.IsEmpty() {
 		t := m.ApplyRect(bbox)
@@ -123,6 +116,19 @@ func (p *Page) appearance(dict Dict) *Stream {
 		}
 	}
 	return nil
+}
+
+// matrix reads a six number array as a transform, or returns fallback when the
+// object is not one.
+func (d *Document) matrix(obj Object, fallback raster.Matrix) raster.Matrix {
+	m := d.f.GetFloats(obj)
+	if len(m) != 6 {
+		return fallback
+	}
+	return raster.Matrix{
+		A: float32(m[0]), B: float32(m[1]), C: float32(m[2]),
+		D: float32(m[3]), E: float32(m[4]), F: float32(m[5]),
+	}
 }
 
 // rect reads a rectangle object.

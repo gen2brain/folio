@@ -755,6 +755,19 @@ func refit(pix []byte, w, h, dw, dh, n int) []byte {
 	return out
 }
 
+// tightRows returns rows of n bytes a pixel with no padding between them,
+// which is the decoder's own buffer whenever it has none to begin with.
+func tightRows(pix []byte, stride, w, h, n int) []byte {
+	if stride == w*n && len(pix) >= w*h*n {
+		return pix[:w*h*n]
+	}
+	out := make([]byte, w*h*n)
+	for y := 0; y < h; y++ {
+		copy(out[y*w*n:], pix[y*stride:y*stride+w*n])
+	}
+	return out
+}
+
 // jpegSamples decodes a JPEG into interleaved samples of its own components.
 // Gray stays gray, CMYK stays CMYK, and everything else becomes RGB, because
 // those are the three shapes a PDF color space can name.
@@ -771,17 +784,10 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 
 	switch m := img.(type) {
 	case *image.Gray:
-		pix := make([]byte, w*h)
-		for y := 0; y < h; y++ {
-			copy(pix[y*w:], m.Pix[y*m.Stride:y*m.Stride+w])
-		}
-		return pix, w, h, 1, nil
+		return tightRows(m.Pix, m.Stride, w, h, 1), w, h, 1, nil
 
 	case *image.CMYK:
-		pix := make([]byte, w*h*4)
-		for y := 0; y < h; y++ {
-			copy(pix[y*w*4:], m.Pix[y*m.Stride:y*m.Stride+w*4])
-		}
+		pix := tightRows(m.Pix, m.Stride, w, h, 4)
 		undoAdobe(pix, adobeTransform(data))
 		return pix, w, h, 4, nil
 

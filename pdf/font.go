@@ -346,12 +346,7 @@ func (d *Document) readSimpleWidths(ft *Font, dict Dict) {
 
 func (d *Document) readType3(ft *Font, dict Dict) {
 	f := d.f
-	if m := f.GetFloats(dict["FontMatrix"]); len(m) == 6 {
-		ft.FontMatrix = raster.Matrix{
-			A: float32(m[0]), B: float32(m[1]), C: float32(m[2]),
-			D: float32(m[3]), E: float32(m[4]), F: float32(m[5]),
-		}
-	}
+	ft.FontMatrix = d.matrix(dict["FontMatrix"], ft.FontMatrix)
 	ft.CharProcs = f.GetDict(dict["CharProcs"])
 	ft.Resources = f.GetDict(dict["Resources"])
 }
@@ -424,20 +419,8 @@ func (d *Document) readType0(ft *Font, dict Dict) {
 	}
 }
 
-// Symbolic reports whether the descriptor calls the font symbolic, which
-// decides how its codes are looked up.
-func (ft *Font) Symbolic() bool { return ft.symbolic }
-
 // BaseFont returns the base-14 name a substituted font resolved to.
 func (ft *Font) BaseFont() string { return ft.base }
-
-// CodeName returns the glyph name the encoding gives a code.
-func (ft *Font) CodeName(code uint32) string {
-	if code < 256 {
-		return ft.names[code]
-	}
-	return ""
-}
 
 // Program returns the font program, embedded or substituted, or nil.
 func (ft *Font) Program() *font.Font { return ft.prog }

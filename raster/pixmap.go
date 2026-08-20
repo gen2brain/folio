@@ -15,8 +15,9 @@ type Model interface {
 
 // Pixmap is an interleaved 8 bit image of N color components and an optional
 // alpha channel, premultiplied when there is one. X and Y are where its top
-// left sample sits in device space; everything that draws into it works in
-// pixmap local coordinates.
+// left sample sits, and everything that composites into it works in those
+// coordinates rather than in the pixmap's own, so that a group covering part
+// of a page needs no transform of its own.
 type Pixmap struct {
 	W, H    int
 	N       int

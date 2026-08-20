@@ -49,8 +49,7 @@ type ColorSpace struct {
 	// Gamma and Matrix are the transfer values of a CalRGB or CalGray space.
 	Gamma  []float64
 	Matrix []float64
-	// Tint maps colorant values to the alternate space. It is nil until
-	// functions are implemented.
+	// Tint maps colorant values to the alternate space.
 	Tint *Function
 }
 
@@ -81,7 +80,7 @@ func (cs *ColorSpace) Clamp(c []float32) {
 	switch cs.Kind {
 	case KindIndexed:
 		if len(c) > 0 {
-			c[0] = clampf(c[0], 0, float32(cs.HiVal))
+			c[0] = float32(int(clampf(c[0], 0, float32(cs.HiVal)) + 0.5))
 		}
 	case KindLab:
 		r := labRange(cs.Range)

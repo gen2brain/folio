@@ -130,14 +130,6 @@ func (m Matrix) Apply(p Point) Point {
 	}
 }
 
-// ApplyVector transforms a direction, ignoring the translation.
-func (m Matrix) ApplyVector(p Point) Point {
-	return Point{
-		float32(m.A*p.X) + float32(m.C*p.Y),
-		float32(m.B*p.X) + float32(m.D*p.Y),
-	}
-}
-
 // ApplyRect returns the bounding box of the transformed rectangle.
 func (m Matrix) ApplyRect(r Rect) Rect {
 	if r.IsInfinite() {
@@ -185,13 +177,6 @@ func (m Matrix) MaxExpansion() float32 {
 		}
 	}
 	return max
-}
-
-// IsRectilinear reports whether the transform maps axis aligned rectangles to
-// axis aligned rectangles, which every fast path in the rasterizer wants.
-func (m Matrix) IsRectilinear() bool {
-	const eps = 1e-5
-	return (absf(m.B) < eps && absf(m.C) < eps) || (absf(m.A) < eps && absf(m.D) < eps)
 }
 
 func min32(a, b float32) float32 {

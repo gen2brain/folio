@@ -24,8 +24,8 @@ type DrawDevice struct {
 
 	clip  clipState
 	stack []drawFrame
-	// off counts the reasons not to draw: a soft mask being built, or a tile
-	// this device does not paint. Clips are still tracked, so the stacks stay
+	// off counts the reasons not to draw, which is a group or a mask whose
+	// area came out empty. Clips are still tracked, so the stacks stay
 	// balanced.
 	off int
 	// knockout is set while the destination is a knockout group, whose

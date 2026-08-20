@@ -55,13 +55,7 @@ func (ip *interp) paintPattern(c *color, alpha float32, shape raster.Rect, clip 
 		return
 	}
 
-	pm := raster.Identity
-	if m := f.GetFloats(dict["Matrix"]); len(m) == 6 {
-		pm = raster.Matrix{
-			A: float32(m[0]), B: float32(m[1]), C: float32(m[2]),
-			D: float32(m[3]), E: float32(m[4]), F: float32(m[5]),
-		}
-	}
+	pm := ip.doc.matrix(dict["Matrix"], raster.Identity)
 
 	switch f.GetInt(dict["PatternType"], 0) {
 	case 2:

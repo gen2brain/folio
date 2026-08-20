@@ -31,9 +31,11 @@ type interp struct {
 	defaultsSet   []bool
 
 	path raster.Path
-	// spare is the path buffer an interpreter re-entered from inside a
-	// painting operator builds into.
-	spare raster.Path
+	// held is the stack of paths being painted, one per painting operator
+	// this is inside: taking the path out of the interpreter is what keeps a
+	// soft mask or a pattern run from inside one from building into it.
+	held    [maxNesting + 2]raster.Path
+	holding int
 	// clip is the pending clip set by W or W*, applied by the next painting
 	// operator.
 	clip    int
@@ -390,6 +392,7 @@ func (ip *interp) setDeviceColor(c *color, cs *ColorSpace, stack []Object, n int
 	for i := 0; i < n; i++ {
 		c.value[i] = num(stack, n-1-i)
 	}
+	cs.Clamp(c.value)
 }
 
 // setColor handles sc, scn, SC and SCN, whose operands depend on the space
@@ -410,6 +413,7 @@ func (ip *interp) setColor(c *color, stack []Object) {
 			for i := 0; i < base.N && i < len(stack); i++ {
 				c.value[i] = num(stack, base.N-1-i)
 			}
+			base.Clamp(c.value)
 		}
 		return
 	}
@@ -417,6 +421,7 @@ func (ip *interp) setColor(c *color, stack []Object) {
 	for i := 0; i < n; i++ {
 		c.value[i] = num(stack, n-1-i)
 	}
+	c.cs.Clamp(c.value)
 }
 
 func (ip *interp) setFont(n Name) {
@@ -445,45 +450,50 @@ func (ip *interp) newline() {
 
 // paint applies the pending clip and hands the current path to the device.
 func (ip *interp) paint(fill, stroke, evenOdd bool) {
-	path, clip := ip.path, ip.clip
-	ip.path, ip.clip = ip.spare, clipNone
+	if ip.holding >= len(ip.held) {
+		return
+	}
+	held, clip := &ip.held[ip.holding], ip.clip
+	ip.holding++
+	*held, ip.path, ip.clip = ip.path, *held, clipNone
 	ip.path.Reset()
 	defer func() {
-		path.Reset()
-		ip.spare, ip.path, ip.clip = ip.path, path, clipNone
+		ip.holding--
+		held.Reset()
+		*held, ip.path, ip.clip = ip.path, *held, clipNone
 	}()
 
 	if ip.hidden > 0 {
 		fill, stroke = false, false
 	}
-	if !path.IsEmpty() && (fill || stroke) {
-		bbox := path.Bounds(ip.gs.ctm)
+	if !held.IsEmpty() && (fill || stroke) {
+		bbox := held.Bounds(ip.gs.ctm)
 		if stroke {
-			bbox = path.StrokeBounds(&ip.gs.stroke, ip.gs.ctm)
+			bbox = held.StrokeBounds(&ip.gs.stroke, ip.gs.ctm)
 		}
 		d := ip.beginDraw(bbox)
 		if fill {
 			if ip.gs.fill.cs.IsPattern() {
-				ip.fillWithPattern(&path, evenOdd, false)
+				ip.fillWithPattern(held, evenOdd, false)
 			} else {
-				ip.dev.FillPath(&path, evenOdd, ip.gs.ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
+				ip.dev.FillPath(held, evenOdd, ip.gs.ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
 			}
 		}
 		if stroke {
 			if ip.gs.strokeColor.cs.IsPattern() {
-				ip.fillWithPattern(&path, evenOdd, true)
+				ip.fillWithPattern(held, evenOdd, true)
 			} else {
-				ip.dev.StrokePath(&path, &ip.gs.stroke, ip.gs.ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
+				ip.dev.StrokePath(held, &ip.gs.stroke, ip.gs.ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
 			}
 		}
 		ip.endDraw(d)
 	}
 
 	if clip != clipNone {
-		if path.IsEmpty() {
-			path.MoveTo(0, 0)
+		if held.IsEmpty() {
+			held.MoveTo(0, 0)
 		}
-		ip.dev.ClipPath(&path, clip == clipEvenOdd, ip.gs.ctm, ip.scissor)
+		ip.dev.ClipPath(held, clip == clipEvenOdd, ip.gs.ctm, ip.scissor)
 		ip.gs.clipDepth++
 	}
 }
@@ -561,12 +571,5 @@ func (ip *interp) formBounds(st *Stream, ctm raster.Matrix) raster.Rect {
 		return raster.InfiniteRect
 	}
 	r := raster.Rect{X0: float32(b[0]), Y0: float32(b[1]), X1: float32(b[2]), Y1: float32(b[3])}.Normalized()
-	m := ctm
-	if fm := f.GetFloats(st.Dict["Matrix"]); len(fm) == 6 {
-		m = raster.Concat(raster.Matrix{
-			A: float32(fm[0]), B: float32(fm[1]), C: float32(fm[2]),
-			D: float32(fm[3]), E: float32(fm[4]), F: float32(fm[5]),
-		}, ctm)
-	}
-	return m.ApplyRect(r)
+	return raster.Concat(ip.doc.matrix(st.Dict["Matrix"], raster.Identity), ctm).ApplyRect(r)
 }
