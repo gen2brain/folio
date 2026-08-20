@@ -436,7 +436,7 @@ func (ip *interp) setFont(n Name) {
 		}
 		return
 	}
-	if ft := ip.doc.font(obj); ft != nil {
+	if ft := ip.doc.font(obj, ip.res); ft != nil {
 		ip.gs.text.font = ft
 	}
 }
@@ -561,7 +561,7 @@ func (ip *interp) beginSoftMask(bbox raster.Rect) bool {
 	ip.gs = saved
 	ip.res = savedRes
 
-	ip.dev.EndMask(sm.transfer)
+	ip.dev.EndMask(transferTable(sm.transfer))
 	return true
 }
 

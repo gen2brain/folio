@@ -1,4 +1,4 @@
-package pdf
+package gfx
 
 import (
 	"github.com/gen2brain/pdf/raster"
@@ -162,24 +162,24 @@ func (d *ListDevice) IgnoreText(text *Text, ctm raster.Matrix) {
 }
 
 // FillShade implements Device.
-func (d *ListDevice) FillShade(shade *Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
+func (d *ListDevice) FillShade(shade Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	d.add(listCmd{kind: cmdFillShade, obj: shade, ctm: ctm, alpha: alpha, cp: cp})
 }
 
 // FillImage implements Device.
-func (d *ListDevice) FillImage(img *Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
+func (d *ListDevice) FillImage(img Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	d.paint(listCmd{kind: cmdFillImage, obj: img, ctm: ctm, alpha: alpha, cp: cp},
 		ctm.ApplyRect(unitRect))
 }
 
 // FillImageMask implements Device.
-func (d *ListDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams) {
+func (d *ListDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams) {
 	d.paint(listCmd{kind: cmdFillImageMask, obj: img, ctm: ctm, cs: cs,
 		color: cloneColor(color), alpha: alpha, cp: cp}, ctm.ApplyRect(unitRect))
 }
 
 // ClipImageMask implements Device.
-func (d *ListDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
+func (d *ListDevice) ClipImageMask(img Image, ctm raster.Matrix, scissor raster.Rect) {
 	d.add(listCmd{kind: cmdClipImageMask, obj: img, ctm: ctm, rect: scissor})
 }
 
@@ -198,7 +198,7 @@ func (d *ListDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace
 }
 
 // EndMask implements Device.
-func (d *ListDevice) EndMask(transfer *Function) {
+func (d *ListDevice) EndMask(transfer *[256]uint8) {
 	d.add(listCmd{kind: cmdEndMask, obj: transfer})
 }
 
@@ -269,13 +269,13 @@ func (d *ListDevice) ReplayClip(dev Device, clip raster.Rect) {
 		case cmdIgnoreText:
 			dev.IgnoreText(c.obj.(*Text), c.ctm)
 		case cmdFillShade:
-			dev.FillShade(c.obj.(*Shade), c.ctm, c.alpha, c.cp)
+			dev.FillShade(c.obj.(Shade), c.ctm, c.alpha, c.cp)
 		case cmdFillImage:
-			dev.FillImage(c.obj.(*Image), c.ctm, c.alpha, c.cp)
+			dev.FillImage(c.obj.(Image), c.ctm, c.alpha, c.cp)
 		case cmdFillImageMask:
-			dev.FillImageMask(c.obj.(*Image), c.ctm, c.cs, c.color, c.alpha, c.cp)
+			dev.FillImageMask(c.obj.(Image), c.ctm, c.cs, c.color, c.alpha, c.cp)
 		case cmdClipImageMask:
-			dev.ClipImageMask(c.obj.(*Image), c.ctm, c.rect)
+			dev.ClipImageMask(c.obj.(Image), c.ctm, c.rect)
 		case cmdPopClip:
 			dev.PopClip()
 		case cmdDefaultColorSpaces:
@@ -283,8 +283,8 @@ func (d *ListDevice) ReplayClip(dev Device, clip raster.Rect) {
 		case cmdBeginMask:
 			dev.BeginMask(c.rect, c.flags&listLuminosity != 0, c.cs, c.color, c.cp)
 		case cmdEndMask:
-			fn, _ := c.obj.(*Function)
-			dev.EndMask(fn)
+			tr, _ := c.obj.(*[256]uint8)
+			dev.EndMask(tr)
 		case cmdBeginGroup:
 			dev.BeginGroup(c.rect, c.cs, c.flags&listIsolated != 0, c.flags&listKnockout != 0, c.blend, c.alpha)
 		case cmdEndGroup:

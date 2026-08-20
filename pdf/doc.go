@@ -105,7 +105,7 @@ func newDocument(f *syntax.File) *Document {
 		"Subtype":  Name("Type1"),
 		"BaseFont": Name("Helvetica"),
 		"Encoding": Name("WinAnsiEncoding"),
-	})
+	}, nil)
 	d.readOutputIntent()
 	d.readOptionalContent()
 	return d
@@ -182,10 +182,16 @@ func (d *Document) readOutputIntent() {
 }
 
 func (d *Document) errorf(format string, a ...any) {
+	d.fail(fmt.Errorf(format, a...))
+}
+
+// fail records one error a damaged file caused, which is also what the
+// devices report through.
+func (d *Document) fail(err error) {
 	d.errMu.Lock()
 	defer d.errMu.Unlock()
 	if len(d.errs) < maxErrors {
-		d.errs = append(d.errs, fmt.Errorf(format, a...))
+		d.errs = append(d.errs, err)
 	}
 }
 

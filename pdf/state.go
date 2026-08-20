@@ -152,7 +152,7 @@ func (ip *interp) extGState(n Name) {
 			ip.setSoftMask(v)
 		case "Font":
 			if a, ok := v.(Array); ok && len(a) == 2 {
-				if ft := ip.doc.font(a[0]); ft != nil {
+				if ft := ip.doc.font(a[0], ip.res); ft != nil {
 					ip.gs.text.font = ft
 					ip.gs.text.size = float32(f.GetFloat(a[1], 0))
 				}

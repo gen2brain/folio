@@ -1,4 +1,4 @@
-package pdf
+package gfx
 
 import "math"
 

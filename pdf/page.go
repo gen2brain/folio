@@ -156,9 +156,6 @@ func (p *Page) Run(dev Device, ctm raster.Matrix) error {
 // RunContents interprets the page content stream only.
 func (p *Page) RunContents(dev Device, ctm raster.Matrix) {
 	f := p.doc.f
-	if dd, ok := dev.(*DrawDevice); ok && dd.res == nil {
-		dd.res = p.Resources()
-	}
 	bounds := p.Bounds()
 
 	dev.SetDefaultColorSpaces(p.defaultSpaces())
@@ -329,7 +326,7 @@ func key(o Object) any {
 // A page that fails part way still returns what was drawn; the errors are on
 // the Document unless Options.Strict asks for the first one back.
 func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
-	x0, y0, x1, y1 := outerBox(ctm.ApplyRect(p.Bounds()))
+	x0, y0, x1, y1 := ctm.ApplyRect(p.Bounds()).Outer()
 	w, h := x1-x0, y1-y0
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("%w: page %d is empty at this scale", ErrInvalid, p.num+1)
@@ -358,7 +355,6 @@ func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 	} else {
 		dev := NewDrawDevice(p.doc, px)
 		dev.SetFlatness(o.flatness())
-		dev.res = p.Resources()
 		err = p.Run(dev, ctm)
 	}
 	if err == nil && o.strict() {
@@ -381,7 +377,6 @@ func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n i
 		return err
 	}
 
-	res := p.Resources()
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -402,8 +397,7 @@ func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n i
 			defer wg.Done()
 			dev := NewDrawDevice(p.doc, band)
 			dev.SetFlatness(o.flatness())
-			dev.res = res
-			list.ReplayClip(dev, dev.clip.rect)
+			list.ReplayClip(dev, dev.Clip())
 			errs[i] = dev.Close()
 		}()
 	}

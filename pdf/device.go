@@ -1,31 +1,107 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import (
+	"github.com/gen2brain/pdf/gfx"
+	"github.com/gen2brain/pdf/raster"
+)
 
-// BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5. It is
-// raster's, because a blend mode is a function of two colors and nothing about
-// it is particular to PDF.
-type BlendMode = raster.BlendMode
+// The graphics model comes from the gfx package, which knows nothing about
+// PDF. It is aliased here so that a caller rendering a page need only one
+// import.
+type (
+	// Device receives the drawing operations an interpreted content stream
+	// produces. Embed BaseDevice to pick up no-op implementations.
+	Device = gfx.Device
+	// BaseDevice implements Device with no-ops.
+	BaseDevice = gfx.BaseDevice
+	// DrawDevice renders into a raster.Pixmap.
+	DrawDevice = gfx.DrawDevice
+	// BBoxDevice accumulates the bounding box of everything drawn.
+	BBoxDevice = gfx.BBoxDevice
+	// ListDevice records what a page draws so that it can be drawn again.
+	ListDevice = gfx.ListDevice
+	// ColorSpace is a color space, ISO 32000-1 8.6.
+	ColorSpace = gfx.ColorSpace
+	// Kind is the family a color space belongs to.
+	Kind = gfx.Kind
+	// ColorParams are the rendering intent and the four flags that travel
+	// with every painting operation.
+	ColorParams = gfx.ColorParams
+	// DefaultColorSpaces is what the three device spaces mean.
+	DefaultColorSpaces = gfx.DefaultColorSpaces
+	// Text is what one text showing operator, or a run of them, hands to a
+	// device.
+	Text = gfx.Text
+	// TextSpan is a run of glyphs from one font under one text matrix.
+	TextSpan = gfx.TextSpan
+	// TextItem is one glyph placed by a text showing operator.
+	TextItem = gfx.TextItem
+	// BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5.
+	BlendMode = gfx.BlendMode
+)
+
+// Color space families, ISO 32000-1 8.6.
+const (
+	KindGray       = gfx.KindGray
+	KindRGB        = gfx.KindRGB
+	KindCMYK       = gfx.KindCMYK
+	KindLab        = gfx.KindLab
+	KindCalRGB     = gfx.KindCalRGB
+	KindCalGray    = gfx.KindCalGray
+	KindIndexed    = gfx.KindIndexed
+	KindSeparation = gfx.KindSeparation
+	KindDeviceN    = gfx.KindDeviceN
+	KindPattern    = gfx.KindPattern
+)
 
 // The separable blend modes, then the four non-separable ones.
 const (
-	BlendNormal     = raster.BlendNormal
-	BlendMultiply   = raster.BlendMultiply
-	BlendScreen     = raster.BlendScreen
-	BlendOverlay    = raster.BlendOverlay
-	BlendDarken     = raster.BlendDarken
-	BlendLighten    = raster.BlendLighten
-	BlendColorDodge = raster.BlendColorDodge
-	BlendColorBurn  = raster.BlendColorBurn
-	BlendHardLight  = raster.BlendHardLight
-	BlendSoftLight  = raster.BlendSoftLight
-	BlendDifference = raster.BlendDifference
-	BlendExclusion  = raster.BlendExclusion
-	BlendHue        = raster.BlendHue
-	BlendSaturation = raster.BlendSaturation
-	BlendColor      = raster.BlendColor
-	BlendLuminosity = raster.BlendLuminosity
+	BlendNormal     = gfx.BlendNormal
+	BlendMultiply   = gfx.BlendMultiply
+	BlendScreen     = gfx.BlendScreen
+	BlendOverlay    = gfx.BlendOverlay
+	BlendDarken     = gfx.BlendDarken
+	BlendLighten    = gfx.BlendLighten
+	BlendColorDodge = gfx.BlendColorDodge
+	BlendColorBurn  = gfx.BlendColorBurn
+	BlendHardLight  = gfx.BlendHardLight
+	BlendSoftLight  = gfx.BlendSoftLight
+	BlendDifference = gfx.BlendDifference
+	BlendExclusion  = gfx.BlendExclusion
+	BlendHue        = gfx.BlendHue
+	BlendSaturation = gfx.BlendSaturation
+	BlendColor      = gfx.BlendColor
+	BlendLuminosity = gfx.BlendLuminosity
 )
+
+// The device spaces, which every content stream can use without declaring.
+var (
+	DeviceGray = gfx.DeviceGray
+	DeviceRGB  = gfx.DeviceRGB
+	DeviceCMYK = gfx.DeviceCMYK
+	patternCS  = gfx.DevicePattern
+)
+
+// DefaultColorParams is what a page starts with.
+var DefaultColorParams = gfx.DefaultColorParams
+
+// NewDrawDevice returns a device that renders a page of doc into dst. The
+// document is needed for the glyph cache and for the errors a damaged file
+// records on the way.
+func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
+	d := gfx.NewDrawDevice(dst)
+	if doc != nil {
+		d.SetGlyphCache(doc.glyphCache())
+		d.SetErrorFunc(doc.fail)
+	}
+	return d
+}
+
+// NewBBoxDevice returns a device that measures a page.
+func NewBBoxDevice() *BBoxDevice { return gfx.NewBBoxDevice() }
+
+// NewListDevice returns an empty display list.
+func NewListDevice() *ListDevice { return gfx.NewListDevice() }
 
 // blendMode reads a /BM name. A name this does not know is Normal, and an
 // array of them means the first one that is known.
@@ -44,19 +120,6 @@ func blendMode(n Name) (BlendMode, bool) {
 	return BlendNormal, false
 }
 
-// ColorParams are the rendering intent and the four flags that travel with
-// every painting operation.
-type ColorParams struct {
-	Intent          int  // 0 perceptual, 1 relative, 2 saturation, 3 absolute
-	BlackPoint      bool // black point compensation
-	Overprint       bool
-	OverprintMode   int
-	OverprintStroke bool
-}
-
-// DefaultColorParams is what a page starts with.
-var DefaultColorParams = ColorParams{Intent: 1, BlackPoint: true}
-
 func intentValue(n Name) int {
 	switch n {
 	case "Perceptual":
@@ -70,44 +133,7 @@ func intentValue(n Name) int {
 	}
 }
 
-// DefaultColorSpaces is what the three device spaces mean, and the output
-// intent that stands behind them, ISO 32000-1 8.6.5.6.
-type DefaultColorSpaces struct {
-	Gray, RGB, CMYK *ColorSpace
-	OutputIntent    *ColorSpace
-}
-
-// Default returns the space a device color space stands for.
-func (d *DefaultColorSpaces) Default(cs *ColorSpace) *ColorSpace {
-	if d == nil || cs == nil {
-		return cs
-	}
-	switch cs.Kind {
-	case KindGray:
-		if d.Gray != nil {
-			return d.Gray
-		}
-	case KindRGB:
-		if d.RGB != nil {
-			return d.RGB
-		}
-	case KindCMYK:
-		if d.CMYK != nil {
-			return d.CMYK
-		}
-	}
-	return cs
-}
-
-func (d *DefaultColorSpaces) clone() *DefaultColorSpaces {
-	if d == nil {
-		return &DefaultColorSpaces{}
-	}
-	c := *d
-	return &c
-}
-
-// name returns what a trace calls one of the spaces.
+// csName returns what a trace calls one of the spaces.
 func csName(cs *ColorSpace, def string) string {
 	if cs == nil {
 		return def
@@ -115,137 +141,46 @@ func csName(cs *ColorSpace, def string) string {
 	return cs.Name
 }
 
-// TextItem is one glyph placed by a text showing operator.
-type TextItem struct {
-	X, Y float32
-	// GID is the glyph index in the font program, or -1 when the font engine
-	// has not resolved one.
-	GID int
-	// Rune is the Unicode value the character code maps to, or -1.
-	Rune rune
-	// Name is what the font program calls the glyph, when it names it.
-	Name string
-	// Code is the character code the string held, and CID what the font's
-	// encoding turned it into.
-	Code, CID uint32
-	// Adv is how far the pen moves, in text space units of the font size.
-	Adv float32
-}
+func clamp01(v float32) float32 { return clampf(v, 0, 1) }
 
-// TextSpan is a run of glyphs from one font under one text matrix.
-type TextSpan struct {
-	Font  *Font
-	WMode int
-	Trm   raster.Matrix
-	Items []TextItem
-}
-
-// Text is what one text showing operator, or a run of them, hands to a device.
-type Text struct {
-	Spans []TextSpan
-}
-
-// Bounds returns a conservative bounding box for the text under ctm. An item
-// carries its position in text space, so the span matrix supplies only the
-// shape; without glyph outlines the extent is an em box around the advance,
-// which is wider and taller than any real glyph.
-func (t *Text) Bounds(ctm raster.Matrix) raster.Rect {
-	out := raster.EmptyRect
-	for _, sp := range t.Spans {
-		for _, it := range sp.Items {
-			m := raster.Concat(raster.Matrix{
-				A: sp.Trm.A, B: sp.Trm.B, C: sp.Trm.C, D: sp.Trm.D,
-				E: it.X, F: it.Y,
-			}, ctm)
-			adv := it.Adv
-			if adv <= 0 {
-				adv = 1
-			}
-			out = out.Union(m.ApplyRect(raster.Rect{X0: 0, Y0: -0.3, X1: adv, Y1: 1}))
-		}
+func clampf(v, lo, hi float32) float32 {
+	if v < lo {
+		return lo
 	}
-	return out
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
-// Device receives the drawing operations an interpreted content stream
-// produces. The interpreter never touches a pixel; everything a renderer, a
-// text extractor, a bounding box or a trace needs comes through here.
-//
-// Embed BaseDevice to pick up no-op implementations of everything.
-type Device interface {
-	FillPath(path *raster.Path, evenOdd bool, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams)
-	StrokePath(path *raster.Path, stroke *raster.Stroke, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams)
-	ClipPath(path *raster.Path, evenOdd bool, ctm raster.Matrix, scissor raster.Rect)
-	ClipStrokePath(path *raster.Path, stroke *raster.Stroke, ctm raster.Matrix, scissor raster.Rect)
-
-	FillText(text *Text, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams)
-	StrokeText(text *Text, stroke *raster.Stroke, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams)
-	ClipText(text *Text, ctm raster.Matrix, scissor raster.Rect)
-	ClipStrokeText(text *Text, stroke *raster.Stroke, ctm raster.Matrix, scissor raster.Rect)
-	IgnoreText(text *Text, ctm raster.Matrix)
-
-	FillShade(shade *Shade, ctm raster.Matrix, alpha float32, cp ColorParams)
-	FillImage(img *Image, ctm raster.Matrix, alpha float32, cp ColorParams)
-	FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams)
-	ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect)
-
-	PopClip()
-
-	// SetDefaultColorSpaces reports the spaces a device color is to be
-	// interpreted in, which a resource dictionary may override with
-	// /DefaultGray, /DefaultRGB and /DefaultCMYK.
-	SetDefaultColorSpaces(d *DefaultColorSpaces)
-
-	// BeginMask opens a soft mask group. What is drawn until EndMask is the
-	// mask, not the page: EndMask turns it into a clip that stays in force
-	// until the interpreter pops it, reading either the luminosity of each
-	// pixel against backdrop or its alpha, through the transfer function.
-	BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams)
-	EndMask(transfer *Function)
-	BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knockout bool, blend BlendMode, alpha float32)
-	EndGroup()
-	BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int
-	EndTile()
-	BeginLayer(name string)
-	EndLayer()
-
-	// Close is called when the page is finished. A device that writes
-	// somewhere flushes here.
-	Close() error
+func abs32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
-// BaseDevice implements Device with no-ops. Embed it so a device that cares
-// about three operations does not have to spell out twenty.
-type BaseDevice struct{}
-
-func (BaseDevice) FillPath(*raster.Path, bool, raster.Matrix, *ColorSpace, []float32, float32, ColorParams) {
+// transferTable evaluates a soft mask's /TR into the 256 values a mask sample
+// can take, nil when there is no function.
+func transferTable(fn *Function) *[256]uint8 {
+	if fn == nil {
+		return nil
+	}
+	var t [256]uint8
+	var out [1]float32
+	for i := range t {
+		fn.Eval1(out[:], float64(i)/255)
+		t[i] = clamp8(out[0])
+	}
+	return &t
 }
 
-func (BaseDevice) StrokePath(*raster.Path, *raster.Stroke, raster.Matrix, *ColorSpace, []float32, float32, ColorParams) {
+func clamp8(v float32) uint8 {
+	switch {
+	case v <= 0:
+		return 0
+	case v >= 1:
+		return 255
+	}
+	return uint8(v*255 + 0.5)
 }
-func (BaseDevice) ClipPath(*raster.Path, bool, raster.Matrix, raster.Rect)                 {}
-func (BaseDevice) ClipStrokePath(*raster.Path, *raster.Stroke, raster.Matrix, raster.Rect) {}
-func (BaseDevice) FillText(*Text, raster.Matrix, *ColorSpace, []float32, float32, ColorParams) {
-}
-
-func (BaseDevice) StrokeText(*Text, *raster.Stroke, raster.Matrix, *ColorSpace, []float32, float32, ColorParams) {
-}
-func (BaseDevice) ClipText(*Text, raster.Matrix, raster.Rect)                       {}
-func (BaseDevice) ClipStrokeText(*Text, *raster.Stroke, raster.Matrix, raster.Rect) {}
-func (BaseDevice) IgnoreText(*Text, raster.Matrix)                                  {}
-func (BaseDevice) FillShade(*Shade, raster.Matrix, float32, ColorParams)            {}
-func (BaseDevice) FillImage(*Image, raster.Matrix, float32, ColorParams)            {}
-func (BaseDevice) FillImageMask(*Image, raster.Matrix, *ColorSpace, []float32, float32, ColorParams) {
-}
-func (BaseDevice) ClipImageMask(*Image, raster.Matrix, raster.Rect)                        {}
-func (BaseDevice) PopClip()                                                                {}
-func (BaseDevice) SetDefaultColorSpaces(*DefaultColorSpaces)                               {}
-func (BaseDevice) BeginMask(raster.Rect, bool, *ColorSpace, []float32, ColorParams)        {}
-func (BaseDevice) EndMask(*Function)                                                       {}
-func (BaseDevice) BeginGroup(raster.Rect, *ColorSpace, bool, bool, BlendMode, float32)     {}
-func (BaseDevice) EndGroup()                                                               {}
-func (BaseDevice) BeginTile(raster.Rect, raster.Rect, float32, float32, raster.Matrix) int { return 0 }
-func (BaseDevice) EndTile()                                                                {}
-func (BaseDevice) BeginLayer(string)                                                       {}
-func (BaseDevice) EndLayer()                                                               {}
-func (BaseDevice) Close() error                                                            { return nil }

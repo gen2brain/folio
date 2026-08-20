@@ -23,16 +23,16 @@ var (
 // paintMesh decodes a type 4 to 7 shading and fills its triangles into px,
 // which m maps the shading's own space onto. It reports whether the mesh
 // decoded far enough to have drawn anything.
-func (d *DrawDevice) paintMesh(sh *Shade, m raster.Matrix, px *raster.Pixmap) bool {
-	if sh.stream == nil {
+func (sh *Shade) paintMesh(m raster.Matrix, px *raster.Pixmap) bool {
+	if sh.stream == nil || sh.doc == nil {
 		return false
 	}
 	data, err := sh.stream.Data()
 	if err != nil {
-		d.doc.errorf("mesh shading: %v", err)
+		sh.doc.errorf("mesh shading: %v", err)
 		return false
 	}
-	f := d.doc.f
+	f := sh.doc.f
 	dict := sh.stream.Dict
 	r := &meshReader{
 		data:   data,
@@ -158,7 +158,7 @@ func (r *meshReader) color() [4]uint8 {
 		shadeColor(r.sh, r.col, t)
 	}
 	var out [4]uint8
-	convertColor(r.sh.CS, r.col, out[:r.n])
+	r.sh.CS.Convert(r.col, out[:r.n])
 	return out
 }
 

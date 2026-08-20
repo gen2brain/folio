@@ -6,6 +6,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/gen2brain/pdf/gfx"
 	"github.com/gen2brain/pdf/raster"
 )
 
@@ -113,7 +114,7 @@ func (d *TraceDevice) writeText(t *Text) {
 	for _, sp := range t.Spans {
 		d.indent()
 		fmt.Fprintf(d.w, "<span font=\"%s\" wmode=\"%d\" bidi=\"0\" trm=\"%s %s %s %s\">\n",
-			escape(string(sp.Font.Name)), sp.WMode, g(sp.Trm.A), g(sp.Trm.B), g(sp.Trm.C), g(sp.Trm.D))
+			escape(sp.Font.FontName()), sp.WMode, g(sp.Trm.A), g(sp.Trm.B), g(sp.Trm.C), g(sp.Trm.D))
 		d.depth++
 		for _, it := range sp.Items {
 			d.indent()
@@ -290,47 +291,58 @@ func (d *TraceDevice) IgnoreText(t *Text, ctm raster.Matrix) {
 }
 
 // FillImage implements Device.
-func (d *TraceDevice) FillImage(img *Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
+func (d *TraceDevice) FillImage(img gfx.Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	d.indent()
 	fmt.Fprintf(d.w, "<fill_image alpha=\"%s\"", g(alpha))
-	if img.CS != nil {
-		d.w.WriteString(" colorspace=\"" + img.CS.Name + "\"")
+	if cs := img.ColorSpace(); cs != nil {
+		d.w.WriteString(" colorspace=\"" + cs.Name + "\"")
 	}
 	d.params(cp)
 	d.matrix(ctm)
-	fmt.Fprintf(d.w, " width=\"%d\" height=\"%d\"/>\n", img.Width, img.Height)
+	d.size(img)
 }
 
 // FillImageMask implements Device.
-func (d *TraceDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace, c []float32, alpha float32, cp ColorParams) {
+func (d *TraceDevice) FillImageMask(img gfx.Image, ctm raster.Matrix, cs *ColorSpace, c []float32, alpha float32, cp ColorParams) {
 	d.indent()
 	d.w.WriteString("<fill_image_mask")
 	d.matrix(ctm)
 	d.color(cs, c, alpha)
 	d.params(cp)
-	fmt.Fprintf(d.w, " width=\"%d\" height=\"%d\"/>\n", img.Width, img.Height)
+	d.size(img)
 }
 
 // ClipImageMask implements Device.
-func (d *TraceDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
+func (d *TraceDevice) ClipImageMask(img gfx.Image, ctm raster.Matrix, scissor raster.Rect) {
 	d.indent()
 	d.w.WriteString("<clip_image_mask")
 	d.matrix(ctm)
-	fmt.Fprintf(d.w, " width=\"%d\" height=\"%d\"/>\n", img.Width, img.Height)
+	d.size(img)
 	d.depth++
 }
 
+// size closes an element with the image's own size in pixels.
+func (d *TraceDevice) size(img gfx.Image) {
+	w, h := img.Size()
+	fmt.Fprintf(d.w, " width=\"%d\" height=\"%d\"/>\n", w, h)
+}
+
 // FillShade implements Device.
-func (d *TraceDevice) FillShade(sh *Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
+func (d *TraceDevice) FillShade(shade gfx.Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	d.indent()
 	fmt.Fprintf(d.w, "<fill_shade alpha=\"%s\"", g(alpha))
 	d.matrix(ctm)
-	m := sh.Matrix
+	m := shade.Transform()
 	fmt.Fprintf(d.w, " pattern_matrix=\"%s %s %s %s %s %s\"", g(m.A), g(m.B), g(m.C), g(m.D), g(m.E), g(m.F))
-	if sh.CS != nil {
-		d.w.WriteString(" colorspace=\"" + sh.CS.Name + "\"")
+	if cs := shade.ColorSpace(); cs != nil {
+		d.w.WriteString(" colorspace=\"" + cs.Name + "\"")
 	}
 	d.params(cp)
+	sh, ok := shade.(*Shade)
+	if !ok {
+		d.w.WriteString(" type=\"mesh\"/>\n")
+		return
+	}
 	switch sh.Type {
 	case 1:
 		d.w.WriteString(" type=\"function\"")
@@ -386,7 +398,7 @@ func (d *TraceDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpac
 }
 
 // EndMask implements Device.
-func (d *TraceDevice) EndMask(transfer *Function) {
+func (d *TraceDevice) EndMask(transfer *[256]uint8) {
 	if d.depth > 0 {
 		d.depth--
 	}

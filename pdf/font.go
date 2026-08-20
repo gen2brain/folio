@@ -63,10 +63,12 @@ type Font struct {
 	toUnicode *CMap
 	// base is the base-14 name a substituted font resolved to.
 	base string
+
+	doc *Document
 }
 
 // font reads a font dictionary.
-func (d *Document) font(obj Object) *Font {
+func (d *Document) font(obj Object, res Dict) *Font {
 	dict := d.f.GetDict(obj)
 	if dict == nil {
 		return nil
@@ -81,6 +83,7 @@ func (d *Document) font(obj Object) *Font {
 	}
 	f := d.f
 	ft := &Font{
+		doc:          d,
 		Name:         f.GetName(dict["BaseFont"]),
 		Dict:         dict,
 		missingWidth: 0,
@@ -95,7 +98,7 @@ func (d *Document) font(obj Object) *Font {
 		d.readType0(ft, dict)
 	case "Type3":
 		ft.Type3 = true
-		d.readType3(ft, dict)
+		d.readType3(ft, dict, res)
 		d.readSimpleWidths(ft, dict)
 	default:
 		d.readSimpleWidths(ft, dict)
@@ -369,11 +372,14 @@ func (d *Document) readSimpleWidths(ft *Font, dict Dict) {
 	ft.widths = f.GetFloats(dict["Widths"])
 }
 
-func (d *Document) readType3(ft *Font, dict Dict) {
+func (d *Document) readType3(ft *Font, dict Dict, res Dict) {
 	f := d.f
 	ft.FontMatrix = d.matrix(dict["FontMatrix"], ft.FontMatrix)
 	ft.CharProcs = f.GetDict(dict["CharProcs"])
 	ft.Resources = f.GetDict(dict["Resources"])
+	if ft.Resources == nil {
+		ft.Resources = res
+	}
 }
 
 // readEncoding reads /Encoding: the base encoding it names, and the glyph
@@ -449,6 +455,58 @@ func (ft *Font) BaseFont() string { return ft.base }
 
 // Program returns the font program, embedded or substituted, or nil.
 func (ft *Font) Program() *font.Font { return ft.prog }
+
+// FontName is the name the font goes by, which is /BaseFont or, for a Type3
+// font, /Name.
+func (ft *Font) FontName() string { return string(ft.Name) }
+
+// RunGlyph draws one glyph of a Type3 font into dev. Such a glyph is a
+// content stream, so the only thing that can draw it is the interpreter, and
+// it has to run where the glyph goes rather than into a cached mask.
+func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32, depth int) {
+	if !ft.Type3 || ft.doc == nil || depth >= maxNesting || code < 0 || code > 255 {
+		return
+	}
+	name := ft.GlyphName(uint32(code))
+	if name == "" {
+		return
+	}
+	d := ft.doc
+	proc := d.f.GetStream(d.f.Lookup(ft.CharProcs, name))
+	if proc == nil {
+		return
+	}
+	data, err := proc.Data()
+	if err != nil {
+		d.errorf("Type3 glyph %s: %v", name, err)
+		return
+	}
+	res := ft.Resources
+	if res == nil {
+		res = Dict{}
+	}
+
+	ctm := raster.Concat(ft.FontMatrix, m)
+	var ops int64
+	ip := &interp{
+		doc:      d,
+		dev:      dev,
+		gs:       newGState(ctm),
+		base:     ctm,
+		res:      res,
+		defaults: &DefaultColorSpaces{},
+		scissor:  raster.InfiniteRect,
+		ops:      &ops,
+		depth:    depth,
+	}
+	ip.gs.fill.cs = cs
+	ip.gs.fill.value = append([]float32(nil), col...)
+	ip.gs.strokeColor.cs = cs
+	ip.gs.strokeColor.value = append([]float32(nil), col...)
+	ip.gs.fillAlpha, ip.gs.strokeAlpha = alpha, alpha
+	ip.run(data)
+	ip.finish()
+}
 
 // Substituted reports whether the program is a stand in for a font the file
 // did not embed.

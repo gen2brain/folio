@@ -1,4 +1,4 @@
-package pdf
+package gfx
 
 import "github.com/gen2brain/pdf/raster"
 
@@ -75,28 +75,29 @@ func (d *BBoxDevice) ClipStrokeText(t *Text, s *raster.Stroke, ctm raster.Matrix
 }
 
 // FillShade implements Device.
-func (d *BBoxDevice) FillShade(sh *Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
-	if sh.BBox.IsEmpty() {
+func (d *BBoxDevice) FillShade(sh Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
+	box := sh.Bounds()
+	if box.IsEmpty() {
 		if len(d.clips) > 0 {
 			d.add(d.clips[len(d.clips)-1])
 		}
 		return
 	}
-	d.add(raster.Concat(sh.Matrix, ctm).ApplyRect(sh.BBox))
+	d.add(raster.Concat(sh.Transform(), ctm).ApplyRect(box))
 }
 
 // FillImage implements Device.
-func (d *BBoxDevice) FillImage(img *Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
+func (d *BBoxDevice) FillImage(img Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	d.add(ctm.ApplyRect(raster.Rect{X0: 0, Y0: 0, X1: 1, Y1: 1}))
 }
 
 // FillImageMask implements Device.
-func (d *BBoxDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace, c []float32, alpha float32, cp ColorParams) {
+func (d *BBoxDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace, c []float32, alpha float32, cp ColorParams) {
 	d.add(ctm.ApplyRect(raster.Rect{X0: 0, Y0: 0, X1: 1, Y1: 1}))
 }
 
 // ClipImageMask implements Device.
-func (d *BBoxDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
+func (d *BBoxDevice) ClipImageMask(img Image, ctm raster.Matrix, scissor raster.Rect) {
 	d.pushClip(ctm.ApplyRect(raster.Rect{X0: 0, Y0: 0, X1: 1, Y1: 1}))
 }
 
@@ -113,7 +114,7 @@ func (d *BBoxDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace
 }
 
 // EndMask implements Device.
-func (d *BBoxDevice) EndMask(*Function) {}
+func (d *BBoxDevice) EndMask(*[256]uint8) {}
 
 // BeginTile implements Device.
 func (d *BBoxDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int {

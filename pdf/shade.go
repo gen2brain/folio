@@ -24,8 +24,107 @@ type Shade struct {
 	FuncMatrix   raster.Matrix
 	XDivs, YDivs int
 
+	doc    *Document
 	dict   Dict
 	stream *Stream
+}
+
+// Transform returns the pattern matrix, which maps the shading's own space
+// into the space the ctm a device is given starts from.
+func (s *Shade) Transform() raster.Matrix { return s.Matrix }
+
+// Bounds returns the shading's own bounding box, empty when it has none.
+func (s *Shade) Bounds() raster.Rect { return s.BBox }
+
+// ColorSpace returns the space the shading's colors are in.
+func (s *Shade) ColorSpace() *ColorSpace { return s.CS }
+
+// Shader prepares the shading to be painted into a destination of the given
+// model, under ctm and over box, and returns nil when nothing is painted.
+func (s *Shade) Shader(model raster.Model, ctm raster.Matrix, box raster.Rect) raster.Shader {
+	switch s.Type {
+	case 1:
+		if p := s.functionShader(model, ctm, box); p != nil {
+			return p
+		}
+	case 2, 3:
+		if g := newGradient(s, ctm, model.Components()); g != nil {
+			return g
+		}
+	case 4, 5, 6, 7:
+		if p := s.meshShader(model, ctm, box); p != nil {
+			return p
+		}
+	}
+	return nil
+}
+
+// functionShader evaluates a type 1 shading over a grid of its domain, sized
+// to how much of the plane the domain covers. The size deliberately does not
+// depend on the clip: a shading drawn in two halves has to sample the same
+// grid in both, or the halves do not meet.
+func (s *Shade) functionShader(model raster.Model, m raster.Matrix, box raster.Rect) *pixmapShader {
+	if len(s.Function) == 0 {
+		return nil
+	}
+	full := raster.Concat(s.FuncMatrix, m)
+	inv, ok := full.Invert()
+	if !ok {
+		return nil
+	}
+	dom := s.Domain4()
+	dx, dy := dom[1]-dom[0], dom[3]-dom[2]
+	if dx <= 0 || dy <= 0 {
+		return nil
+	}
+	on := full.ApplyRect(raster.Rect{X0: dom[0], Y0: dom[2], X1: dom[1], Y1: dom[3]})
+	if on.IsEmpty() || on.Intersect(box).IsEmpty() {
+		return nil
+	}
+	w := clampInt(int(on.X1-on.X0)+1, 1, maxShadeGrid)
+	h := clampInt(int(on.Y1-on.Y0)+1, 1, maxShadeGrid)
+	px := raster.NewPixmap(model, w, h, true)
+	if px == nil {
+		return nil
+	}
+
+	n := px.Comps()
+	col := make([]float32, shadeComps(s))
+	for j := 0; j < h; j++ {
+		y := float64(dom[2]) + (float64(j)+0.5)/float64(h)*float64(dy)
+		row := px.Row(j)
+		for i := 0; i < w; i++ {
+			x := float64(dom[0]) + (float64(i)+0.5)/float64(w)*float64(dx)
+			shadeColor(s, col, x, y)
+			s.CS.Convert(col, row[i*n:i*n+px.N])
+			row[i*n+px.N] = 255
+		}
+	}
+	grid := raster.Matrix{
+		A: float32(w) / dx, D: float32(h) / dy,
+		E: -dom[0] * float32(w) / dx, F: -dom[2] * float32(h) / dy,
+	}
+	return &pixmapShader{px: px, inv: raster.Concat(inv, grid), n: model.Components()}
+}
+
+// meshShader paints a type 4 to 7 shading into a pixmap of the part of the
+// page it covers. The triangles meet without anti-aliasing, so that the mesh
+// is smooth inside and its own edge is the only one the rasterizer sees.
+func (s *Shade) meshShader(model raster.Model, m raster.Matrix, box raster.Rect) *pixmapShader {
+	x0, y0, x1, y1 := box.Outer()
+	if x1 <= x0 || y1 <= y0 {
+		return nil
+	}
+	px := raster.NewPixmap(model, x1-x0, y1-y0, true)
+	if px == nil {
+		return nil
+	}
+	if !s.paintMesh(raster.Concat(m, raster.Translate(float32(-x0), float32(-y0))), px) {
+		return nil
+	}
+	return &pixmapShader{
+		px: px, inv: raster.Translate(float32(-x0), float32(-y0)), n: model.Components(),
+	}
 }
 
 // Coord6 returns the /Coords of an axial or radial shading, padded to the six
@@ -66,6 +165,7 @@ func (d *Document) shade(obj Object, res Dict) *Shade {
 	}
 	f := d.f
 	sh := &Shade{
+		doc:        d,
 		Type:       int(f.GetInt(dict["ShadingType"], 0)),
 		Matrix:     raster.Identity,
 		Background: f.GetFloats(dict["Background"]),
@@ -157,7 +257,7 @@ func shadeLUT(sh *Shade, n int) []uint8 {
 	col := make([]float32, shadeComps(sh))
 	for i := 0; i < 256; i++ {
 		shadeColor(sh, col, t0+(t1-t0)*float64(i)/255)
-		convertColor(sh.CS, col, lut[i*n:(i+1)*n])
+		sh.CS.Convert(col, lut[i*n:(i+1)*n])
 	}
 	return lut
 }

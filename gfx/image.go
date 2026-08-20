@@ -1,0 +1,21 @@
+package gfx
+
+import "github.com/gen2brain/pdf/raster"
+
+// Image is a picture a device draws. The samples are decoded only when a
+// device asks for them, at the size it asks for.
+type Image interface {
+	// Size is the image's own size in pixels.
+	Size() (w, h int)
+	// ColorSpace is the space the samples are in, and nil for a stencil.
+	ColorSpace() *ColorSpace
+	// Stencil reports a one bit mask, which paints the fill color through
+	// its samples and carries no color of its own.
+	Stencil() bool
+	// Smooth reports that the image asks to be interpolated rather than
+	// sampled at the nearest pixel.
+	Smooth() bool
+	// Pixels decodes the image into cs, halved shrink times. A nil cs asks
+	// for the coverage of a stencil, one byte a pixel.
+	Pixels(cs *ColorSpace, shrink int) (*raster.Pixmap, error)
+}

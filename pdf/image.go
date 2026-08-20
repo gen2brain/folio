@@ -93,6 +93,28 @@ func (i *Image) MaskImage() *Image {
 // Dict returns the image dictionary.
 func (i *Image) Dict() Dict { return i.dict }
 
+// Size returns the image's own size in pixels.
+func (i *Image) Size() (w, h int) { return i.Width, i.Height }
+
+// ColorSpace returns the space the samples are in, nil for a stencil mask.
+func (i *Image) ColorSpace() *ColorSpace { return i.CS }
+
+// Stencil reports an image mask, which paints the fill color through its one
+// bit samples and carries no color of its own.
+func (i *Image) Stencil() bool { return i.Mask }
+
+// Smooth reports the /Interpolate hint.
+func (i *Image) Smooth() bool { return i.Interpolate }
+
+// Pixels decodes the image into cs, halved shrink times, through the
+// document's cache. A nil cs asks for the coverage of a stencil mask.
+func (i *Image) Pixels(cs *ColorSpace, shrink int) (*raster.Pixmap, error) {
+	if i.doc == nil {
+		return i.decode(cs, shrink)
+	}
+	return i.doc.decodedImage(i, cs, shrink)
+}
+
 // drawImage paints an image XObject.
 func (ip *interp) drawImage(st *Stream) {
 	img := ip.doc.image(st, st.Dict, ip.res, nil, 0)
@@ -129,7 +151,7 @@ func (ip *interp) drawImageBody(img *Image, ctm raster.Matrix) {
 		return
 	}
 	if ip.gs.fill.cs.IsPattern() {
-		shape := ctm.ApplyRect(unitRect)
+		shape := ctm.ApplyRect(raster.Rect{X1: 1, Y1: 1})
 		ip.paintPattern(&ip.gs.fill, ip.gs.fillAlpha, shape, func() {
 			ip.dev.ClipImageMask(img, ctm, shape)
 		})
@@ -249,10 +271,9 @@ const maxImagePixels = 1 << 28
 // alpha only pixmap, since it has no color of its own.
 func (i *Image) Pixmap() (*raster.Pixmap, error) { return i.decode(i.CS, 0) }
 
-// decode returns the image with its color converted into dst, which is the
-// space the page composites in.
-// decode returns the image reduced by shrink halvings, which is what the
-// caller is going to draw it at. Where nothing has to touch the whole size
+// decode returns the image with its color converted into dst, the space the
+// page composites in, reduced by shrink halvings, which is what the caller is
+// going to draw it at. Where nothing has to touch the whole size
 // pixmap the reduction happens as the samples are unpacked and it is never
 // built; where transparency has to be hung on it first, it is built and
 // reduced afterwards, because the alpha has to be averaged with the color it
@@ -514,7 +535,7 @@ func (u *unpacker) run() {
 				raw[j] = r.next()
 				c[j] = u.value(j, raw[j], maxVal)
 			}
-			convertColor(u.cs, c, row[x*n:x*n+px.N])
+			u.cs.Convert(c, row[x*n:x*n+px.N])
 			if px.Alpha {
 				row[x*n+px.N] = u.keyedAll(raw)
 			}
@@ -571,7 +592,7 @@ func (u *unpacker) table() []uint8 {
 	c := make([]float32, 1)
 	for v := 0; v < n; v++ {
 		c[0] = u.value(0, uint32(v), maxVal)
-		convertColor(u.cs, c, lut[v*u.px.N:(v+1)*u.px.N])
+		u.cs.Convert(c, lut[v*u.px.N:(v+1)*u.px.N])
 	}
 	return lut
 }
@@ -591,7 +612,7 @@ func (u *unpacker) value(j int, s uint32, maxVal float32) float32 {
 	if u.cs.Kind == KindIndexed {
 		hi = maxVal
 	} else if u.cs.Kind == KindLab {
-		r := labRange(u.cs.Range)
+		r := u.cs.LabRange()
 		switch j {
 		case 0:
 			hi = 100
@@ -706,27 +727,7 @@ func (i *Image) coverage() (*raster.Pixmap, error) {
 	if err != nil {
 		return nil, err
 	}
-	return flattenGray(px), nil
-}
-
-// flattenGray keeps the first component of every pixel, which is the coverage
-// a mask carries when it has an alpha channel of its own.
-func flattenGray(px *raster.Pixmap) *raster.Pixmap {
-	n := px.Comps()
-	if n == 1 {
-		return px
-	}
-	out := raster.NewMask(px.W, px.H)
-	if out == nil {
-		return nil
-	}
-	for y := 0; y < px.H; y++ {
-		row, dst := px.Row(y), out.Row(y)
-		for x := 0; x < px.W; x++ {
-			dst[x] = row[x*n]
-		}
-	}
-	return out
+	return px.Coverage(), nil
 }
 
 // premultiplyPixmap folds the alpha channel into the color components, which

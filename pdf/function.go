@@ -35,6 +35,9 @@ type Function struct {
 
 const maxFunctionDepth = 8
 
+// maxComponents bounds the values a function may be asked for at once.
+const maxComponents = 32
+
 // function reads a function object.
 func (d *Document) function(obj Object) *Function {
 	return d.functionDepth(obj, 0)

@@ -170,7 +170,7 @@ func (d *Document) hasDefaults(res Dict) bool {
 // readDefaults reads /DefaultGray, /DefaultRGB and /DefaultCMYK out of a
 // resource dictionary, over whatever the enclosing one set.
 func (d *Document) readDefaults(res Dict, base *DefaultColorSpaces) *DefaultColorSpaces {
-	next := base.clone()
+	next := base.Clone()
 	csres := d.f.GetDict(res["ColorSpace"])
 	for _, e := range []struct {
 		key Name

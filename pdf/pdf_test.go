@@ -337,7 +337,7 @@ func TestFontMapping(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			d := open(t, "minimal.pdf")
-			ft := d.font(tc.font)
+			ft := d.font(tc.font, nil)
 			if ft == nil {
 				t.Fatal("font did not load")
 			}
@@ -467,7 +467,6 @@ func renderContent(t *testing.T, content string, o *Options) *raster.Pixmap {
 		px.ClearWhite()
 	}
 	dev := NewDrawDevice(d, px)
-	dev.res = p.Resources()
 	ip := p.newInterp(dev, p.Matrix(72))
 	ip.run([]byte(content))
 	ip.finish()

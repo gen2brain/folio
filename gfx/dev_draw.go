@@ -1,6 +1,7 @@
-package pdf
+package gfx
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/gen2brain/pdf/font"
@@ -11,13 +12,17 @@ import (
 // page rather than rendered to a mask and remembered.
 const maxCachedGlyph = 100 * 100
 
+// maxGlyphDepth bounds a font whose glyph procedures show text in the same
+// font, which is a cycle a document is free to contain. A font that draws
+// its own glyphs is expected to stop sooner; this is the backstop.
+const maxGlyphDepth = 32
+
 // DrawDevice renders into a raster.Pixmap. Everything it is given is in the
 // pixmap's own coordinates, so a caller rendering part of a page translates
 // the transform rather than the device.
 type DrawDevice struct {
 	BaseDevice
 
-	doc *Document
 	dst *raster.Pixmap
 	ras *raster.Rasterizer
 	mas *raster.Rasterizer
@@ -37,8 +42,11 @@ type DrawDevice struct {
 	// src is the destination color of the operation being drawn, valid only
 	// until the next one; a nested interpreter takes its own.
 	src   []uint8
-	res   Dict
 	depth int
+	// cache remembers rendered glyph masks between pages, and err collects
+	// what a damaged document did; both belong to whoever opened the file.
+	cache *raster.GlyphCache
+	err   func(error)
 }
 
 // clipState is the clip in force: a rectangle, and an optional mask over it.
@@ -73,15 +81,12 @@ type groupFrame struct {
 	knockout bool
 }
 
-// NewDrawDevice returns a device that renders a page of doc into dst. The
-// document is needed for the glyph cache and for Type3 glyph procedures,
-// which are content streams and have to be interpreted where they are drawn.
-func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
+// NewDrawDevice returns a device that renders into dst.
+func NewDrawDevice(dst *raster.Pixmap) *DrawDevice {
 	// A pixmap covers the device rectangle its origin and size describe, so
 	// a destination that is a band of a page, or a group's own buffer, is
 	// drawn in the page's coordinates and mapped by the blitter.
 	return &DrawDevice{
-		doc: doc,
 		dst: dst,
 		ras: raster.NewRasterizer(dst.X+dst.W, dst.Y+dst.H),
 		clip: clipState{rect: raster.Rect{
@@ -94,6 +99,25 @@ func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
 
 // Pixmap returns what has been drawn.
 func (d *DrawDevice) Pixmap() *raster.Pixmap { return d.dst }
+
+// Clip returns the rectangle drawing is confined to, which starts as the
+// whole destination.
+func (d *DrawDevice) Clip() raster.Rect { return d.clip.rect }
+
+// SetGlyphCache gives the device somewhere to keep rendered glyph masks. The
+// cache belongs to the document rather than to one rendering, so that a
+// second page of the same file finds the glyphs of the first.
+func (d *DrawDevice) SetGlyphCache(c *raster.GlyphCache) { d.cache = c }
+
+// SetErrorFunc says where to report what went wrong on the way. A page that
+// fails in the middle still draws the part that worked.
+func (d *DrawDevice) SetErrorFunc(f func(error)) { d.err = f }
+
+func (d *DrawDevice) fail(err error) {
+	if d.err != nil {
+		d.err(err)
+	}
+}
 
 // SetFlatness sets how far a flattened curve may stray from the true one, in
 // device pixels.
@@ -108,7 +132,7 @@ func (d *DrawDevice) paint(cs *ColorSpace, col []float32, alpha float32) raster.
 	} else {
 		d.src = d.src[:n]
 	}
-	convertColor(cs, col, d.src)
+	cs.Convert(col, d.src)
 	return raster.Paint{Color: d.src, Alpha: alphaByte(alpha), Clip: d.clip.mask}
 }
 
@@ -120,26 +144,6 @@ func alphaByte(a float32) uint8 {
 		return 255
 	}
 	return uint8(a*255 + 0.5)
-}
-
-// convertColor turns a color in cs into the components of the destination.
-func convertColor(cs *ColorSpace, col []float32, out []uint8) {
-	if cs == nil {
-		cs = DeviceGray
-		col = nil
-	}
-	switch len(out) {
-	case 1:
-		out[0] = clamp8(cs.Gray(col))
-	case 4:
-		c, m, y, k := cs.CMYK(col)
-		out[0], out[1], out[2], out[3] = clamp8(c), clamp8(m), clamp8(y), clamp8(k)
-	default:
-		r, g, b := cs.RGB(col)
-		if len(out) >= 3 {
-			out[0], out[1], out[2] = clamp8(r), clamp8(g), clamp8(b)
-		}
-	}
 }
 
 func (d *DrawDevice) drawing() bool { return d.off == 0 && !d.clip.rect.IsEmpty() }
@@ -220,7 +224,7 @@ func (d *DrawDevice) pushPathClip(p *raster.Path, evenOdd bool, ctm raster.Matri
 // narrowed by whatever clip is already in force.
 func (d *DrawDevice) maskClip(bounds raster.Rect, add func(*raster.Rasterizer, int, int), evenOdd bool) clipState {
 	box := bounds.Intersect(d.clip.rect)
-	x0, y0, x1, y1 := outerBox(box)
+	x0, y0, x1, y1 := box.Outer()
 	if x1 <= x0 || y1 <= y0 {
 		return clipState{rect: raster.EmptyRect}
 	}
@@ -249,14 +253,6 @@ func (d *DrawDevice) maskClip(bounds raster.Rect, add func(*raster.Rasterizer, i
 
 	mask.MulMask(d.clip.mask)
 	return clipState{rect: box, mask: mask}
-}
-
-func outerBox(r raster.Rect) (x0, y0, x1, y1 int) {
-	if r.IsEmpty() {
-		return 0, 0, 0, 0
-	}
-	return int(math.Floor(float64(r.X0))), int(math.Floor(float64(r.Y0))),
-		int(math.Ceil(float64(r.X1))), int(math.Ceil(float64(r.Y1)))
 }
 
 func (d *DrawDevice) push(c clipState) {
@@ -293,33 +289,19 @@ func (d *DrawDevice) PopClip() {
 }
 
 // FillShade implements Device.
-func (d *DrawDevice) FillShade(sh *Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
+func (d *DrawDevice) FillShade(sh Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	if !d.drawing() || sh == nil {
 		return
 	}
-	m := raster.Concat(sh.Matrix, ctm)
+	m := raster.Concat(sh.Transform(), ctm)
 	box := d.clip.rect
-	if !sh.BBox.IsEmpty() {
-		box = box.Intersect(m.ApplyRect(sh.BBox))
+	if b := sh.Bounds(); !b.IsEmpty() {
+		box = box.Intersect(m.ApplyRect(b))
 	}
 	if box.IsEmpty() {
 		return
 	}
-	var s raster.Shader
-	switch sh.Type {
-	case 1:
-		if p := d.functionShader(sh, m, box); p != nil {
-			s = p
-		}
-	case 2, 3:
-		if g := newGradient(sh, m, d.dst.N); g != nil {
-			s = g
-		}
-	case 4, 5, 6, 7:
-		if p := d.meshShader(sh, m, box); p != nil {
-			s = p
-		}
-	}
+	s := sh.Shader(d.dst.Model, m, box)
 	if s == nil {
 		return
 	}
@@ -331,74 +313,6 @@ func (d *DrawDevice) FillShade(sh *Shade, ctm raster.Matrix, alpha float32, cp C
 	d.ras.FillShader(d.dst, raster.NonZero, s, raster.Paint{
 		Alpha: alphaByte(alpha), Clip: d.clip.mask,
 	})
-}
-
-// functionShader evaluates a type 1 shading over a grid of its domain, sized
-// to how much of the plane the domain covers. The size deliberately does not
-// depend on the clip: a shading drawn in two halves has to sample the same
-// grid in both, or the halves do not meet.
-func (d *DrawDevice) functionShader(sh *Shade, m raster.Matrix, box raster.Rect) *pixmapShader {
-	if len(sh.Function) == 0 {
-		return nil
-	}
-	full := raster.Concat(sh.FuncMatrix, m)
-	inv, ok := full.Invert()
-	if !ok {
-		return nil
-	}
-	dom := sh.Domain4()
-	dx, dy := dom[1]-dom[0], dom[3]-dom[2]
-	if dx <= 0 || dy <= 0 {
-		return nil
-	}
-	on := full.ApplyRect(raster.Rect{X0: dom[0], Y0: dom[2], X1: dom[1], Y1: dom[3]})
-	if on.IsEmpty() || on.Intersect(box).IsEmpty() {
-		return nil
-	}
-	w := clampInt(int(on.X1-on.X0)+1, 1, maxShadeGrid)
-	h := clampInt(int(on.Y1-on.Y0)+1, 1, maxShadeGrid)
-	px := raster.NewPixmap(d.dst.Model, w, h, true)
-	if px == nil {
-		return nil
-	}
-
-	n := px.Comps()
-	col := make([]float32, shadeComps(sh))
-	for j := 0; j < h; j++ {
-		y := float64(dom[2]) + (float64(j)+0.5)/float64(h)*float64(dy)
-		row := px.Row(j)
-		for i := 0; i < w; i++ {
-			x := float64(dom[0]) + (float64(i)+0.5)/float64(w)*float64(dx)
-			shadeColor(sh, col, x, y)
-			convertColor(sh.CS, col, row[i*n:i*n+px.N])
-			row[i*n+px.N] = 255
-		}
-	}
-	grid := raster.Matrix{
-		A: float32(w) / dx, D: float32(h) / dy,
-		E: -dom[0] * float32(w) / dx, F: -dom[2] * float32(h) / dy,
-	}
-	return &pixmapShader{px: px, inv: raster.Concat(inv, grid), n: d.dst.N}
-}
-
-// meshShader paints a type 4 to 7 shading into a pixmap of the part of the
-// page it covers. The triangles meet without anti-aliasing, so that the mesh
-// is smooth inside and its own edge is the only one the rasterizer sees.
-func (d *DrawDevice) meshShader(sh *Shade, m raster.Matrix, box raster.Rect) *pixmapShader {
-	x0, y0, x1, y1 := outerBox(box)
-	if x1 <= x0 || y1 <= y0 {
-		return nil
-	}
-	px := raster.NewPixmap(d.dst.Model, x1-x0, y1-y0, true)
-	if px == nil {
-		return nil
-	}
-	if !d.paintMesh(sh, raster.Concat(m, raster.Translate(float32(-x0), float32(-y0))), px) {
-		return nil
-	}
-	return &pixmapShader{
-		px: px, inv: raster.Translate(float32(-x0), float32(-y0)), n: d.dst.N,
-	}
 }
 
 // BeginMask implements Device. The mask group draws into a pixmap of its own,
@@ -413,7 +327,7 @@ func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace
 	g.px = d.groupPixmap(box, !luminosity)
 	if g.px != nil && luminosity {
 		col := make([]uint8, d.dst.N)
-		convertColor(cs, backdrop, col)
+		cs.Convert(backdrop, col)
 		g.px.FillRect(g.px.X, g.px.Y, g.px.X+g.px.W, g.px.Y+g.px.H,
 			raster.Paint{Color: col, Alpha: 255})
 	}
@@ -430,7 +344,7 @@ func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace
 
 // EndMask implements Device. The frame stays on the stack, because the mask is
 // a clip and the interpreter pops it.
-func (d *DrawDevice) EndMask(transfer *Function) {
+func (d *DrawDevice) EndMask(transfer *[256]uint8) {
 	n := len(d.stack)
 	if n == 0 {
 		return
@@ -451,28 +365,13 @@ func (d *DrawDevice) EndMask(transfer *Function) {
 		d.clip = clipState{rect: raster.EmptyRect}
 		return
 	}
-	m := g.px.Mask(g.luminosity, transferTable(transfer))
+	m := g.px.Mask(g.luminosity, transfer)
 	if m == nil {
 		d.clip = clipState{rect: raster.EmptyRect}
 		return
 	}
 	m.MulMask(f.clip.mask)
 	d.clip = clipState{rect: g.box, mask: m}
-}
-
-// transferTable evaluates a soft mask's /TR into the 256 values a mask can
-// take, nil when the function is the identity or unusable.
-func transferTable(fn *Function) *[256]uint8 {
-	if fn == nil {
-		return nil
-	}
-	var t [256]uint8
-	var out [1]float32
-	for i := range t {
-		fn.Eval1(out[:], float64(i)/255)
-		t[i] = clamp8(out[0])
-	}
-	return &t
 }
 
 // BeginGroup implements Device. A group that cannot see what is under it, or
@@ -508,7 +407,7 @@ func (d *DrawDevice) EndGroup() { d.PopClip() }
 // pixels of its area and positioned there, so that everything drawing into it
 // keeps working in the page's own coordinates.
 func (d *DrawDevice) groupPixmap(box raster.Rect, alpha bool) *raster.Pixmap {
-	x0, y0, x1, y1 := outerBox(box)
+	x0, y0, x1, y1 := box.Outer()
 	if x1 <= x0 || y1 <= y0 {
 		return nil
 	}
@@ -541,9 +440,9 @@ func (d *DrawDevice) FillText(t *Text, ctm raster.Matrix, cs *ColorSpace, col []
 		return
 	}
 	paint := d.paint(cs, col, alpha)
-	d.eachGlyph(t, ctm, func(f *Font, prog *font.Font, gid int, m raster.Matrix) {
-		if f.Type3 {
-			d.type3Glyph(f, gid, m, cs, col, alpha)
+	d.eachGlyph(t, ctm, func(f Font, prog *font.Font, gid int, m raster.Matrix) {
+		if prog == nil {
+			d.runGlyph(f, gid, m, cs, col, alpha)
 			return
 		}
 		d.drawGlyph(prog, gid, m, paint)
@@ -556,8 +455,8 @@ func (d *DrawDevice) StrokeText(t *Text, s *raster.Stroke, ctm raster.Matrix, cs
 		return
 	}
 	paint := d.paint(cs, col, alpha)
-	d.eachGlyph(t, ctm, func(f *Font, prog *font.Font, gid int, m raster.Matrix) {
-		if f.Type3 {
+	d.eachGlyph(t, ctm, func(f Font, prog *font.Font, gid int, m raster.Matrix) {
+		if prog == nil {
 			return
 		}
 		p := prog.GlyphPath(gid)
@@ -581,8 +480,8 @@ func (d *DrawDevice) ClipStrokeText(t *Text, s *raster.Stroke, ctm raster.Matrix
 
 func (d *DrawDevice) pushTextClip(t *Text, ctm raster.Matrix, s *raster.Stroke) {
 	d.push(d.maskClip(t.Bounds(ctm), func(r *raster.Rasterizer, ox, oy int) {
-		d.eachGlyph(t, ctm, func(f *Font, prog *font.Font, gid int, m raster.Matrix) {
-			if f.Type3 {
+		d.eachGlyph(t, ctm, func(f Font, prog *font.Font, gid int, m raster.Matrix) {
+			if prog == nil {
 				return
 			}
 			p := prog.GlyphPath(gid)
@@ -601,18 +500,30 @@ func (d *DrawDevice) pushTextClip(t *Text, ctm raster.Matrix, s *raster.Stroke) 
 	}, false))
 }
 
+// runGlyph lets a font with no program draw one glyph for itself. The scratch
+// color goes with it, because what the glyph draws runs through this device
+// and would otherwise overwrite the color of the text it belongs to.
+func (d *DrawDevice) runGlyph(f Font, gid int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32) {
+	if d.depth >= maxGlyphDepth {
+		return
+	}
+	saved := d.src
+	d.src = nil
+	d.depth++
+	f.RunGlyph(d, gid, m, cs, col, alpha, d.depth)
+	d.depth--
+	d.src = saved
+}
+
 // eachGlyph walks the glyphs of a text object, handing each its transform in
 // device space.
-func (d *DrawDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(*Font, *font.Font, int, raster.Matrix)) {
+func (d *DrawDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(Font, *font.Font, int, raster.Matrix)) {
 	for i := range t.Spans {
 		sp := &t.Spans[i]
 		if sp.Font == nil {
 			continue
 		}
 		prog := sp.Font.Program()
-		if prog == nil && !sp.Font.Type3 {
-			continue
-		}
 		for _, it := range sp.Items {
 			if it.GID < 0 {
 				continue
@@ -641,13 +552,13 @@ func (d *DrawDevice) drawGlyph(prog *font.Font, gid int, m raster.Matrix, paint 
 	phase.E, phase.F = float32(sx)/raster.SubPixels, float32(sy)/raster.SubPixels
 
 	box := p.Bounds(phase)
-	x0, y0, x1, y1 := outerBox(box)
-	if d.doc == nil || (x1-x0)*(y1-y0) > maxCachedGlyph || x1 <= x0 || y1 <= y0 {
+	x0, y0, x1, y1 := box.Outer()
+	if d.cache == nil || (x1-x0)*(y1-y0) > maxCachedGlyph || x1 <= x0 || y1 <= y0 {
 		d.fillPath(p, false, full, paint)
 		return
 	}
 
-	cache := d.doc.glyphCache()
+	cache := d.cache
 	key := raster.GlyphKey{
 		Font: prog, GID: int32(gid),
 		A: full.A, B: full.B, C: full.C, D: full.D,
@@ -698,90 +609,35 @@ func subPixel(v float32) (int, uint8) {
 	return i, s
 }
 
-// type3Glyph interprets a glyph procedure where the glyph goes. A Type3 glyph
-// is a content stream, so the only thing that can draw it is the interpreter.
-func (d *DrawDevice) type3Glyph(f *Font, code int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32) {
-	if d.doc == nil || d.depth >= maxNesting || code < 0 || code > 255 {
-		return
-	}
-	name := f.GlyphName(uint32(code))
-	if name == "" {
-		return
-	}
-	proc := d.doc.f.GetStream(d.doc.f.Lookup(f.CharProcs, name))
-	if proc == nil {
-		return
-	}
-	data, err := proc.Data()
-	if err != nil {
-		d.doc.errorf("Type3 glyph %s: %v", name, err)
-		return
-	}
-	res := f.Resources
-	if res == nil {
-		res = d.res
-	}
-	if res == nil {
-		res = Dict{}
-	}
-
-	ctm := raster.Concat(f.FontMatrix, m)
-	var ops int64
-	ip := &interp{
-		doc:      d.doc,
-		dev:      d,
-		gs:       newGState(ctm),
-		base:     ctm,
-		res:      res,
-		defaults: &DefaultColorSpaces{},
-		scissor:  raster.InfiniteRect,
-		ops:      &ops,
-		depth:    d.depth + 1,
-	}
-	ip.gs.fill.cs = cs
-	ip.gs.fill.value = append([]float32(nil), col...)
-	ip.gs.strokeColor.cs = cs
-	ip.gs.strokeColor.value = append([]float32(nil), col...)
-	ip.gs.fillAlpha, ip.gs.strokeAlpha = alpha, alpha
-
-	saved := d.src
-	d.src = nil
-	d.depth++
-	ip.run(data)
-	ip.finish()
-	d.depth--
-	d.src = saved
-}
-
 // unitRect is the square an image transform maps onto the page.
 var unitRect = raster.Rect{X1: 1, Y1: 1}
 
 // FillImage implements Device.
-func (d *DrawDevice) FillImage(img *Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
-	if !d.drawing() {
+func (d *DrawDevice) FillImage(img Image, ctm raster.Matrix, alpha float32, cp ColorParams) {
+	if !d.drawing() || img == nil {
 		return
 	}
 	src := d.decodeImage(img, d.space(), shrinkFor(img, ctm))
 	if src == nil {
 		return
 	}
-	d.drawImage(src, ctm, raster.Paint{Alpha: alphaByte(alpha), Clip: d.clip.mask}, img.Interpolate)
+	d.drawImage(src, ctm, raster.Paint{Alpha: alphaByte(alpha), Clip: d.clip.mask}, img.Smooth())
 }
 
 // FillImageMask implements Device.
-func (d *DrawDevice) FillImageMask(img *Image, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
-	if !d.drawing() {
+func (d *DrawDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace, col []float32, alpha float32, cp ColorParams) {
+	if !d.drawing() || img == nil {
 		return
 	}
 	src := d.maskPixmap(img, shrinkFor(img, ctm))
 	if src == nil {
 		return
 	}
-	d.drawImage(src, ctm, d.paint(cs, col, alpha), img.Interpolate)
+	d.drawImage(src, ctm, d.paint(cs, col, alpha), img.Smooth())
 }
 
 // ClipImageMask implements Device.
-func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster.Rect) {
+func (d *DrawDevice) ClipImageMask(img Image, ctm raster.Matrix, scissor raster.Rect) {
 	src := d.maskPixmap(img, shrinkFor(img, ctm))
 	if src == nil {
 		d.push(clipState{rect: raster.EmptyRect})
@@ -805,18 +661,18 @@ func (d *DrawDevice) ClipImageMask(img *Image, ctm raster.Matrix, scissor raster
 
 // maskPixmap decodes an image into coverage, one byte a pixel, whether it is
 // the one bit stencil of an image mask or the gray samples of a soft mask.
-func (d *DrawDevice) maskPixmap(img *Image, shrink int) *raster.Pixmap {
+func (d *DrawDevice) maskPixmap(img Image, shrink int) *raster.Pixmap {
 	if img == nil {
 		return nil
 	}
-	if img.Mask {
+	if img.Stencil() {
 		return d.decodeImage(img, nil, shrink)
 	}
 	px := d.decodeImage(img, DeviceGray, shrink)
 	if px == nil {
 		return nil
 	}
-	return flattenGray(px)
+	return px.Coverage()
 }
 
 // drawImage rasterizes the square the image occupies and samples the image
@@ -854,14 +710,15 @@ func subsampleBy(src *raster.Pixmap, ctm raster.Matrix) int {
 }
 
 // shrinkFor is subsampleBy asked before anything is decoded, from the size the
-// dictionary declares. A page that clips to the same scan forty times decodes
+// image declares. A page that clips to the same scan forty times decodes
 // it forty times if the answer only arrives after the pixmap does, and the
 // full size pixmap is too large for the cache to keep.
-func shrinkFor(img *Image, ctm raster.Matrix) int {
+func shrinkFor(img Image, ctm raster.Matrix) int {
 	if img == nil {
 		return 0
 	}
-	return subsampleFor(img.Width, img.Height, ctm)
+	w, h := img.Size()
+	return subsampleFor(w, h, ctm)
 }
 
 func subsampleFor(w, h int, ctm raster.Matrix) int {
@@ -913,13 +770,13 @@ func (d *DrawDevice) space() *ColorSpace {
 // decodeImage decodes an image into the destination's components, from the
 // document's cache when it is there. A nil space asks for the stencil of an
 // image mask.
-func (d *DrawDevice) decodeImage(img *Image, dst *ColorSpace, shrink int) *raster.Pixmap {
-	if img == nil || d.doc == nil {
+func (d *DrawDevice) decodeImage(img Image, dst *ColorSpace, shrink int) *raster.Pixmap {
+	if img == nil {
 		return nil
 	}
-	px, err := d.doc.decodedImage(img, dst, shrink)
+	px, err := img.Pixels(dst, shrink)
 	if err != nil {
-		d.doc.errorf("image: %v", err)
+		d.fail(fmt.Errorf("image: %w", err))
 		return nil
 	}
 	return px
