@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Object is a PDF object. The concrete types are Bool, Integer, Real, String,
@@ -48,11 +49,16 @@ type Stream struct {
 	Dict Dict
 	Ref  Ref
 
-	doc       *File
-	crypt     *cryptFilter
-	raw       []byte // as stored, still encrypted and encoded
+	doc   *File
+	crypt *cryptFilter
+	raw   []byte // as stored, still encrypted and encoded
+
+	// mu guards the decoded form, which is filled on the first Data and kept
+	// because a stream is shared by every page that names it.
+	mu        sync.Mutex
 	dec       []byte // decoded, filled on first Data
-	imgFilter Name   // the image filter left undecoded, if any
+	decoded   bool
+	imgFilter Name // the image filter left undecoded, if any
 	imgParms  Dict
 	err       error
 }
@@ -87,13 +93,15 @@ func (d Dict) Keys() []Name {
 }
 
 // Resolve follows indirect references until it reaches a direct object.
-func (f *File) Resolve(o Object) Object {
+func (f *File) Resolve(o Object) Object { return f.resolve(o, 0) }
+
+func (f *File) resolve(o Object, depth int) Object {
 	for i := 0; i < maxResolveDepth; i++ {
 		r, ok := o.(Ref)
 		if !ok {
 			return o
 		}
-		o = f.object(r)
+		o = f.object(r, depth)
 	}
 	f.errorf("reference loop resolving %v", o)
 	return nil
@@ -134,8 +142,10 @@ func (f *File) GetArray(o Object) Array {
 }
 
 // GetStream resolves o and returns it as a stream, or nil.
-func (f *File) GetStream(o Object) *Stream {
-	v, _ := f.Resolve(o).(*Stream)
+func (f *File) GetStream(o Object) *Stream { return f.stream(o, 0) }
+
+func (f *File) stream(o Object, depth int) *Stream {
+	v, _ := f.resolve(o, depth).(*Stream)
 	return v
 }
 
@@ -161,8 +171,10 @@ func (f *File) GetBool(o Object, def bool) bool {
 
 // GetInt resolves o and returns it as an integer, or def. A real is truncated:
 // files write /Length 12.0 and mean 12.
-func (f *File) GetInt(o Object, def int64) int64 {
-	switch v := f.Resolve(o).(type) {
+func (f *File) GetInt(o Object, def int64) int64 { return f.getInt(o, def, 0) }
+
+func (f *File) getInt(o Object, def int64, depth int) int64 {
+	switch v := f.resolve(o, depth).(type) {
 	case Integer:
 		return int64(v)
 	case Real:

@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"reflect"
+	"sync"
 
 	"github.com/gen2brain/pdf/font"
 	"github.com/gen2brain/pdf/raster"
@@ -40,7 +41,12 @@ type Font struct {
 	fixed     bool
 	forceBold bool
 	italic    bool
-	t3direct  map[Name]bool
+
+	// t3mu guards t3direct, which is filled the first time a Type3 glyph is
+	// shown rather than when the font is read, because reading it means
+	// decoding every glyph procedure.
+	t3mu     sync.Mutex
+	t3direct map[Name]bool
 
 	descriptor   Dict
 	baseEncoding *[256]string
@@ -65,6 +71,11 @@ func (d *Document) font(obj Object) *Font {
 	if dict == nil {
 		return nil
 	}
+	// The whole build runs under the lock because a font is entered into the
+	// cache before it is filled in, and a second goroutine must not be handed
+	// a half read one. Nothing inside re-enters this.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if ft, ok := d.fonts[dictKey(obj, dict)]; ok {
 		return ft
 	}
@@ -604,15 +615,17 @@ func (ft *Font) width(c Char) float32 {
 // uncacheable reports whether a Type3 glyph paints with graphics state it
 // never set for itself, and so has to run where the text is shown.
 func (ft *Font) uncacheable(name Name, proc *Stream) bool {
-	if ft.t3direct == nil {
-		ft.t3direct = map[Name]bool{}
-	}
+	ft.t3mu.Lock()
+	defer ft.t3mu.Unlock()
 	if v, ok := ft.t3direct[name]; ok {
 		return v
 	}
 	v := true
 	if data, err := proc.Data(); err == nil {
 		v = scanType3(data)
+	}
+	if ft.t3direct == nil {
+		ft.t3direct = map[Name]bool{}
 	}
 	ft.t3direct[name] = v
 	return v

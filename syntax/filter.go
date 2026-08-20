@@ -52,14 +52,17 @@ func (s *Stream) ImageData() (data []byte, filter Name, parms Dict, err error) {
 }
 
 func (s *Stream) decode() ([]byte, Name, Dict, error) {
-	if s.dec != nil || s.err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.decoded {
 		return s.dec, s.imgFilter, s.imgParms, s.err
 	}
 	data, err := s.Raw()
 	if err != nil {
 		return nil, "", nil, err
 	}
-	data, s.imgFilter, s.imgParms, s.err = s.doc.DecodeImageData(s.Dict, data)
+	data, s.imgFilter, s.imgParms, s.err = s.doc.decodeImageData(s.Dict, data, s.Ref)
+	s.decoded = true
 	if s.err != nil {
 		return nil, "", nil, s.err
 	}
@@ -72,6 +75,12 @@ func (s *Stream) decode() ([]byte, Name, Dict, error) {
 // and its parameters. It is how an inline image, whose data lies in the
 // content stream rather than in a stream object, reaches the same decoders.
 func (f *File) DecodeImageData(dict Dict, data []byte) ([]byte, Name, Dict, error) {
+	return f.decodeImageData(dict, data, Ref{})
+}
+
+// decodeImageData is DecodeImageData for a stream that knows which object it
+// is, so that a filter reaching for another stream cannot reach for this one.
+func (f *File) decodeImageData(dict Dict, data []byte, self Ref) ([]byte, Name, Dict, error) {
 	filters := f.names(dict, "Filter", "F")
 	parms := f.parmsList(dict, len(filters))
 
@@ -82,7 +91,7 @@ func (f *File) DecodeImageData(dict Dict, data []byte) ([]byte, Name, Dict, erro
 			}
 			return data, name, parms[i], nil
 		}
-		out, err := applyFilter(f, name, data, parms[i])
+		out, err := applyFilter(f, name, data, parms[i], self)
 		if err != nil {
 			if out == nil {
 				return nil, "", nil, err
@@ -125,7 +134,7 @@ func (f *File) parmsList(dict Dict, n int) []Dict {
 	return out
 }
 
-func applyFilter(f *File, name Name, data []byte, parms Dict) ([]byte, error) {
+func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte, error) {
 	switch name {
 	case "FlateDecode", "Fl":
 		out, err := flateDecode(data)
@@ -150,7 +159,7 @@ func applyFilter(f *File, name Name, data []byte, parms Dict) ([]byte, error) {
 	case "RunLengthDecode", "RL":
 		return runLengthDecode(data), nil
 	case "JBIG2Decode":
-		return jbig2Decode(f, data, parms)
+		return jbig2Decode(f, data, parms, self)
 	case "CCITTFaxDecode", "CCF":
 		return ccittFaxDecode(f, data, parms)
 	case "Crypt":

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 )
 
 // ErrInvalid is returned for a file that is not a PDF, or is damaged beyond
@@ -26,6 +27,13 @@ type File struct {
 	enc   *encrypt
 	trail Dict
 
+	// mu guards the object caches, which are the only mutable state a
+	// rendering goroutine touches. Everything else a File holds is built
+	// while it is being opened and read-only afterwards, which is what lets
+	// a document be rendered from several goroutines at once.
+	mu    sync.RWMutex
+	errMu sync.Mutex
+
 	// hdrOff is where %PDF- was found. It is nonzero only for files with
 	// something prepended, whose stored offsets may or may not account for it.
 	hdrOff int64
@@ -33,11 +41,11 @@ type File struct {
 	root  Dict
 	pages []Ref
 
-	// Errors collects everything that went wrong while parsing or rendering.
-	// A damaged file still yields the parts that could be read, so this is a
+	// errs collects everything that went wrong while parsing or reading. A
+	// damaged file still yields the parts that could be read, so this is a
 	// log rather than a failure: only Open returning an error means nothing
-	// could be recovered.
-	Errors []error
+	// could be recovered. Err reads it.
+	errs []error
 
 	repaired bool
 }
@@ -77,8 +85,19 @@ func NewReaderPassword(r io.ReaderAt, size int64, password string) (*File, error
 func Load(buf []byte, password string) (*File, error) { return load(buf, password) }
 
 // Close releases the document. Using it afterwards is undefined.
+// Close releases the file. It must not be called while anything is still
+// reading the file, which for a document rendered from several goroutines
+// means after the last of them has finished.
 func (f *File) Close() error {
-	*f = File{}
+	f.mu.Lock()
+	f.buf, f.root, f.pages, f.trail = nil, nil, nil, nil
+	f.xref = xref{}
+	f.enc = nil
+	f.mu.Unlock()
+
+	f.errMu.Lock()
+	f.errs = nil
+	f.errMu.Unlock()
 	return nil
 }
 
@@ -92,9 +111,26 @@ func (f *File) Trailer() Dict { return f.trail }
 func (f *File) Catalog() Dict { return f.root }
 
 func (f *File) errorf(format string, a ...any) {
-	if f != nil && len(f.Errors) < maxErrors {
-		f.Errors = append(f.Errors, fmt.Errorf(format, a...))
+	if f == nil {
+		return
 	}
+	f.errMu.Lock()
+	defer f.errMu.Unlock()
+	if len(f.errs) < maxErrors {
+		f.errs = append(f.errs, fmt.Errorf(format, a...))
+	}
+}
+
+// Err returns what went wrong while reading the file, which is a log rather
+// than a failure: a damaged file still yields the parts that could be read.
+// It is safe to call while other goroutines are reading the same file.
+func (f *File) Err() []error {
+	if f == nil {
+		return nil
+	}
+	f.errMu.Lock()
+	defer f.errMu.Unlock()
+	return append([]error(nil), f.errs...)
 }
 
 const maxErrors = 256

@@ -1,5 +1,7 @@
 package raster
 
+import "sync"
+
 // GlyphKey identifies a rendered glyph mask: the font it came from, the glyph
 // in it, the transform with the translation taken out, and the subpixel phase
 // of the origin in quarter pixels.
@@ -17,6 +19,11 @@ const SubPixels = 4
 // GlyphCache holds rendered glyph masks, bounded by their total size, and
 // drops the least recently used when it is full.
 type GlyphCache struct {
+	// mu guards everything below it. A cache is shared by every goroutine
+	// rendering the same document, and both halves of a lookup move the
+	// entry to the head of the list, so there is no read-only path to
+	// separate out.
+	mu         sync.Mutex
 	max, used  int
 	m          map[GlyphKey]*glyphEntry
 	head, tail *glyphEntry
@@ -39,6 +46,8 @@ func NewGlyphCache(max int) *GlyphCache {
 
 // Get returns a cached mask, nil when there is none.
 func (c *GlyphCache) Get(k GlyphKey) *Pixmap {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	e := c.m[k]
 	if e == nil {
 		return nil
@@ -51,6 +60,8 @@ func (c *GlyphCache) Get(k GlyphKey) *Pixmap {
 // Put adds a mask, which the cache then owns. A nil mask records that the
 // glyph draws nothing, which is worth remembering too.
 func (c *GlyphCache) Put(k GlyphKey, mask *Pixmap) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if e := c.m[k]; e != nil {
 		c.unlink(e)
 		c.used -= e.size
@@ -77,6 +88,8 @@ func (c *GlyphCache) Put(k GlyphKey, mask *Pixmap) {
 
 // Clear empties the cache.
 func (c *GlyphCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.m = map[GlyphKey]*glyphEntry{}
 	c.head, c.tail = nil, nil
 	c.used = 0

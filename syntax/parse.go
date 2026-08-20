@@ -17,6 +17,9 @@ type Parser struct {
 	allowStreams bool
 	// crypt decrypts strings and stream data for the object being read.
 	crypt *cryptFilter
+	// fetch is how many objects deep this parse already is, which bounds a
+	// stream whose /Length is an indirect reference back to itself.
+	fetch int
 	depth int
 	// last is where the token most recently returned begins.
 	last int
@@ -196,7 +199,7 @@ func (p *Parser) stream(dict Dict) Object {
 
 	length := -1
 	if p.doc != nil {
-		length = int(p.doc.GetInt(dict["Length"], -1))
+		length = int(p.doc.getInt(dict["Length"], -1, p.fetch))
 	} else if n, ok := dict["Length"].(Integer); ok {
 		length = int(n)
 	}

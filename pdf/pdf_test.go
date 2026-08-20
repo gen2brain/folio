@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gen2brain/pdf/raster"
@@ -644,6 +645,116 @@ func BenchmarkRenderText(b *testing.B) {
 	}
 }
 
+// benchPages builds a document of n identical pages of text and rules, which
+// is what a book looks like to the renderer.
+func benchPages(b *testing.B, n int) *Document {
+	b.Helper()
+	objs := []string{"<< /Type /Catalog /Pages 2 0 R >>", ""}
+	var kids strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&kids, "%d 0 R ", 3+i)
+	}
+	var content strings.Builder
+	content.WriteString("BT /F1 11 Tf 14 TL 36 750 Td\n")
+	for i := 0; i < 45; i++ {
+		content.WriteString("(The quick brown fox jumps over the lazy dog, 0123456789.) Tj T*\n")
+	}
+	content.WriteString("ET\n0 0 1 RG 2 w\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&content, "36 %d m 576 %d l S\n", 40+i*3, 60+i*3)
+	}
+	for i := 0; i < n; i++ {
+		objs = append(objs, fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"+
+			" /Contents %d 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1"+
+			" /BaseFont /Helvetica >> >> >> >>", 3+n))
+	}
+	objs = append(objs, streamObj("", content.String()))
+	objs[1] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", kids.String(), n)
+	return buildPDFB(b, objs)
+}
+
+// BenchmarkRenderPagesSerial and BenchmarkRenderPagesParallel are the same
+// work, one page at a time and one page a goroutine, against one Document.
+func BenchmarkRenderPagesSerial(b *testing.B) {
+	const n = 16
+	d := benchPages(b, n)
+	b.ResetTimer()
+	for b.Loop() {
+		for i := 0; i < n; i++ {
+			p, err := d.Page(i)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := p.Render(p.Matrix(150), nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
+func BenchmarkRenderPagesParallel(b *testing.B) {
+	const n = 16
+	d := benchPages(b, n)
+	b.ResetTimer()
+	for b.Loop() {
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				p, err := d.Page(i)
+				if err != nil {
+					return
+				}
+				p.Render(p.Matrix(150), nil)
+			}(i)
+		}
+		wg.Wait()
+	}
+}
+
+// BenchmarkRenderBands is one page drawn whole and then in bands, which is what
+// Options.Threads buys on a page too big to draw in one goroutine. Text is the
+// case it helps least, because reading the page is most of the work; a shading
+// is the case it helps most, because every pixel is computed.
+func BenchmarkRenderBands(b *testing.B) {
+	shading := "<< /Sh << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 612 792]" +
+		" /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >>"
+	for _, page := range []struct{ name, content, res string }{
+		{"text", "", ""},
+		{"shade", "q 0 0 612 792 re W n /Sh sh Q", " /Shading " + shading},
+	} {
+		for _, n := range []int{1, 2, 4, 8} {
+			b.Run(page.name+"/"+fmt.Sprint(n), func(b *testing.B) {
+				var d *Document
+				if page.content == "" {
+					d = benchPages(b, 1)
+				} else {
+					d = buildPDFB(b, []string{
+						"<< /Type /Catalog /Pages 2 0 R >>",
+						"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+						"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]" +
+							" /Contents 4 0 R /Resources <<" + page.res + " >> >>",
+						streamObj("", page.content),
+					})
+				}
+				p, err := d.Page(0)
+				if err != nil {
+					b.Fatal(err)
+				}
+				o := &Options{Threads: n}
+				ctm := p.Matrix(300)
+				b.ResetTimer()
+				for b.Loop() {
+					if _, err := p.Render(ctm, o); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkRenderPaths(b *testing.B) {
 	d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
 	if err != nil {
@@ -1198,6 +1309,120 @@ func TestImageJPX(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestConcurrentRender renders every page of a document from its own goroutine
+// against one Document, which is what a caller converting a book wants and
+// what the object store and the caches are locked for.
+func TestConcurrentRender(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /Count 4 >>",
+		pageObj(7),
+		pageObj(7),
+		pageObj(7),
+		pageObj(7),
+		streamObj("", "BT /F 24 Tf 10 50 Td (concurrent) Tj ET 0 0 1 rg 10 10 40 20 re f"),
+	})
+	if n := d.NumPages(); n != 4 {
+		t.Fatalf("%d pages, want 4", n)
+	}
+
+	want := make([][]uint8, 4)
+	for i := range want {
+		p, err := d.Page(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		px, err := p.Render(p.Matrix(72), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[i] = append([]uint8(nil), px.Samples...)
+	}
+
+	var wg sync.WaitGroup
+	got := make([][]uint8, 4)
+	errs := make([]error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p, err := d.Page(i)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			px, err := p.Render(p.Matrix(72), nil)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			got[i] = px.Samples
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range want {
+		if errs[i] != nil {
+			t.Fatalf("page %d: %v", i, errs[i])
+		}
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("page %d rendered differently in a goroutine", i)
+		}
+	}
+}
+
+// TestRenderBands draws a page in horizontal bands from several goroutines and
+// requires the result to be the same pixels as drawing it in one.
+func TestRenderBands(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 4 0 R" +
+			" /Resources << /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>" +
+			" /Shading << /Sh << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 300 400]" +
+			" /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >> >> >>",
+		streamObj("", "q 0 0 300 400 re W n /Sh sh Q\n"+
+			"BT /F 18 Tf 20 380 Td 20 TL (bands and bands and bands) Tj T* (and more of them) Tj ET\n"+
+			"0.5 0 0.5 rg 3 w 20 20 m 280 380 l S 20 380 m 280 20 l S\n"+
+			"q 0.5 g 40 40 220 320 re f Q"),
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := p.Render(p.Matrix(150), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{2, 3, 7} {
+		got, err := p.Render(p.Matrix(150), &Options{Threads: n})
+		if err != nil {
+			t.Fatalf("%d bands: %v", n, err)
+		}
+		if got.W != want.W || got.H != want.H {
+			t.Fatalf("%d bands: %dx%d, want %dx%d", n, got.W, got.H, want.W, want.H)
+		}
+		// An edge that crosses a band boundary is clipped there, and the
+		// crossing point rounds to the rasterizer's 1/256 of a pixel, so
+		// a band may differ from the whole page by one coverage unit.
+		for i := range got.Samples {
+			if d := int(got.Samples[i]) - int(want.Samples[i]); d > 1 || d < -1 {
+				t.Fatalf("%d bands: sample %d is %d, want %d",
+					n, i, got.Samples[i], want.Samples[i])
+			}
+		}
+	}
+}
+
+// pageObj is a page whose contents are the given object and whose resources
+// name one standard font, so that every page of the test document shares the
+// font cache, the glyph cache and the content stream.
+func pageObj(contents int) string {
+	return fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents %d 0 R"+
+		" /Resources << /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
+		contents)
 }
 
 func FuzzJPX(fu *testing.F) {

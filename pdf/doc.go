@@ -3,18 +3,32 @@ package pdf
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/gen2brain/pdf/raster"
 	"github.com/gen2brain/pdf/syntax"
 )
 
 // Document is an open PDF file.
+//
+// A Document may be rendered from several goroutines at once, a Page each: the
+// object store underneath it is read-only once the file is open, and the caches
+// a render fills are locked. Configuration - SetLayers, SetUsage,
+// GlyphCacheBytes and ImageCacheBytes - has to happen before those goroutines
+// start, and Close after the last of them finishes. Err reads the error log
+// whenever.
 type Document struct {
 	f *syntax.File
 
-	// Errors collects everything that went wrong while reading or
-	// interpreting. A damaged file still renders what could be read.
-	Errors []error
+	// errs collects everything that went wrong while reading or interpreting.
+	// A damaged file still renders what could be read, so this is a log
+	// rather than a failure. Err reads it.
+	errs []error
+
+	// mu guards the caches a render fills; errMu guards errs, which every
+	// layer appends to and which is never read on a hot path.
+	mu    sync.Mutex
+	errMu sync.Mutex
 
 	fonts  map[any]*Font
 	ocOff  map[Ref]bool
@@ -38,6 +52,8 @@ type Document struct {
 
 // glyphCache returns the document's cache of rendered glyph masks.
 func (d *Document) glyphCache() *raster.GlyphCache {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.glyphs == nil {
 		d.glyphs = raster.NewGlyphCache(d.GlyphCacheBytes)
 	}
@@ -84,17 +100,29 @@ func New(f *syntax.File) *Document { return newDocument(f) }
 
 func newDocument(f *syntax.File) *Document {
 	d := &Document{f: f, fonts: map[any]*Font{}}
-	d.Errors = append(d.Errors, f.Errors...)
+	d.errs = append(d.errs, f.Err()...)
+	d.fbFont = &Font{Name: "Helvetica", Dict: Dict{}, defWidth: 1000}
+	d.readOutputIntent()
 	d.readOptionalContent()
 	return d
 }
 
 // Close releases the document.
+// Close releases the document and everything it has cached. It must not be
+// called while a page is still rendering.
 func (d *Document) Close() error {
 	if d.f != nil {
 		d.f.Close()
 	}
-	*d = Document{}
+	d.mu.Lock()
+	d.fonts, d.images, d.glyphs = nil, nil, nil
+	d.imageHead, d.imageTail, d.imageBytes = nil, nil, 0
+	d.layers, d.ocOff, d.fbFont, d.intent = nil, nil, nil, nil
+	d.mu.Unlock()
+
+	d.errMu.Lock()
+	d.errs = nil
+	d.errMu.Unlock()
 	return nil
 }
 
@@ -120,10 +148,12 @@ func (d *Document) Page(i int) (*Page, error) {
 
 // outputIntent returns the color space of the document's output intent, the
 // space a PDF/A file says its device colors are meant for.
-func (d *Document) outputIntent() *ColorSpace {
-	if d.intent != nil {
-		return d.intent
-	}
+func (d *Document) outputIntent() *ColorSpace { return d.intent }
+
+// readOutputIntent finds the color space of the document's output intent, the
+// space a PDF/A file says its device colors are meant for. It is read once, at
+// open, so that a render never has to write to the document to find it.
+func (d *Document) readOutputIntent() {
 	for _, oi := range d.f.GetArray(d.f.Catalog()["OutputIntents"]) {
 		dict := d.f.GetDict(oi)
 		if dict == nil {
@@ -143,27 +173,48 @@ func (d *Document) outputIntent() *ColorSpace {
 		default:
 			continue
 		}
-		return d.intent
+		return
 	}
-	return nil
 }
 
 func (d *Document) errorf(format string, a ...any) {
-	if len(d.Errors) < maxErrors {
-		d.Errors = append(d.Errors, fmt.Errorf(format, a...))
+	d.errMu.Lock()
+	defer d.errMu.Unlock()
+	if len(d.errs) < maxErrors {
+		d.errs = append(d.errs, fmt.Errorf(format, a...))
 	}
+}
+
+// Err returns what has gone wrong so far, which a damaged file logs rather
+// than fails on. It is safe to call while pages are rendering.
+func (d *Document) Err() []error {
+	d.errMu.Lock()
+	defer d.errMu.Unlock()
+	return append([]error(nil), d.errs...)
+}
+
+func (d *Document) errCount() int {
+	d.errMu.Lock()
+	defer d.errMu.Unlock()
+	return len(d.errs)
+}
+
+// errAfter returns the first error logged since the log was n long, which is
+// how Options.Strict turns a recorded error into a returned one.
+func (d *Document) errAfter(n int) error {
+	d.errMu.Lock()
+	defer d.errMu.Unlock()
+	if n < len(d.errs) {
+		return d.errs[n]
+	}
+	return nil
 }
 
 const maxErrors = 256
 
 // fallbackFont is used when a content stream shows text with no usable font,
 // so that the text still lands in the right places.
-func (d *Document) fallbackFont() *Font {
-	if d.fbFont == nil {
-		d.fbFont = &Font{Name: "Helvetica", Dict: Dict{}, defWidth: 1000}
-	}
-	return d.fbFont
-}
+func (d *Document) fallbackFont() *Font { return d.fbFont }
 
 // readOptionalContent applies the document's default optional content
 // configuration, which says which groups start off.

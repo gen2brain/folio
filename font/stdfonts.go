@@ -26,19 +26,25 @@ var stdFontFile = map[string]string{
 }
 
 var (
-	stdMu    sync.Mutex
-	stdCache = map[string]*Font{}
+	stdMu     sync.Mutex
+	stdCache  = map[string]*Font{}
+	stdByName = map[string]*Font{}
 )
 
 // Standard returns one of the fourteen fonts by its canonical name, or nil.
-// The parsed program is shared, but the caches a font fills as it is used are
-// not, so two documents can render at the same time.
+// One Font is kept per name and shared by every document that asks for it,
+// which is what makes the base fourteen cost their glyph outlines once for the
+// life of the process rather than once a document.
 func Standard(name string) *Font {
 	file, ok := stdFontFile[name]
 	if !ok {
 		return nil
 	}
 	stdMu.Lock()
+	defer stdMu.Unlock()
+	if g, ok := stdByName[name]; ok {
+		return g
+	}
 	f, ok := stdCache[file]
 	if !ok {
 		data := stdFontData[file]
@@ -47,14 +53,12 @@ func Standard(name string) *Font {
 		}
 		stdCache[file] = f
 	}
-	stdMu.Unlock()
 	if f == nil {
 		return nil
 	}
-	g := *f
-	g.Name = name
-	g.names, g.cache = nil, nil
-	return &g
+	g := f.alias(name)
+	stdByName[name] = g
+	return g
 }
 
 // StandardName maps a font name onto one of the fourteen, using the flags of

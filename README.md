@@ -28,7 +28,26 @@ px, err := p.Render(p.Matrix(150), nil)
 ```
 
 `Options` also carries the pixel limit, strictness and flatness. `Page.Run` drives any device:
-the renderer, a trace, a bounding box, or another.
+the renderer, a trace, a bounding box, a display list, or another.
+
+A document may be rendered from several goroutines at once, a page each, which is what a caller
+converting a book wants:
+
+```go
+for i := range n {
+    go func() {
+        p, err := doc.Page(i)
+        img, err := p.Image(150)
+    }()
+}
+```
+
+One page may also be drawn in horizontal bands, which is worth it when the page is big enough
+that drawing costs more than reading it:
+
+```go
+px, err := p.Render(p.Matrix(300), &pdf.Options{Threads: 4})
+```
 
 Optional content is a list a caller can edit, and the render usage decides which annotations and
 which layers a file means for the screen and which for paper:

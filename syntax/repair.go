@@ -53,7 +53,7 @@ func (f *File) repair() error {
 	f.scanTrailers()
 
 	for _, r := range objstms {
-		os := f.objStreamFor(r.Num)
+		os := f.objStreamFor(r.Num, 0)
 		if os == nil {
 			continue
 		}

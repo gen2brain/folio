@@ -3,6 +3,7 @@ package pdf
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gen2brain/pdf/syntax"
 )
@@ -317,10 +318,17 @@ func (d *Document) predefinedCMap(name Name, depth int) *CMap {
 	return c
 }
 
-var builtinCache = map[string]*CMap{}
+var (
+	builtinMu    sync.Mutex
+	builtinCache = map[string]*CMap{}
+)
 
-// builtinCMap parses one of the generated tables.
+// builtinCMap parses one of the generated tables. The parsed form is kept for
+// the life of the process, because the predefined CMaps are the same for every
+// file and several may be open at once.
 func builtinCMap(name string) (*CMap, bool) {
+	builtinMu.Lock()
+	defer builtinMu.Unlock()
 	if c, ok := builtinCache[name]; ok {
 		return c, c != nil
 	}

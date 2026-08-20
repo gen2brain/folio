@@ -5,6 +5,7 @@ package font
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/gen2brain/pdf/raster"
 )
@@ -47,8 +48,30 @@ type Font struct {
 	glyphs int
 
 	advances []int16
-	names    map[string]int
-	cache    map[int]*raster.Path
+
+	// mu guards the two caches a Font fills as it is used. The program
+	// itself is read-only once parsed, so a document rendered from several
+	// goroutines shares one Font and locks only these.
+	mu    sync.RWMutex
+	names map[string]int
+	cache map[int]*raster.Path
+}
+
+// alias returns the same program under another name, with caches of its own.
+// A Font holds a lock, so it cannot be copied whole.
+func (f *Font) alias(name string) *Font {
+	return &Font{
+		Kind:       f.Kind,
+		Name:       name,
+		UnitsPerEm: f.UnitsPerEm,
+		Matrix:     f.Matrix,
+		CID:        f.CID,
+		sfnt:       f.sfnt,
+		cff:        f.cff,
+		type1:      f.type1,
+		glyphs:     f.glyphs,
+		advances:   f.advances,
+	}
 }
 
 // Parse reads a font program, sniffing the format from its first bytes.
@@ -89,10 +112,12 @@ func (f *Font) GlyphPath(gid int) *raster.Path {
 	if gid >= f.glyphs {
 		return nil
 	}
-	if p, ok := f.cache[gid]; ok {
+	f.mu.RLock()
+	p, ok := f.cache[gid]
+	f.mu.RUnlock()
+	if ok {
 		return p
 	}
-	var p *raster.Path
 	switch f.Kind {
 	case KindTrueType:
 		p = f.glyfPath(gid, 0)
@@ -101,10 +126,16 @@ func (f *Font) GlyphPath(gid int) *raster.Path {
 	case KindType1:
 		p = f.type1.path(gid)
 	}
+	f.mu.Lock()
 	if f.cache == nil {
 		f.cache = map[int]*raster.Path{}
 	}
-	f.cache[gid] = p
+	if won, ok := f.cache[gid]; ok {
+		p = won
+	} else {
+		f.cache[gid] = p
+	}
+	f.mu.Unlock()
 	return p
 }
 
@@ -146,17 +177,21 @@ func (f *Font) GlyphName(gid int) string {
 
 // GIDForName returns the glyph with a name, or -1.
 func (f *Font) GIDForName(name string) int {
+	f.mu.Lock()
 	if f.names == nil {
-		f.names = map[string]int{}
+		names := map[string]int{}
 		for gid := 0; gid < f.glyphs; gid++ {
 			if n := f.GlyphName(gid); n != "" {
-				if _, seen := f.names[n]; !seen {
-					f.names[n] = gid
+				if _, seen := names[n]; !seen {
+					names[n] = gid
 				}
 			}
 		}
+		f.names = names
 	}
-	if gid, ok := f.names[name]; ok {
+	gid, ok := f.names[name]
+	f.mu.Unlock()
+	if ok {
 		return gid
 	}
 	return -1

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/gen2brain/pdf/raster"
 )
@@ -15,7 +16,12 @@ type type1Font struct {
 	subrs       [][]byte
 	enc         *[256]string
 	matrix      raster.Matrix
-	widths      map[string]float32
+
+	// widths is filled by running a charstring, which is the only place a
+	// Type 1 glyph's advance is written down, so it is a cache and needs a
+	// lock of its own.
+	widthMu sync.Mutex
+	widths  map[string]float32
 }
 
 // parseType1 reads a Type 1 program: a clear text header, then an eexec
@@ -356,7 +362,9 @@ func (t *type1Font) path(gid int) *raster.Path {
 	r := &t1{f: t}
 	r.run(t.charstrings[name], 0)
 	r.closeContour()
+	t.widthMu.Lock()
 	t.widths[name] = r.width
+	t.widthMu.Unlock()
 	return &r.p
 }
 
@@ -365,9 +373,14 @@ func (t *type1Font) advance(gid int) float32 {
 	if name == "" {
 		return 0
 	}
-	if w, ok := t.widths[name]; ok {
+	t.widthMu.Lock()
+	w, ok := t.widths[name]
+	t.widthMu.Unlock()
+	if ok {
 		return w
 	}
 	t.path(gid)
+	t.widthMu.Lock()
+	defer t.widthMu.Unlock()
 	return t.widths[name]
 }

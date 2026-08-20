@@ -4,6 +4,8 @@ package syntax
 // 7.4.7 defines: no file header, and the globals stream carries the segments
 // the page stream refers to. Ported from pdf.js.
 
+import "sync"
+
 const (
 	// maxJBPixels bounds what one JBIG2 bitmap may allocate.
 	maxJBPixels = 1 << 28
@@ -853,16 +855,21 @@ var jbStandardTables = [16][]jbHuffLine{
 	},
 }
 
-var jbStandardCache [16]*jbHuffTable
+// jbStandardTrees builds the fifteen standard tables once, because they are
+// the same for every file and two files may be decoding at once.
+var jbStandardTrees = sync.OnceValue(func() [16]*jbHuffTable {
+	var t [16]*jbHuffTable
+	for n := 1; n <= 15; n++ {
+		t[n] = newJBHuffTable(jbStandardTables[n], true)
+	}
+	return t
+})
 
 func jbStandardTable(n int) (*jbHuffTable, error) {
 	if n < 1 || n > 15 {
 		return nil, errInvalidf("JBIG2 standard table B.%d", n)
 	}
-	if jbStandardCache[n] == nil {
-		jbStandardCache[n] = newJBHuffTable(jbStandardTables[n], true)
-	}
-	return jbStandardCache[n], nil
+	return jbStandardTrees()[n], nil
 }
 
 // jbCombineRow applies one of the five region combination operators of 6.2.2
@@ -2195,13 +2202,25 @@ func (d *jbig2Decoder) textTables(p *jbTextParams, flags uint16, refs []uint32, 
 	return t, err
 }
 
+func jbCoded(f *File, s *Stream) bool {
+	for _, n := range f.names(s.Dict, "Filter", "F") {
+		if n == "JBIG2Decode" {
+			return true
+		}
+	}
+	return false
+}
+
 // jbig2Decode expands a JBIG2 embedded stream into packed one bit rows. JBIG2
 // writes one for black and a gray image reads zero as black, so the page is
 // inverted on the way out, as ISO 32000-1 7.4.7 requires.
-func jbig2Decode(f *File, data []byte, parms Dict) ([]byte, error) {
+func jbig2Decode(f *File, data []byte, parms Dict, self Ref) ([]byte, error) {
 	d := jbig2Decoder{budget: startJBudget}
 	if f != nil {
-		if s := f.GetStream(parms["JBIG2Globals"]); s != nil {
+		// A globals stream carries segments, not a JBIG2 image, so it is
+		// never itself JBIG2 coded; one that is, or one that names the
+		// image it belongs to, is a cycle rather than a file.
+		if s := f.GetStream(parms["JBIG2Globals"]); s != nil && s.Ref != self && !jbCoded(f, s) {
 			globals, err := s.Data()
 			if err != nil {
 				f.errorf("JBIG2 globals: %v", err)

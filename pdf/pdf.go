@@ -20,7 +20,7 @@
 // embedding BaseDevice is how to write another.
 //
 // A damaged file renders the part that could be read. What went wrong on the
-// way is collected in Document.Errors rather than returned, unless
+// way is collected in Document.Err rather than returned, unless
 // Options.Strict asks for the first of them.
 package pdf
 
@@ -55,7 +55,7 @@ type (
 )
 
 // Errors returned by this package. Anything a damaged file does that can be
-// worked around is recorded in Document.Errors instead.
+// worked around is recorded in Document.Err instead.
 var (
 	// ErrInvalid means the file is not a PDF, or is damaged past recovery.
 	ErrInvalid = syntax.ErrInvalid

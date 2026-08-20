@@ -77,12 +77,16 @@ type groupFrame struct {
 // document is needed for the glyph cache and for Type3 glyph procedures,
 // which are content streams and have to be interpreted where they are drawn.
 func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
+	// A pixmap covers the device rectangle its origin and size describe, so
+	// a destination that is a band of a page, or a group's own buffer, is
+	// drawn in the page's coordinates and mapped by the blitter.
 	return &DrawDevice{
 		doc: doc,
 		dst: dst,
-		ras: raster.NewRasterizer(dst.W, dst.H),
+		ras: raster.NewRasterizer(dst.X+dst.W, dst.Y+dst.H),
 		clip: clipState{rect: raster.Rect{
-			X0: 0, Y0: 0, X1: float32(dst.W), Y1: float32(dst.H),
+			X0: float32(dst.X), Y0: float32(dst.Y),
+			X1: float32(dst.X + dst.W), Y1: float32(dst.Y + dst.H),
 		}},
 		src: make([]uint8, 0, 8),
 	}
@@ -330,7 +334,9 @@ func (d *DrawDevice) FillShade(sh *Shade, ctm raster.Matrix, alpha float32, cp C
 }
 
 // functionShader evaluates a type 1 shading over a grid of its domain, sized
-// to how much of the page the domain covers.
+// to how much of the plane the domain covers. The size deliberately does not
+// depend on the clip: a shading drawn in two halves has to sample the same
+// grid in both, or the halves do not meet.
 func (d *DrawDevice) functionShader(sh *Shade, m raster.Matrix, box raster.Rect) *pixmapShader {
 	if len(sh.Function) == 0 {
 		return nil
@@ -345,8 +351,8 @@ func (d *DrawDevice) functionShader(sh *Shade, m raster.Matrix, box raster.Rect)
 	if dx <= 0 || dy <= 0 {
 		return nil
 	}
-	on := full.ApplyRect(raster.Rect{X0: dom[0], Y0: dom[2], X1: dom[1], Y1: dom[3]}).Intersect(box)
-	if on.IsEmpty() {
+	on := full.ApplyRect(raster.Rect{X0: dom[0], Y0: dom[2], X1: dom[1], Y1: dom[3]})
+	if on.IsEmpty() || on.Intersect(box).IsEmpty() {
 		return nil
 	}
 	w := clampInt(int(on.X1-on.X0)+1, 1, maxShadeGrid)

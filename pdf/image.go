@@ -31,8 +31,6 @@ type Image struct {
 	// ColorKey is the /Mask color key range, nil when there is none.
 	ColorKey []int
 
-	jpxAlpha []byte
-
 	doc    *Document
 	stream *syntax.Stream
 	dict   Dict
@@ -262,32 +260,35 @@ func (i *Image) decode(dst *ColorSpace) (*raster.Pixmap, error) {
 		return nil, err
 	}
 
-	bpc, comps := i.BPC, 1
-	if !i.Mask && i.CS != nil {
-		comps = i.CS.N
+	bpc, comps, cs := i.BPC, 1, i.CS
+	if !i.Mask && cs != nil {
+		comps = cs.N
 	}
 	decode := i.Decode
+	var alpha []byte
 
 	if filter != "" {
-		var n int
-		data, n, err = decodeFiltered(filter, data, parms, i)
-		if err != nil {
-			return nil, err
+		f, ferr := decodeFiltered(filter, data, parms, i)
+		if ferr != nil {
+			return nil, ferr
 		}
-		bpc = 8
-		if n != comps && !i.Mask {
-			i.doc.errorf("%s image has %d components, its color space %d", filter, n, comps)
-			comps = n
+		data, bpc, alpha = f.pix, 8, f.alpha
+		if f.cs != nil {
+			cs = f.cs
+		}
+		if f.comps != comps && !i.Mask {
+			i.doc.errorf("%s image has %d components, its color space %d", filter, f.comps, comps)
+			comps = f.comps
 		}
 	}
 
 	if i.Mask {
 		return i.stencil(data, bpc, decode)
 	}
-	if i.CS == nil {
+	if cs == nil {
 		return nil, fmt.Errorf("%w: image has no color space", ErrInvalid)
 	}
-	return i.samples(data, bpc, comps, decode, dst)
+	return i.samples(data, bpc, comps, decode, dst, cs, alpha)
 }
 
 // data returns the image bytes with the byte filters applied, and the image
@@ -339,11 +340,11 @@ func (i *Image) stencil(data []byte, bpc int, decode []float64) (*raster.Pixmap,
 
 // samples unpacks the image and converts it, then hangs its transparency on
 // the result.
-func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst *ColorSpace) (*raster.Pixmap, error) {
+func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte) (*raster.Pixmap, error) {
 	if dst == nil {
 		dst = DeviceRGB
 	}
-	alpha := i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil || i.jpxAlpha != nil
+	alpha := i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil || opacity != nil
 	px := raster.NewPixmap(dst.Model(), i.Width, i.Height, alpha)
 	if px == nil {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
@@ -351,11 +352,11 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst *Colo
 
 	u := unpacker{
 		img: i, data: data, bpc: bpc, comps: comps,
-		decode: decode, dst: dst, px: px,
+		decode: decode, dst: dst, cs: cs, px: px,
 	}
 	u.run()
 
-	i.transparency(px)
+	i.transparency(px, opacity)
 	if px.Alpha {
 		premultiplyPixmap(px)
 	}
@@ -370,7 +371,10 @@ type unpacker struct {
 	comps  int
 	decode []float64
 	dst    *ColorSpace
-	px     *raster.Pixmap
+	// cs is the space the samples are in, which for a JPX image is what its
+	// codestream says rather than what the dictionary does.
+	cs *ColorSpace
+	px *raster.Pixmap
 }
 
 func (u *unpacker) run() {
@@ -424,7 +428,7 @@ func (u *unpacker) run() {
 				raw[j] = r.next()
 				c[j] = u.value(j, raw[j], maxVal)
 			}
-			convertColor(i.CS, c, out)
+			convertColor(u.cs, c, out)
 			copy(row[x*n:x*n+px.N], out)
 			if px.Alpha {
 				row[x*n+px.N] = u.keyedAll(raw)
@@ -481,7 +485,7 @@ func (u *unpacker) table() []uint8 {
 	c := make([]float32, 1)
 	for v := 0; v < n; v++ {
 		c[0] = u.value(0, uint32(v), maxVal)
-		convertColor(u.img.CS, c, lut[v*u.px.N:(v+1)*u.px.N])
+		convertColor(u.cs, c, lut[v*u.px.N:(v+1)*u.px.N])
 	}
 	return lut
 }
@@ -490,7 +494,7 @@ func (u *unpacker) table() []uint8 {
 // components, which is the ordinary case of an eight bit device image.
 func (u *unpacker) direct() bool {
 	return u.bpc == 8 && len(u.decode) == 0 && u.comps == u.px.N &&
-		u.img.CS.Kind == u.dst.Kind &&
+		u.cs.Kind == u.dst.Kind &&
 		(u.dst.Kind == KindGray || u.dst.Kind == KindRGB || u.dst.Kind == KindCMYK)
 }
 
@@ -498,10 +502,10 @@ func (u *unpacker) direct() bool {
 // through the decode array when there is one.
 func (u *unpacker) value(j int, s uint32, maxVal float32) float32 {
 	lo, hi := float32(0), float32(1)
-	if u.img.CS.Kind == KindIndexed {
+	if u.cs.Kind == KindIndexed {
 		hi = maxVal
-	} else if u.img.CS.Kind == KindLab {
-		r := labRange(u.img.CS.Range)
+	} else if u.cs.Kind == KindLab {
+		r := labRange(u.cs.Range)
 		switch j {
 		case 0:
 			hi = 100
@@ -571,17 +575,17 @@ func (b *bits) next() uint32 {
 
 // transparency hangs an /SMask or a stencil /Mask on a decoded image. Either
 // may be a different size, so both are sampled rather than copied.
-func (i *Image) transparency(px *raster.Pixmap) {
+func (i *Image) transparency(px *raster.Pixmap, opacity []byte) {
 	if !px.Alpha {
 		return
 	}
-	if i.jpxAlpha != nil {
+	if opacity != nil {
 		n := px.Comps()
 		for y := 0; y < px.H; y++ {
 			row := px.Row(y)
 			for x := 0; x < px.W; x++ {
-				if p := y*px.W + x; p < len(i.jpxAlpha) {
-					row[x*n+px.N] = i.jpxAlpha[p]
+				if p := y*px.W + x; p < len(opacity) {
+					row[x*n+px.N] = opacity[p]
 				}
 			}
 		}
@@ -730,10 +734,22 @@ func imageDecoder(filter Name) ImageDecoder {
 	return decoders[filter]
 }
 
+// filtered is what an image filter that produces pixels rather than bytes
+// leaves behind. The color space and the opacity channel are the codestream's
+// rather than the dictionary's, and neither is written back onto the Image,
+// because two goroutines may be decoding the same one.
+type filtered struct {
+	pix   []byte
+	comps int
+	alpha []byte
+	cs    *ColorSpace
+}
+
 // decodeFiltered runs the filter that produces pixels rather than bytes and
 // returns eight bit samples.
-func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) ([]byte, int, error) {
+func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) (filtered, error) {
 	var (
+		out        filtered
 		pix        []byte
 		w, h, n    int
 		err        error
@@ -749,19 +765,20 @@ func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) ([]byte, int
 		img, err = jpxDecode(data)
 		if err == nil {
 			pix, w, h, n = img.pix, img.width, img.height, img.comps
-			pix, n = i.adoptJPX(pix, w, h, n)
+			pix, n, out.alpha, out.cs = i.adoptJPX(pix, w, h, n)
 		}
 	default:
-		return nil, 0, fmt.Errorf("%w: %s image", ErrUnsupported, filter)
+		return out, fmt.Errorf("%w: %s image", ErrUnsupported, filter)
 	}
 	if err != nil {
-		return nil, 0, fmt.Errorf("%s: %w", filter, err)
+		return out, fmt.Errorf("%s: %w", filter, err)
 	}
 	if w != i.Width || h != i.Height {
 		i.doc.errorf("%s image is %dx%d, its dictionary says %dx%d", filter, w, h, i.Width, i.Height)
 		pix = refit(pix, w, h, i.Width, i.Height, n)
 	}
-	return pix, n, nil
+	out.pix, out.comps = pix, n
+	return out, nil
 }
 
 // refit lays samples of one size into a buffer of another, which is what a
@@ -868,17 +885,31 @@ func (d *Document) decodedImage(img *Image, dst *ColorSpace) (*raster.Pixmap, er
 	if dst != nil {
 		key.comps = dst.N
 	}
-	if e := d.images[key]; e != nil {
+	d.mu.Lock()
+	e := d.images[key]
+	if e != nil {
 		d.imageUnlink(e)
 		d.imageLink(e)
+	}
+	d.mu.Unlock()
+	if e != nil {
 		return e.px, nil
 	}
 
+	// Decoding happens outside the lock: it is the slowest thing a page does
+	// and it depends on nothing the cache holds, so two pages that want the
+	// same image at once both decode it and one of the two is kept.
 	px, err := img.decode(dst)
 	if err != nil {
 		return nil, err
 	}
-	d.cacheImage(key, px)
+	d.mu.Lock()
+	if e := d.images[key]; e != nil {
+		px = e.px
+	} else {
+		d.cacheImage(key, px)
+	}
+	d.mu.Unlock()
 	return px, nil
 }
 
@@ -934,18 +965,19 @@ func (d *Document) imageUnlink(e *imageEntry) {
 // adoptJPX gives a JPX image the color space and the transparency the
 // codestream carries rather than the dictionary, which ISO 32000-1 7.4.9 says
 // is what a reader must do when the dictionary is silent or disagrees.
-func (i *Image) adoptJPX(pix []byte, w, h, n int) ([]byte, int) {
+func (i *Image) adoptJPX(pix []byte, w, h, n int) ([]byte, int, []byte, *ColorSpace) {
 	smask := i.smaskInData()
+	cs := i.CS
 	color := n
 	switch {
-	case i.CS != nil && i.CS.N <= n:
-		color = i.CS.N
-	case i.CS == nil && (n == 2 || n == 4) && smask != 0:
+	case cs != nil && cs.N <= n:
+		color = cs.N
+	case cs == nil && (n == 2 || n == 4) && smask != 0:
 		color = n - 1
 	}
+	var alpha []byte
 	if color < n && w*h*n <= len(pix) {
 		out := make([]byte, w*h*color)
-		var alpha []byte
 		if smask != 0 {
 			alpha = make([]byte, w*h)
 		}
@@ -956,19 +988,18 @@ func (i *Image) adoptJPX(pix []byte, w, h, n int) ([]byte, int) {
 			}
 		}
 		pix, n = out, color
-		i.jpxAlpha = alpha
 	}
-	if i.CS == nil || i.CS.N != n {
+	if cs == nil || cs.N != n {
 		switch n {
 		case 1:
-			i.CS = DeviceGray
+			cs = DeviceGray
 		case 3:
-			i.CS = DeviceRGB
+			cs = DeviceRGB
 		case 4:
-			i.CS = DeviceCMYK
+			cs = DeviceCMYK
 		}
 	}
-	return pix, n
+	return pix, n, alpha, cs
 }
 
 // codestreamColorSpace is what a JPX image with no /ColorSpace paints in,

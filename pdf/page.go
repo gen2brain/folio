@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"sync"
 
 	"github.com/gen2brain/pdf/raster"
 	"github.com/gen2brain/pdf/syntax"
 )
 
 // Page is one page of a document.
+// Page is one page of a document, and is not safe for concurrent use: a
+// goroutine that wants to render a page asks the Document for its own.
 type Page struct {
 	doc      *Document
 	dict     Dict
@@ -348,16 +351,69 @@ func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 		px.ClearWhite()
 	}
 
-	dev := NewDrawDevice(p.doc, px)
-	dev.SetFlatness(o.flatness())
-	dev.res = p.Resources()
-
-	first := len(p.doc.Errors)
-	err := p.Run(dev, raster.Concat(ctm, raster.Translate(float32(-x0), float32(-y0))))
-	if err == nil && o.strict() && len(p.doc.Errors) > first {
-		err = p.doc.Errors[first]
+	first := p.doc.errCount()
+	var err error
+	if n := o.threads(); n > 1 && h >= n*minBandHeight {
+		err = p.renderBands(px, ctm, o, n)
+	} else {
+		dev := NewDrawDevice(p.doc, px)
+		dev.SetFlatness(o.flatness())
+		dev.res = p.Resources()
+		err = p.Run(dev, ctm)
+	}
+	if err == nil && o.strict() {
+		err = p.doc.errAfter(first)
 	}
 	return px, err
+}
+
+// minBandHeight is how few rows a band may have before splitting the page
+// costs more than it saves.
+const minBandHeight = 64
+
+// renderBands interprets the page once into a display list and then draws the
+// list into n horizontal bands of one pixmap, a goroutine each. Every
+// operation a raster renderer performs is local to the pixels it touches, so a
+// band is the same page with a smaller destination and the bands never meet.
+func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n int) error {
+	list := NewListDevice()
+	if err := p.Run(list, ctm); err != nil {
+		return err
+	}
+
+	res := p.Resources()
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		y0, y1 := i*px.H/n, (i+1)*px.H/n
+		if y0 >= y1 {
+			continue
+		}
+		band := &raster.Pixmap{
+			W: px.W, H: y1 - y0, N: px.N, Alpha: px.Alpha,
+			Stride:  px.Stride,
+			X:       px.X,
+			Y:       px.Y + y0,
+			Samples: px.Samples[y0*px.Stride : y1*px.Stride],
+			Model:   px.Model,
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dev := NewDrawDevice(p.doc, band)
+			dev.SetFlatness(o.flatness())
+			dev.res = res
+			list.ReplayClip(dev, dev.clip.rect)
+			errs[i] = dev.Close()
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Image renders the page at a resolution in dots per inch.

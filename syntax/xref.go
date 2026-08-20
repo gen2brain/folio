@@ -28,8 +28,6 @@ type xref struct {
 
 	// objstm caches the offsets parsed out of an object stream.
 	objstm map[uint32]*objStream
-	// loading guards against an object stream that contains itself.
-	loading map[uint32]bool
 }
 
 func (x *xref) entry(num uint32) (xrefEntry, bool) {
@@ -74,7 +72,6 @@ func load(buf []byte, password string) (*File, error) {
 	f := &File{buf: buf}
 	f.xref.cache = map[uint32]Object{}
 	f.xref.objstm = map[uint32]*objStream{}
-	f.xref.loading = map[uint32]bool{}
 
 	if !f.checkHeader() {
 		f.errorf("no %%PDF- header")
@@ -363,60 +360,81 @@ func (f *File) readXrefStream(p *Parser, off int64) (Dict, error) {
 	return st.Dict, nil
 }
 
+// maxFetchDepth bounds how far one object may be nested inside another before
+// this gives up. A stream's /Length may be an indirect reference and an object
+// may live in an object stream, so fetching one object can fetch another; the
+// depth is what stops a file that refers to itself, and it is a parameter
+// rather than a set on the File so that two goroutines fetching at once cannot
+// see each other's recursion. Reading one object legitimately reaches a depth
+// of three; the rest is headroom for a file that nests further than it should.
+const maxFetchDepth = 16
+
 // object fetches an indirect object, from the cache when possible.
-func (f *File) object(r Ref) Object {
-	if o, ok := f.xref.cache[r.Num]; ok {
+func (f *File) object(r Ref, depth int) Object {
+	f.mu.RLock()
+	o, ok := f.xref.cache[r.Num]
+	f.mu.RUnlock()
+	if ok {
 		return o
 	}
 	e, ok := f.xref.entry(r.Num)
 	if !ok {
 		return nil
 	}
-	if f.xref.loading[r.Num] {
-		f.errorf("object %d refers to itself", r.Num)
+	if depth >= maxFetchDepth {
+		f.errorf("object %d is nested too deeply", r.Num)
 		return nil
 	}
-	f.xref.loading[r.Num] = true
-	defer delete(f.xref.loading, r.Num)
 
+	// Parsing happens outside the lock: it can fetch other objects, and the
+	// result depends only on the file, so two goroutines racing to read the
+	// same object both produce the same answer.
 	var obj Object
 	switch e.kind {
 	case xrefNormal:
 		var err error
-		obj, err = f.objectAt(e.off, Ref{Num: r.Num, Gen: uint16(e.gen)})
+		obj, err = f.objectAt(e.off, Ref{Num: r.Num, Gen: uint16(e.gen)}, depth)
 		if err != nil {
 			f.errorf("object %d: %v", r.Num, err)
 			obj = nil
 		}
 	case xrefInStream:
-		obj = f.objectInStream(uint32(e.off), int(e.gen), r.Num)
+		obj = f.objectInStream(uint32(e.off), int(e.gen), r.Num, depth)
 	}
-	f.xref.cache[r.Num] = obj
+
+	f.mu.Lock()
+	if won, ok := f.xref.cache[r.Num]; ok {
+		obj = won
+	} else {
+		f.xref.cache[r.Num] = obj
+	}
+	f.mu.Unlock()
 	return obj
 }
 
 // objectAt reads the object stored at a file offset.
-func (f *File) objectAt(off int64, want Ref) (Object, error) {
+func (f *File) objectAt(off int64, want Ref, depth int) (Object, error) {
 	if off < 0 || off >= int64(len(f.buf)) {
 		return nil, fmt.Errorf("%w: offset %d out of range", ErrInvalid, off)
 	}
-	obj, err := f.parseAt(off, want)
+	obj, err := f.parseAt(off, want, depth)
 	if err == nil {
 		return obj, nil
 	}
 	if f.hdrOff > 0 && off+f.hdrOff < int64(len(f.buf)) {
-		if obj, err2 := f.parseAt(off+f.hdrOff, want); err2 == nil {
+		if obj, err2 := f.parseAt(off+f.hdrOff, want, depth); err2 == nil {
 			return obj, nil
 		}
 	}
 	return nil, err
 }
 
-func (f *File) parseAt(off int64, want Ref) (Object, error) {
+func (f *File) parseAt(off int64, want Ref, depth int) (Object, error) {
 	l := NewLexer(f.buf)
 	l.SetPos(int(off))
 	p := NewParser(l, f)
 	p.crypt = f.cryptFor(want)
+	p.fetch = depth + 1
 	return p.indirect(want)
 }
 
@@ -430,8 +448,8 @@ type objStream struct {
 
 // objectInStream reads object num, which the xref says is at index idx of the
 // object stream stored in object stm.
-func (f *File) objectInStream(stm uint32, idx int, num uint32) Object {
-	os := f.objStreamFor(stm)
+func (f *File) objectInStream(stm uint32, idx int, num uint32, depth int) Object {
+	os := f.objStreamFor(stm, depth+1)
 	if os == nil {
 		return nil
 	}
@@ -464,30 +482,36 @@ func (f *File) objectInStream(stm uint32, idx int, num uint32) Object {
 	return obj
 }
 
-func (f *File) objStreamFor(stm uint32) *objStream {
-	if os, ok := f.xref.objstm[stm]; ok {
+func (f *File) objStreamFor(stm uint32, depth int) *objStream {
+	f.mu.RLock()
+	os, ok := f.xref.objstm[stm]
+	f.mu.RUnlock()
+	if ok {
 		return os
 	}
-	f.xref.objstm[stm] = nil // negative caching; replaced on success
+	if depth >= maxFetchDepth {
+		f.errorf("object stream %d is nested too deeply", stm)
+		return nil
+	}
 
-	st := f.GetStream(Ref{Num: stm})
+	st := f.stream(Ref{Num: stm}, depth)
 	if st == nil {
 		f.errorf("object stream %d is not a stream", stm)
-		return nil
+		return f.rememberObjStream(stm, nil)
 	}
 	data, err := st.Data()
 	if err != nil {
 		f.errorf("object stream %d: %v", stm, err)
-		return nil
+		return f.rememberObjStream(stm, nil)
 	}
 	n := int(f.GetInt(st.Dict["N"], 0))
 	first := int(f.GetInt(st.Dict["First"], 0))
 	if n < 0 || first < 0 || first > len(data) || n > maxObjects {
 		f.errorf("object stream %d: /N %d /First %d", stm, n, first)
-		return nil
+		return f.rememberObjStream(stm, nil)
 	}
 
-	os := &objStream{data: data, first: first}
+	os = &objStream{data: data, first: first}
 	l := NewLexer(data[:first])
 	for i := 0; i < n; i++ {
 		a, ok1 := l.Next()
@@ -500,6 +524,17 @@ func (f *File) objStreamFor(stm uint32) *objStream {
 		}
 		os.nums = append(os.nums, uint32(num))
 		os.offs = append(os.offs, int(off))
+	}
+	return f.rememberObjStream(stm, os)
+}
+
+// rememberObjStream caches a parsed object stream, or the failure to parse
+// one, and returns whichever answer another goroutine got there first with.
+func (f *File) rememberObjStream(stm uint32, os *objStream) *objStream {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if won, ok := f.xref.objstm[stm]; ok {
+		return won
 	}
 	f.xref.objstm[stm] = os
 	return os

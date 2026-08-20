@@ -56,8 +56,8 @@ func TestMinimal(t *testing.T) {
 	if f.Repaired() {
 		t.Error("a valid file should not be repaired")
 	}
-	if len(f.Errors) != 0 {
-		t.Errorf("errors: %v", f.Errors)
+	if errs := f.Err(); len(errs) != 0 {
+		t.Errorf("errors: %v", errs)
 	}
 }
 
@@ -66,8 +66,8 @@ func TestMinimal(t *testing.T) {
 func TestXrefStream(t *testing.T) {
 	f := open(t, "xrefstream.pdf", "")
 	checkMinimal(t, f)
-	if len(f.Errors) != 0 {
-		t.Errorf("errors: %v", f.Errors)
+	if errs := f.Err(); len(errs) != 0 {
+		t.Errorf("errors: %v", errs)
 	}
 }
 
@@ -180,7 +180,7 @@ func FuzzJBIG2(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
-		jbig2Decode(nil, b, nil)
+		jbig2Decode(nil, b, nil, Ref{})
 	})
 }
 
