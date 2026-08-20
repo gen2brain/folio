@@ -46,7 +46,11 @@ func (ip *interp) showString(s []byte) {
 	}
 	font := ts.font
 
-	for _, c := range font.Decode(s) {
+	// The characters are read here and nowhere else, but a Type3 glyph runs a
+	// content stream of its own and can reach this again, so the buffer is on
+	// the stack rather than on the interpreter.
+	var buf [64]Char
+	for _, c := range font.decode(buf[:0], s) {
 		if ip.text != nil && ip.textMode != ts.render {
 			ip.flushText()
 		}

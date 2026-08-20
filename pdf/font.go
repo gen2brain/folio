@@ -579,7 +579,12 @@ type Char struct {
 
 // Decode splits a string into character codes.
 func (ft *Font) Decode(s []byte) []Char {
-	out := make([]Char, 0, len(s))
+	return ft.decode(make([]Char, 0, len(s)), s)
+}
+
+// decode is Decode appending into a buffer the caller owns, so that showing a
+// string need not allocate one.
+func (ft *Font) decode(out []Char, s []byte) []Char {
 	for i := 0; i < len(s); {
 		var c Char
 		if ft.Type0 {
