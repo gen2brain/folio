@@ -330,8 +330,19 @@ func (d *Document) glyphFor(ft *Font, code int, name string) int {
 			return gid
 		}
 	}
-	if code < p.NumGlyphs() && !p.HasCmap() {
+	// Reading the character code as a glyph index is a guess, and it is only
+	// available to a program that does not name its glyphs: where the encoding
+	// asked for a name and the font has no such glyph, the answer is that it
+	// has no such glyph. A subset font keeps a few dozen glyphs in whatever
+	// order it likes, so the guess lands on an unrelated letter.
+	if code < p.NumGlyphs() && !p.HasCmap() && (name == "" || !p.HasGlyphNames()) {
 		return code
+	}
+	if p.HasGlyphNames() {
+		if gid := p.GIDForName(".notdef"); gid >= 0 {
+			return gid
+		}
+		return -1
 	}
 	return 0
 }

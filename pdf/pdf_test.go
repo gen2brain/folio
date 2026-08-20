@@ -1104,6 +1104,48 @@ func TestType1GlyphZero(t *testing.T) {
 	}
 }
 
+// TestType1MissingName checks that a name the font does not carry resolves to
+// nothing rather than to whatever glyph sits at the character code. A subset
+// font keeps a few dozen glyphs in its own order, so reading the code as an
+// index lands on an unrelated letter.
+func TestType1MissingName(t *testing.T) {
+	big := type1Charstring(0, 500, "hsbw", 100, 100, "rmoveto",
+		300, 0, "rlineto", 0, 300, "rlineto", -300, 0, "rlineto", "closepath", "endchar")
+	blank := type1Charstring(0, 500, "hsbw", "endchar")
+
+	// No standard name is in this font, so every lookup fails and only the
+	// guess by index is left. "dollar" sits at 65, the code the page draws.
+	names := []string{".notdef"}
+	shapes := map[string][]byte{".notdef": blank, "dollar": big}
+	for i := 1; i < 65; i++ {
+		n := fmt.Sprintf("uni%04X", 0xE000+i)
+		names = append(names, n)
+		shapes[n] = blank
+	}
+	names = append(names, "dollar")
+
+	prog := buildType1(names, shapes)
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Font << /F1 5 0 R >> >> >>",
+		streamObj("", "BT /F1 100 Tf 0 0 Td (A) Tj ET"),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Probe /FirstChar 65 /LastChar 65" +
+			" /Widths [500] /FontDescriptor 6 0 R" +
+			" /Encoding << /Type /Encoding /Differences [65 /nonesuch] >> >>",
+		"<< /Type /FontDescriptor /FontName /Probe /Flags 32 /ItalicAngle 0" +
+			" /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80" +
+			" /FontBBox [0 0 1000 1000] /FontFile 7 0 R >>",
+		streamObj(fmt.Sprintf("/Length1 %d /Length2 0 /Length3 0", len(prog)), string(prog)),
+	})
+	px := renderDoc(t, d, nil)
+	// Glyph 65 is "dollar", which paints 10,10 to 40,40 and must not be drawn.
+	if got := pixel(px, 25, 75); !same(got, 255, 255, 255) {
+		t.Errorf("the glyph at the character code drew %v at 25,75, want white", got)
+	}
+}
+
 // TestFormCycle checks that two form XObjects that reach each other draw one
 // pass and stop at the cycle, rather than running to the nesting limit. The
 // form halves the scale each time, so a depth counter alone would paint the
