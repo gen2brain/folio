@@ -206,15 +206,36 @@ func FuzzJBIG2(fu *testing.F) {
 	})
 }
 
-// TestCorpus reads every file in the corpora named by $PDF_CORPUS_DIR and
+// conformanceDirs is the colon separated list of corpus roots, which is the
+// knob every decoder in this family reads.
+func conformanceDirs(t *testing.T) []string {
+	t.Helper()
+
+	env := os.Getenv("CONFORMANCE_DIR")
+	if env == "" {
+		t.Skip("set CONFORMANCE_DIR")
+	}
+
+	return strings.Split(env, ":")
+}
+
+// corpusFile finds a file the manifest names under whichever root holds it.
+func corpusFile(dirs []string, name string) (string, bool) {
+	for _, dir := range dirs {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// TestCorpus reads every file in the corpora named by $CONFORMANCE_DIR and
 // holds the result to testdata/corpus.tsv, which records what MuPDF and
 // poppler make of each one. See docs/CORPUS.md; regenerate the manifest with
 // tools/corpus.sh manifest.
 func TestCorpus(t *testing.T) {
-	dir := os.Getenv("PDF_CORPUS_DIR")
-	if dir == "" {
-		t.Skip("set PDF_CORPUS_DIR to run the corpus")
-	}
+	dirs := conformanceDirs(t)
 	manifest, err := os.ReadFile(filepath.Join("..", "testdata", "corpus.tsv"))
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +247,12 @@ func TestCorpus(t *testing.T) {
 		if len(f) != 3 {
 			continue
 		}
-		name, opens, pages := filepath.Join(dir, f[0]), f[1] == "1", atoi(f[2])
+		opens, pages := f[1] == "1", atoi(f[2])
+		name, found := corpusFile(dirs, f[0])
+		if !found {
+			missing++
+			continue
+		}
 		b, err := os.ReadFile(name)
 		if err != nil {
 			missing++
@@ -249,7 +275,7 @@ func TestCorpus(t *testing.T) {
 		}
 	}
 	if checked == 0 {
-		t.Skipf("no corpus files under %s", dir)
+		t.Skipf("no corpus files under %s", strings.Join(dirs, ":"))
 	}
 	t.Logf("%d files checked, %d not present, %d mismatched, %d opened that no other reader does",
 		checked, missing, mismatched, opened)
