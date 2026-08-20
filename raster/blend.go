@@ -77,6 +77,12 @@ func (p *Pixmap) BlendOver(src *Pixmap, alpha uint8, mode BlendMode) {
 	for i := range b.scale {
 		b.scale[i] = mul255(uint8(i), alpha)
 	}
+	// A separable mode over a backdrop with no alpha of its own is the case
+	// worth taking a span at a time: the destination is then already the
+	// unpremultiplied backdrop, laid out exactly as the scratch is, so the
+	// mode runs over a whole run in one call instead of once a pixel.
+	b.flat = b.separable && mode != BlendNormal && !p.Alpha && b.n == b.dn
+
 	sa, dn, sn := b.sa, b.dn, b.sn
 	w := x1 - x0
 	for y := y0; y < y1; y++ {
@@ -90,11 +96,43 @@ func (p *Pixmap) BlendOver(src *Pixmap, alpha uint8, mode BlendMode) {
 					continue
 				}
 			}
-			if a := b.scale[row[sa]]; a != 0 {
+			k := 1
+			if b.flat {
+				for k < min(w-i, blendChunk) && row[k*sn+sa] != 0 {
+					k++
+				}
+				b.span(dst, row, k)
+			} else if a := b.scale[row[sa]]; a != 0 {
 				b.pixel(dst[:dn:dn], row[:sn:sn], a)
 			}
-			dst, row = dst[dn:], row[sn:]
-			i++
+			dst, row = dst[k*dn:], row[k*sn:]
+			i += k
+		}
+	}
+}
+
+// blendChunk is how many pixels of a run go through the scratch at a time.
+const blendChunk = 64
+
+// span is the blend of a run of pixels whose backdrop is opaque and laid out
+// as the scratch is. A pixel of no coverage comes out of it unchanged, which
+// is why the run does not have to stop at one.
+func (b *blender) span(dst, src []uint8, w int) {
+	n := b.n
+	cs := b.cs[: w*n : w*n]
+	cr := b.cr[: w*n : w*n]
+
+	for i := range w {
+		s := src[i*b.sn:]
+		unpremultiply(cs[i*n:i*n+n:i*n+n], s, s[b.sa])
+	}
+	blendSeparable(b.mode, dst[:w*n:w*n], cs, cr)
+	for i := range w {
+		a := uint32(b.scale[src[i*b.sn+b.sa]])
+		isa := 255 - a
+		p := dst[i*n : i*n+n : i*n+n]
+		for c, v := range cr[i*n : i*n+n : i*n+n] {
+			p[c] = div255(uint32(v)*a + uint32(p[c])*isa)
 		}
 	}
 }
@@ -124,11 +162,13 @@ type blender struct {
 	model          Model
 	buf            blendBuf
 	scale          [256]uint8
+	cs, cr         [blendChunk * 4]uint8
 	mode           BlendMode
 	alpha          uint8
 	n, pn, sn, dn  int
 	sa             int
 	separable      bool
+	flat           bool
 	dalpha, salpha bool
 }
 
