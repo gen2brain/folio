@@ -279,14 +279,23 @@ func (b *imageBlitter) column(r0, r1 []uint8, k0, cols, n int, iv, fv uint32) []
 	}
 	col := b.col[:m:m]
 	hi := b.src.W - 1
-	for k := range cols {
-		s := clampInt(k0+k, 0, hi) * n
-		a := r0[s : s+n : s+n]
-		c := r1[s : s+n : s+n]
-		d := col[k*n : k*n+n : k*n+n]
-		for j, v := range a {
-			d[j] = uint16(uint32(v)*iv + uint32(c[j])*fv)
-		}
+
+	// The columns the image actually has are contiguous in both rows, so
+	// they blend as one run of bytes with no notion of a pixel in it; only
+	// the ones off either end repeat an edge and are done singly.
+	head := clampInt(-k0, 0, cols)
+	tail := max(clampInt(hi-k0+1, 0, cols), head)
+	for k := range head {
+		blendRows(col[k*n:k*n+n:k*n+n], r0[:n:n], r1[:n:n], iv, fv)
+	}
+	if tail > head {
+		s := (k0 + head) * n
+		w := (tail - head) * n
+		blendRows(col[head*n:head*n+w], r0[s:s+w], r1[s:s+w], iv, fv)
+	}
+	for k := tail; k < cols; k++ {
+		s := hi * n
+		blendRows(col[k*n:k*n+n:k*n+n], r0[s:s+n:s+n], r1[s:s+n:s+n], iv, fv)
 	}
 	return col
 }

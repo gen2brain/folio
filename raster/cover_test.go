@@ -226,3 +226,54 @@ func TestGradientIndexMatchesScalar(t *testing.T) {
 		}
 	})
 }
+
+// TestBlendRowsMatchesScalar walks the whole reachable domain of a weight
+// pair and both sample bytes, and every length either side of the block.
+func TestBlendRowsMatchesScalar(t *testing.T) {
+	eachTier(t, func(t *testing.T) {
+		for _, w := range []int{0, 1, 3, 15, 16, 17, 31, 32, 33, 64, 100} {
+			a := make([]uint8, w)
+			c := make([]uint8, w)
+			s := uint32(w)*2654435761 + 1
+			for i := range a {
+				s = s*1664525 + 1013904223
+				a[i] = uint8(s >> 24)
+				s = s*1664525 + 1013904223
+				c[i] = uint8(s >> 24)
+			}
+			for fv := uint32(0); fv <= 256; fv += 17 {
+				got := make([]uint16, w)
+				want := make([]uint16, w)
+				blendRowsScalar(want, a, c, 256-fv, fv)
+				blendRows(got, a, c, 256-fv, fv)
+				for i := range got {
+					if got[i] != want[i] {
+						t.Fatalf("w=%d fv=%d byte %d: got %d, want %d", w, fv, i, got[i], want[i])
+					}
+				}
+			}
+		}
+		// every byte pair against every weight the sampler can produce
+		a := make([]uint8, 256)
+		c := make([]uint8, 256)
+		got := make([]uint16, 256)
+		want := make([]uint16, 256)
+		for i := range a {
+			a[i] = uint8(i)
+		}
+		for v := range 256 {
+			for i := range c {
+				c[i] = uint8(v)
+			}
+			for _, fv := range []uint32{0, 1, 127, 128, 255, 256} {
+				blendRowsScalar(want, a, c, 256-fv, fv)
+				blendRows(got, a, c, 256-fv, fv)
+				for i := range got {
+					if got[i] != want[i] {
+						t.Fatalf("a=%d c=%d fv=%d: got %d, want %d", i, v, fv, got[i], want[i])
+					}
+				}
+			}
+		}
+	})
+}
