@@ -889,10 +889,10 @@ func smoothImage(src *raster.Pixmap, ctm raster.Matrix, interpolate bool) bool {
 
 // deviceExtent is how wide and tall the unit square is after ctm.
 func deviceExtent(ctm raster.Matrix) (w, h float32) {
-	return absf32(ctm.A) + absf32(ctm.C), absf32(ctm.B) + absf32(ctm.D)
+	return abs32(ctm.A) + abs32(ctm.C), abs32(ctm.B) + abs32(ctm.D)
 }
 
-func absf32(v float32) float32 {
+func abs32(v float32) float32 {
 	if v < 0 {
 		return -v
 	}

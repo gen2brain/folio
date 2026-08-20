@@ -22,6 +22,36 @@
 // A damaged file renders the part that could be read. What went wrong on the
 // way is collected in Document.Err rather than returned, unless
 // Options.Strict asks for the first of them.
+//
+// # Concurrency
+//
+// A Document may be rendered from several goroutines at once, one page each.
+// A Page may not: give each goroutine its own. Configuration - layers, usage,
+// the image decoder - belongs before the goroutines start.
+//
+//	for i := range doc.NumPages() {
+//		go func() {
+//			p, err := doc.Page(i)
+//			img, err := p.Image(150)
+//		}()
+//	}
+//
+// One page may instead be drawn in horizontal bands by several goroutines,
+// which is worth it when the page is large:
+//
+//	px, err := p.Render(p.Matrix(300), &pdf.Options{Threads: 4})
+//
+// # Layers and usage
+//
+// Optional content is a list the caller may edit, and the usage decides which
+// annotations and which layers a file means for the screen and which for
+// paper:
+//
+//	layers := doc.Layers()
+//	layers[0].On = false
+//	doc.SetLayers(layers)
+//
+//	doc.SetUsage(pdf.UsagePrint)
 package pdf
 
 import (

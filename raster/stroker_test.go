@@ -254,7 +254,7 @@ func TestStrokeEmpty(t *testing.T) {
 }
 
 // TestAGGStrokeFixtures replays testdata/aggstroke.tsv and testdata/aggdash.tsv,
-// the coverage AGG's own stroker and dasher produce. CORPUS.md §4a.
+// the coverage AGG's own stroker and dasher produce.
 func TestAGGStrokeFixtures(t *testing.T) {
 	for _, name := range []string{"aggstroke.tsv", "aggdash.tsv"} {
 		t.Run(name, func(t *testing.T) { replayStrokes(t, name) })

@@ -14,14 +14,6 @@ func init() {
 	}
 }
 
-func coverBlend(dst []uint8, src *[16]uint8, cover []uint8, n int) {
-	if coverVec(dst, cover, n) {
-		coverBlendVec(dst, src, cover, n)
-		return
-	}
-	coverBlendScalar(dst, src, cover, n)
-}
-
 func coverBlendVec(dst []uint8, src *[16]uint8, cover []uint8, n int) {
 	w := len(cover)
 	g := coverStep[n]

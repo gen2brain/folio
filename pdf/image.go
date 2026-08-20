@@ -381,10 +381,8 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *
 	return px.Subsample(shrink), nil
 }
 
-// bilevel unpacks a one bit image, which is what a scan is, eight samples at
-// a time through a table of every byte's worth of them. A page of one is a
-// hundred and fifty million samples and the loop that reads them one at a
-// time is the single largest cost in rendering a corpus.
+// bilevel unpacks a one bit image, which is what a scan is, eight samples at a
+// time through a table of every byte's worth of them.
 func (u *unpacker) bilevel(lut []uint8, rowBytes int) {
 	i, px := u.img, u.px
 	n := px.N
@@ -485,8 +483,7 @@ func (u *unpacker) run() {
 			src := u.data[start:min(start+rowBytes, len(u.data))]
 			w := min(i.Width, len(src)/u.comps)
 			if !px.Alpha {
-				// The samples are already the row, so it is one copy and
-				// not one a pixel.
+				// the samples are already the row
 				copy(row[:w*n], src[:w*n])
 				u.sh.Commit()
 				continue

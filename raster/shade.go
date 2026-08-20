@@ -11,10 +11,10 @@ type Shader interface {
 	Shade(x, y, w int, span []uint8)
 }
 
-// A RowShader can write its color straight into a destination row, leaving
-// the pixels it does not cover as it found them. It is what a shader whose
-// coverage is all or nothing can do instead of filling a span that is then
-// copied out of, which for a gradient is half the work of shading a page.
+// A RowShader can write its color straight into a destination row, leaving the
+// pixels it does not cover as it found them, which is what a shader whose
+// coverage is all or nothing can do instead of filling a span to be copied
+// out of.
 type RowShader interface {
 	Shader
 	ShadeRow(dst *Pixmap, x, y, w int)
@@ -144,9 +144,8 @@ type GradientSpec struct {
 	Ext0, Ext1 bool
 }
 
-// Gradient is a Shader over one of those. It is what a PDF type 2 or type 3
-// shading and an SVG linearGradient or radialGradient all evaluate to, which
-// is why it is here and not in the document layer.
+// Gradient is a Shader over one of those: what a PDF type 2 or type 3 shading
+// and an SVG linearGradient or radialGradient all evaluate to.
 type Gradient struct {
 	lut    []uint8
 	n      int
@@ -249,8 +248,7 @@ func (g *Gradient) ShadeRow(dst *Pixmap, x, y, w int) {
 
 // shade walks a span, writing m color components and an opaque alpha at ai
 // into every n bytes. blank says what an uncovered pixel gets: the span form
-// zeroes it, the row form leaves it. The parameter of a whole run comes out
-// of index first, because that is the arithmetic and it has no branch in it.
+// zeroes it, the row form leaves it.
 func (g *Gradient) shade(x, y, w int, out []uint8, n, m, ai int, blank bool) {
 	var buf [64]int32
 	for w > 0 {
@@ -280,8 +278,8 @@ func (g *Gradient) shade(x, y, w int, out []uint8, n, m, ai int, blank bool) {
 }
 
 // indexScalar writes the entry of the color table each pixel of the span
-// takes, and -1 where the gradient does not reach it. It is the definition
-// every kernel is checked against.
+// takes, and -1 where the gradient does not reach it. It is what the kernels
+// are checked against.
 func (g *Gradient) indexScalar(x, y, w int, idx []int32) {
 	p := &g.p
 	fy := float32(y) + 0.5

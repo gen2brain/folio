@@ -1,15 +1,8 @@
 ## pdf
 
-[PDF](https://en.wikipedia.org/wiki/PDF) renderer in pure Go. No CGo, no dependencies.
+[PDF](https://en.wikipedia.org/wiki/PDF) renderer in pure Go.
 
 Work in progress: every page element a PDF can carry renders.
-
-The object layer is held to MuPDF, poppler and qpdf over 4382 files, the interpreter to
-`mutool trace` call for call, and the font engine to `mutool draw -F svg` glyph for glyph. The
-2D engine is byte-exact against AGG 2.3, the JPEG 2000 decoder is byte-exact against OpenJPEG,
-and rendered pages are scored against MuPDF, poppler, cairo and Ghostscript.
-
-### Rendering
 
 ```go
 doc, err := pdf.Open("file.pdf")
@@ -19,52 +12,10 @@ p, err := doc.Page(0)
 img, err := p.Image(150)
 ```
 
-A page composites in the document's own color space and converts once, at the end:
-
-```go
-img, err := p.ImageOptions(150, &pdf.Options{ColorSpace: pdf.DeviceCMYK})
-img, err := p.ImageOptions(150, &pdf.Options{Alpha: true})
-px, err := p.Render(p.Matrix(150), nil)
-```
-
-`Options` also carries the pixel limit, strictness and flatness. `Page.Run` drives any device:
-the renderer, a trace, a bounding box, a display list, or another.
-
-A document may be rendered from several goroutines at once, a page each, which is what a caller
-converting a book wants:
-
-```go
-for i := range n {
-    go func() {
-        p, err := doc.Page(i)
-        img, err := p.Image(150)
-    }()
-}
-```
-
-One page may also be drawn in horizontal bands, which is worth it when the page is big enough
-that drawing costs more than reading it:
-
-```go
-px, err := p.Render(p.Matrix(300), &pdf.Options{Threads: 4})
-```
-
-Optional content is a list a caller can edit, and the render usage decides which annotations and
-which layers a file means for the screen and which for paper:
-
-```go
-layers := doc.Layers()
-layers[0].On = false
-doc.SetLayers(layers)
-
-doc.SetUsage(pdf.UsagePrint)
-```
-
-### Packages
-
-`raster` is the 2D engine and `font` reads font programs; neither knows anything about PDF.
-`syntax` is the file format with no graphics in it. `pdf` is the interpreter, the devices and
-the public API.
+Over the pdf.js test corpus it renders a page in about the time MuPDF takes, and it renders
+files MuPDF refuses. See the [package documentation](https://pkg.go.dev/github.com/gen2brain/pdf/pdf)
+for rendering into another color space, driving a device other than the renderer, concurrency,
+and optional content.
 
 ### Supported
 
@@ -76,10 +27,26 @@ groups, the sixteen blend modes and soft masks, annotation appearances, optional
 that a caller can turn on and off, encryption, and files damaged enough that the cross-reference
 table has to be rebuilt.
 
-### Not implemented
-
 Out of scope: writing or editing PDF, form field values, JavaScript, XFA, signature validation
 and PDF/A validation.
+
+### Packages
+
+| | |
+| --- | --- |
+| [pdf](https://pkg.go.dev/github.com/gen2brain/pdf/pdf) | the interpreter, the devices and the public API |
+| [raster](https://pkg.go.dev/github.com/gen2brain/pdf/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes |
+| [font](https://pkg.go.dev/github.com/gen2brain/pdf/font) | font programs in, outlines and metrics out |
+| [syntax](https://pkg.go.dev/github.com/gen2brain/pdf/syntax) | the file format: objects, filters, encryption, repair |
+
+`raster` and `font` know nothing about PDF, and `syntax` has no graphics in it.
+
+### Correctness
+
+The object layer is checked against MuPDF, poppler and qpdf; the interpreter against
+`mutool trace`, call for call; the font engine against `mutool draw -F svg`, glyph for glyph.
+The 2D engine is byte-exact against AGG, the JPEG 2000 decoder byte-exact against OpenJPEG, and
+rendered pages are scored against MuPDF, poppler, cairo and Ghostscript.
 
 ### License
 

@@ -72,15 +72,13 @@ func (p *Pixmap) BlendOver(src *Pixmap, alpha uint8, mode BlendMode) {
 		dn:        p.Comps(),
 		sa:        src.N,
 		dalpha:    p.Alpha,
-		salpha:    src.Alpha,
 	}
 	for i := range b.scale {
 		b.scale[i] = mul255(uint8(i), alpha)
 	}
-	// A separable mode over a backdrop with no alpha of its own is the case
-	// worth taking a span at a time: the destination is then already the
-	// unpremultiplied backdrop, laid out exactly as the scratch is, so the
-	// mode runs over a whole run in one call instead of once a pixel.
+	// Over a backdrop with no alpha the destination is already the
+	// unpremultiplied colour, laid out as the scratch is, so the mode runs
+	// over a whole run in one call.
 	b.flat = b.separable && mode != BlendNormal && !p.Alpha && b.n == b.dn
 
 	sa, dn, sn := b.sa, b.dn, b.sn
@@ -115,8 +113,7 @@ func (p *Pixmap) BlendOver(src *Pixmap, alpha uint8, mode BlendMode) {
 const blendChunk = 64
 
 // span is the blend of a run of pixels whose backdrop is opaque and laid out
-// as the scratch is. A pixel of no coverage comes out of it unchanged, which
-// is why the run does not have to stop at one.
+// as the scratch is. A pixel of no coverage comes out of it unchanged.
 func (b *blender) span(dst, src []uint8, w int) {
 	n := b.n
 	cs := b.cs[: w*n : w*n]
@@ -137,13 +134,10 @@ func (b *blender) span(dst, src []uint8, w int) {
 	}
 }
 
-// clearPixels is how many whole pixels at the front of a group's row are
-// every byte zero, which is how many the blend has nothing to do for. Four
-// fifths of the pixels a group covers are these, in runs of a hundred and
-// more, because a group is a rectangle and what was drawn into it is a shape.
-// A word at a time is eight times fewer tests than a pixel at a time, and the
-// test is every byte rather than the alpha alone so that it stands on its
-// own: a pixel of all zeroes has a zero alpha whatever else is true.
+// clearPixels is how many whole pixels at the front of a group's row are every
+// byte zero, which is how many the blend has nothing to do for. The test is
+// every byte rather than the alpha alone so that it stands on its own: a pixel
+// of all zeroes has a zero alpha whatever else is true.
 func clearPixels(row []uint8, sn int) int {
 	z := 0
 	for z+8 <= len(row) && binary.NativeEndian.Uint64(row[z:]) == 0 {
@@ -156,20 +150,19 @@ func clearPixels(row []uint8, sn int) int {
 }
 
 // blender is what one call to BlendOver knows before it starts, so that the
-// pixel loop reads none of it out of a Pixmap again, and the scratch a non
-// separable mode needs to go through RGB with.
+// pixel loop reads none of it out of a Pixmap again.
 type blender struct {
-	model          Model
-	buf            blendBuf
-	scale          [256]uint8
-	cs, cr         [blendChunk * 4]uint8
-	mode           BlendMode
-	alpha          uint8
-	n, pn, sn, dn  int
-	sa             int
-	separable      bool
-	flat           bool
-	dalpha, salpha bool
+	model         Model
+	buf           blendBuf
+	scale         [256]uint8
+	cs, cr        [blendChunk * 4]uint8
+	mode          BlendMode
+	alpha         uint8
+	n, pn, sn, dn int
+	sa            int
+	separable     bool
+	flat          bool
+	dalpha        bool
 }
 
 func (b *blender) pixel(dst, src []uint8, a uint8) {
@@ -311,9 +304,7 @@ func fromRGB(model Model, dst, src []uint8) {
 }
 
 // blendSeparable applies one of the twelve component-at-a-time modes to a
-// whole color. The mode is the same for every component of every pixel of a
-// group, so it is chosen once and the loop is inside the choice; a switch per
-// component was a call per component and a fifth of a page of transparency.
+// whole color. The mode is chosen once and the loop is inside the choice.
 func blendSeparable(mode BlendMode, cb, cs, out []uint8) {
 	switch mode {
 	case BlendMultiply:

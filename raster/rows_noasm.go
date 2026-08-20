@@ -2,7 +2,7 @@ package raster
 
 // blendRowsScalar weights two rows of bytes into one row of sixteen bit
 // values, one entry per byte. The weights sum to 256, so nothing overflows.
-// It is the definition every kernel is checked against.
+// It is what the kernels are checked against.
 func blendRowsScalar(dst []uint16, a, c []uint8, iv, fv uint32) {
 	dst = dst[:len(a)]
 	c = c[:len(a)]

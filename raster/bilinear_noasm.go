@@ -1,12 +1,10 @@
 package raster
 
-// bilinearSlack is how far past the columns a span reads a kernel may load,
-// so that a whole vector may be taken from the last of them.
+// bilinearSlack is how far past the columns a span reads a kernel may load.
 const bilinearSlack = 8
 
 // bilinearSpanScalar resamples one span from a column table that already holds
-// the vertical blend, one column beside the next. It is the definition every
-// kernel is checked against.
+// the vertical blend, and is what the kernels are checked against.
 func bilinearSpanScalar(dst []uint8, col []uint16, w, n, k0, x int, a, cu, e float32) {
 	for i := range w {
 		u := float32(a*(float32(x+i)+0.5)) + cu + e - 0.5

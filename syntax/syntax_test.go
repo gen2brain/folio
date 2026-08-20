@@ -232,8 +232,7 @@ func corpusFile(dirs []string, name string) (string, bool) {
 
 // TestCorpus reads every file in the corpora named by $CONFORMANCE_DIR and
 // holds the result to testdata/corpus.tsv, which records what MuPDF and
-// poppler make of each one. See docs/CORPUS.md; regenerate the manifest with
-// tools/corpus.sh manifest.
+// poppler make of each one. It skips when the variable is unset.
 func TestCorpus(t *testing.T) {
 	dirs := conformanceDirs(t)
 	manifest, err := os.ReadFile(filepath.Join("..", "testdata", "corpus.tsv"))

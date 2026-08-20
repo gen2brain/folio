@@ -378,7 +378,7 @@ func bernstein(t float32) [4]float32 {
 }
 
 func chord(a, b raster.Point) float32 {
-	dx, dy := absf32(a.X-b.X), absf32(a.Y-b.Y)
+	dx, dy := abs32(a.X-b.X), abs32(a.Y-b.Y)
 	if dx > dy {
 		return dx + dy/2
 	}

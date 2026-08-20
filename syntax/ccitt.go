@@ -7,7 +7,6 @@ package syntax
 
 const (
 	ccittEOF     = -1
-	ccittEOL     = -2
 	twoDimPass   = 0
 	twoDimHoriz  = 1
 	twoDimVert0  = 2

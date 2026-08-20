@@ -66,8 +66,7 @@ func TestRotation(t *testing.T) {
 }
 
 // TestTrace runs the bundled files through the trace device and checks what
-// the interpreter produced. The corpus comparison against MuPDF is in
-// tools/tracecmp; this is the part that runs without it.
+// the interpreter produced.
 func TestTrace(t *testing.T) {
 	d := open(t, "minimal.pdf")
 	p, _ := d.Page(0)

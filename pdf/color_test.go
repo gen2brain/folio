@@ -26,8 +26,7 @@ func (d *grabber) FillPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, cs *
 
 // TestColors holds color conversion to what MuPDF and poppler produce for
 // the same file. testdata/colors carries one document per case, filled with
-// one color in one space; tools/colorcmp built them and recorded what the
-// reference renderers made of each.
+// one color in one space, beside what the reference renderers made of it.
 func TestColors(t *testing.T) {
 	manifest, err := os.ReadFile(filepath.Join("..", "testdata", "colors.tsv"))
 	if err != nil {

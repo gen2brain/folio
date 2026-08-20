@@ -238,7 +238,7 @@ func TestBoundsContainsCoverage(t *testing.T) {
 }
 
 // TestAGGFixtures replays testdata/agg.tsv, the coverage AGG 2.3 produces for
-// the same geometry. CORPUS.md §4a is the protocol.
+// the same geometry.
 func TestAGGFixtures(t *testing.T) {
 	f, err := os.Open(filepath.Join("..", "testdata", "agg.tsv"))
 	if err != nil {

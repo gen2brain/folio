@@ -86,9 +86,7 @@ func (b *imageBlitter) BlitCover(x, y int, cover []uint8) {
 	b.blit(x, y, len(cover), 0, cover)
 }
 
-// blit samples the source over a whole span before compositing it, so that
-// the transform and the sampler run in a loop of their own rather than once
-// per call.
+// blit samples the source over a whole span before compositing it.
 func (b *imageBlitter) blit(x, y, w int, flat uint8, cover []uint8) {
 	var mask []uint8
 	if b.clip != nil {
@@ -142,9 +140,9 @@ func (b *imageBlitter) blit(x, y, w int, flat uint8, cover []uint8) {
 	}
 }
 
-// compose puts one sampled pixel down. The source is premultiplied, which is
-// why the color takes the operation's alpha and only the destination takes
-// the source's.
+// compose puts one sampled pixel down. The source is premultiplied, so the
+// color takes the operation's alpha and only the destination takes the
+// source's.
 func (b *imageBlitter) compose(row, src []uint8, a uint8) {
 	n := b.dst.Comps()
 	if b.stencil {
@@ -175,9 +173,9 @@ func (b *imageBlitter) compose(row, src []uint8, a uint8) {
 	}
 }
 
-// sample reads one source pixel per destination pixel of the span. The
-// transform keeps the association the scalar had, because a float32 sum that
-// reassociates lands on a different sample at the seams.
+// sample reads one source pixel per destination pixel of the span. The sums
+// keep their association: a float32 sum that reassociates lands on a different
+// sample at the seams.
 func (b *imageBlitter) sample(x, y, w int, out []uint8) {
 	n := b.src.Comps()
 	fy := float32(y) + 0.5
@@ -205,17 +203,11 @@ func (b *imageBlitter) sample(x, y, w int, out []uint8) {
 }
 
 // bilinearRow is the same weighted sum for a span whose source row does not
-// change along it, which is what an unrotated image is. The row, its
-// neighbour and the vertical weight come out of the loop, and only the
-// horizontal position is left in it.
+// change along it, which is what an unrotated image is.
 //
-// The four products regroup exactly: iu*(r0*iv + r1*fv) + fu*(r0'*iv +
-// r1'*fv), so the vertical blend of a source column does not depend on which
-// destination pixel reads it and is worth doing once per column instead of
-// once per pixel. That halves the multiplies wherever a column is read more
-// than once, which is every image drawn larger than it is stored, and it is an
-// identity rather than an approximation: the rounding still happens once, at
-// the end.
+// The four products regroup exactly into iu*(r0*iv + r1*fv) + fu*(r0'*iv +
+// r1'*fv), so the vertical blend belongs to the source column rather than to
+// the pixel that reads it. The rounding still happens once, at the end.
 func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 	n := b.src.Comps()
 	v -= 0.5
@@ -258,20 +250,17 @@ func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 }
 
 // ucoord is where a destination pixel lands along the source row, less the
-// half pixel the sample grid is offset by. The sum keeps the association the
-// general path has, because a float32 sum that reassociates lands on a
-// different sample at the seams, and it is the same sum bilinearSpanScalar
-// makes.
+// half pixel the sample grid is offset by. It is the sum bilinearSpanScalar
+// makes, in the association the general path uses.
 func (b *imageBlitter) ucoord(x int, cu float32) float32 {
 	return float32(b.inv.A*(float32(x)+0.5)) + cu + b.inv.E - 0.5
 }
 
-// column blends the two source rows into the one the span reads, over the
-// columns the span reaches whether or not the image has them: an index outside
-// the image repeats the edge here rather than being clamped once per pixel.
-// Nothing overflows, because the weights sum to 256 and the samples are bytes,
-// so a blended column is at most 65280, and no rounding happens here — the sum
-// is exact and is rounded once, where the horizontal weights are applied.
+// column blends the two source rows into the one the span reads, over every
+// column the span reaches whether or not the image has it: an index outside
+// the image repeats the edge here rather than being clamped per pixel. The
+// weights sum to 256 and the samples are bytes, so a blended column is at most
+// 65280 and the sum is exact.
 func (b *imageBlitter) column(r0, r1 []uint8, k0, cols, n int, iv, fv uint32) []uint16 {
 	m := cols * n
 	if cap(b.col) < m+bilinearSlack {
@@ -280,9 +269,8 @@ func (b *imageBlitter) column(r0, r1 []uint8, k0, cols, n int, iv, fv uint32) []
 	col := b.col[:m:m]
 	hi := b.src.W - 1
 
-	// The columns the image actually has are contiguous in both rows, so
-	// they blend as one run of bytes with no notion of a pixel in it; only
-	// the ones off either end repeat an edge and are done singly.
+	// The columns the image has are contiguous in both rows and blend as one
+	// run of bytes; only the ones off either end repeat an edge.
 	head := clampInt(-k0, 0, cols)
 	tail := max(clampInt(hi-k0+1, 0, cols), head)
 	for k := range head {

@@ -96,8 +96,8 @@ func (p *Page) UserUnit() float64 {
 
 // Matrix returns the transform from PDF user space to device space at a given
 // resolution: the y axis flips, the page rotation is applied, and the visible
-// box moves to the origin. The order is the one MuPDF uses, so that a trace
-// taken here and a trace taken there carry the same numbers.
+// box moves to the origin. The order is the one MuPDF uses, so that traces
+// taken from either carry the same numbers.
 func (p *Page) Matrix(dpi float64) raster.Matrix {
 	s := float32(dpi / 72 * p.UserUnit())
 	m := raster.Scale(s, -s)

@@ -10,8 +10,7 @@ import (
 )
 
 // TraceDevice writes every device call as XML, in the format mutool trace
-// produces. Comparing the two is how the interpreter is held to MuPDF without
-// a rasterizer in the way; docs/CORPUS.md has the protocol.
+// produces, so that the two can be compared without a rasterizer in the way.
 type TraceDevice struct {
 	BaseDevice
 	w     *bufio.Writer
