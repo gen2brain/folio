@@ -12,78 +12,97 @@ const (
 	annotNoView
 )
 
-// RunAnnotations draws the appearance streams of the page annotations.
+// RunAnnotations draws the appearance streams of the page annotations. The
+// widgets come last, after everything else on the page, which is the order
+// MuPDF draws them in and the one a form on top of its own background needs.
 func (p *Page) RunAnnotations(dev Device, ctm raster.Matrix) {
 	f := p.doc.f
+	var widgets []Dict
 	for _, a := range f.GetArray(p.dict["Annots"]) {
 		dict := f.GetDict(a)
 		if dict == nil {
 			continue
 		}
-		if !p.annotDisplayed(dict) {
+		switch f.GetName(dict["Subtype"]) {
+		case "Popup", "Link":
 			continue
-		}
-		ap := p.appearance(dict)
-		if ap == nil {
-			continue
-		}
-		rect := p.doc.rect(dict["Rect"])
-		if rect.IsEmpty() {
-			continue
-		}
-
-		bbox := p.doc.rect(ap.Dict["BBox"])
-		m := raster.Identity
-		if fm := f.GetFloats(ap.Dict["Matrix"]); len(fm) == 6 {
-			m = raster.Matrix{
-				A: float32(fm[0]), B: float32(fm[1]), C: float32(fm[2]),
-				D: float32(fm[3]), E: float32(fm[4]), F: float32(fm[5]),
+		case "Widget":
+			if f.Lookup(dict, "FT") == nil || f.Lookup(dict, "T") == nil {
+				continue
 			}
+			widgets = append(widgets, dict)
+			continue
 		}
-		fit := raster.Identity
-		if !bbox.IsEmpty() {
-			t := m.ApplyRect(bbox)
-			if !t.IsEmpty() {
-				sx, sy := float32(1), float32(1)
-				if t.X1 != t.X0 {
-					sx = (rect.X1 - rect.X0) / (t.X1 - t.X0)
-				}
-				if t.Y1 != t.Y0 {
-					sy = (rect.Y1 - rect.Y0) / (t.Y1 - t.Y0)
-				}
-				fit = raster.Concat(raster.Translate(-t.X0, -t.Y0), raster.Scale(sx, sy))
-				fit = raster.Concat(fit, raster.Translate(rect.X0, rect.Y0))
-			}
-		}
-
-		ip := p.newInterp(dev, raster.Concat(fit, ctm))
-		dev.SetDefaultColorSpaces(ip.defaults)
-		ip.runForm(ap, false)
-		ip.finish()
+		p.runAnnotation(dev, ctm, dict)
+	}
+	for _, dict := range widgets {
+		p.runAnnotation(dev, ctm, dict)
 	}
 }
 
-// annotDisplayed reports whether an annotation is one a viewer shows at all.
-// A widget with no field type or no name is a form field that was never
-// finished, and MuPDF does not display one.
-func (p *Page) annotDisplayed(dict Dict) bool {
+// runAnnotation draws one annotation's appearance, fitted to its rectangle.
+// The device is told the page's default color spaces first whether or not
+// anything is then drawn, which is where MuPDF tells it.
+func (p *Page) runAnnotation(dev Device, ctm raster.Matrix, dict Dict) {
 	f := p.doc.f
-	if f.GetName(dict["Subtype"]) != "Widget" {
-		return true
+	dev.SetDefaultColorSpaces(p.defaultSpaces())
+
+	ap := p.appearance(dict)
+	if ap == nil {
+		return
 	}
-	return f.Lookup(dict, "FT") != nil && f.Lookup(dict, "T") != nil
+	rect := p.doc.rect(dict["Rect"])
+	if rect.IsEmpty() {
+		return
+	}
+
+	bbox := p.doc.rect(ap.Dict["BBox"])
+	m := raster.Identity
+	if fm := f.GetFloats(ap.Dict["Matrix"]); len(fm) == 6 {
+		m = raster.Matrix{
+			A: float32(fm[0]), B: float32(fm[1]), C: float32(fm[2]),
+			D: float32(fm[3]), E: float32(fm[4]), F: float32(fm[5]),
+		}
+	}
+	fit := raster.Identity
+	if !bbox.IsEmpty() {
+		t := m.ApplyRect(bbox)
+		if !t.IsEmpty() {
+			sx, sy := float32(1), float32(1)
+			if t.X1 != t.X0 {
+				sx = (rect.X1 - rect.X0) / (t.X1 - t.X0)
+			}
+			if t.Y1 != t.Y0 {
+				sy = (rect.Y1 - rect.Y0) / (t.Y1 - t.Y0)
+			}
+			fit = raster.Concat(raster.Translate(-t.X0, -t.Y0), raster.Scale(sx, sy))
+			fit = raster.Concat(fit, raster.Translate(rect.X0, rect.Y0))
+		}
+	}
+
+	ip := p.newInterp(dev, raster.Concat(fit, ctm))
+	ip.defaults = p.defaultSpaces()
+	ip.runForm(ap, false)
+	ip.finish()
 }
 
 // appearance returns the normal appearance stream of an annotation, or nil
 // when it has none or must not be drawn.
 func (p *Page) appearance(dict Dict) *Stream {
 	f := p.doc.f
-	if f.GetName(dict["Subtype"]) == "Popup" {
+	flags := int(f.GetInt(dict["F"], 0))
+	if flags&(annotInvisible|annotHidden) != 0 {
 		return nil
 	}
-	flags := int(f.GetInt(dict["F"], 0))
-	if flags&(annotHidden|annotNoView) != 0 {
-		return nil
+	switch p.doc.usage {
+	case UsagePrint:
+		if flags&annotPrint == 0 {
+			return nil
+		}
+	default:
+		if flags&annotNoView != 0 {
+			return nil
+		}
 	}
 	if !p.doc.optionalContentVisible(dict["OC"]) {
 		return nil

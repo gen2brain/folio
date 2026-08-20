@@ -12,9 +12,20 @@ import (
 
 // Page is one page of a document.
 type Page struct {
-	doc  *Document
-	dict Dict
-	num  int
+	doc      *Document
+	dict     Dict
+	num      int
+	defaults *DefaultColorSpaces
+}
+
+// defaultSpaces is what /DefaultGray, /DefaultRGB and /DefaultCMYK resolve to
+// on this page, over the output intent.
+func (p *Page) defaultSpaces() *DefaultColorSpaces {
+	if p.defaults == nil {
+		p.defaults = p.doc.readDefaults(p.Resources(),
+			&DefaultColorSpaces{OutputIntent: p.doc.outputIntent()})
+	}
+	return p.defaults
 }
 
 // Dict returns the page dictionary, with inherited attributes filled in.
@@ -147,8 +158,7 @@ func (p *Page) RunContents(dev Device, ctm raster.Matrix) {
 	}
 	bounds := p.Bounds()
 
-	dev.SetDefaultColorSpaces(p.doc.readDefaults(p.Resources(),
-		&DefaultColorSpaces{OutputIntent: p.doc.outputIntent()}))
+	dev.SetDefaultColorSpaces(p.defaultSpaces())
 
 	group := false
 	if p.usesTransparency() {

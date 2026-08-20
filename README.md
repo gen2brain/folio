@@ -30,6 +30,17 @@ px, err := p.Render(p.Matrix(150), nil)
 `Options` also carries the pixel limit, strictness and flatness. `Page.Run` drives any device:
 the renderer, a trace, a bounding box, or another.
 
+Optional content is a list a caller can edit, and the render usage decides which annotations and
+which layers a file means for the screen and which for paper:
+
+```go
+layers := doc.Layers()
+layers[0].On = false
+doc.SetLayers(layers)
+
+doc.SetUsage(pdf.UsagePrint)
+```
+
 ### Packages
 
 `raster` is the 2D engine and `font` reads font programs; neither knows anything about PDF.
@@ -42,8 +53,9 @@ Paths, strokes and dashes, clipping by path, by text and by stencil, text in emb
 CFF, Type1 and CID keyed fonts, the fourteen standard substitutes, every color space and
 function type, images at every bit depth with soft masks and color keys, JPEG and CCITT Group 3
 and 4, all seven shading types, tiling and shading patterns, transparency groups, the sixteen
-blend modes and soft masks, annotation appearances, optional content, encryption, and files
-damaged enough that the cross-reference table has to be rebuilt.
+blend modes and soft masks, annotation appearances, optional content layers that a caller can
+turn on and off, encryption, and files damaged enough that the cross-reference table has to be
+rebuilt.
 
 ### Not implemented
 

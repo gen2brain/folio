@@ -1474,3 +1474,161 @@ func TestGroupKnockout(t *testing.T) {
 		t.Errorf("outside it = %v, want the blue the group put down", got)
 	}
 }
+
+// layerPDF builds a document with two optional content groups, the second of
+// which the default configuration turns off, and a page that paints a
+// rectangle under each.
+func layerPDF(t *testing.T, config string) *Document {
+	t.Helper()
+	return buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R]" +
+			" /D << " + config + " >> >> >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Properties << /L1 5 0 R /L2 6 0 R >> >> >>",
+		streamObj("", "/OC /L1 BDC 1 0 0 rg 0 0 40 100 re f EMC "+
+			"/OC /L2 BDC 0 0 1 rg 60 0 40 100 re f EMC"),
+		"<< /Type /OCG /Name (Red) >>",
+		"<< /Type /OCG /Name (Blue) /Usage << /Print << /PrintState /OFF >> >> >>",
+	})
+}
+
+func TestLayers(t *testing.T) {
+	d := layerPDF(t, "/OFF [6 0 R]")
+	got := d.Layers()
+	if len(got) != 2 || got[0].Name != "Red" || got[1].Name != "Blue" {
+		t.Fatalf("Layers() = %v", got)
+	}
+	if !got[0].On || got[1].On {
+		t.Fatalf("states = %v %v, want on then off", got[0].On, got[1].On)
+	}
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 20, 50); !same(c, 255, 0, 0) {
+		t.Errorf("the group that is on = %v, want red", c)
+	}
+	if c := pixel(px, 80, 50); !same(c, 255, 255, 255) {
+		t.Errorf("the group that is off = %v, want white", c)
+	}
+}
+
+func TestSetLayers(t *testing.T) {
+	d := layerPDF(t, "/OFF [6 0 R]")
+	l := d.Layers()
+	l[0].On, l[1].On = false, true
+	d.SetLayers(l)
+	if got := d.Layers(); got[0].On || !got[1].On {
+		t.Fatalf("after SetLayers: %v", got)
+	}
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 20, 50); !same(c, 255, 255, 255) {
+		t.Errorf("the group turned off = %v, want white", c)
+	}
+	if c := pixel(px, 80, 50); !same(c, 0, 0, 255) {
+		t.Errorf("the group turned on = %v, want blue", c)
+	}
+}
+
+// TestLayerUsage checks a usage application dictionary, which is how a group
+// says it is meant for the screen and not for paper.
+func TestLayerUsage(t *testing.T) {
+	d := layerPDF(t, "/AS [<< /Event /Print /Category [/Print] /OCGs [6 0 R] >>]")
+	if got := d.Layers(); !got[1].On {
+		t.Fatalf("for the screen the second group is off: %v", got)
+	}
+	d.SetUsage(UsagePrint)
+	if got := d.Layers(); got[1].On {
+		t.Fatalf("for paper the second group is on: %v", got)
+	}
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 80, 50); !same(c, 255, 255, 255) {
+		t.Errorf("the group the print usage turns off = %v, want white", c)
+	}
+}
+
+// TestBaseStateOff checks the other way a configuration can start, where every
+// group is off except the ones it lists.
+func TestBaseStateOff(t *testing.T) {
+	d := layerPDF(t, "/BaseState /OFF /ON [6 0 R]")
+	got := d.Layers()
+	if got[0].On || !got[1].On {
+		t.Fatalf("with BaseState OFF: %v", got)
+	}
+}
+
+// annotPDF builds a page with the annotations given, each a dictionary body.
+func annotPDF(t *testing.T, annots ...string) *Document {
+	t.Helper()
+	refs := ""
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"",
+		streamObj("", ""),
+	}
+	for i, a := range annots {
+		refs += fmt.Sprintf("%d 0 R ", 5+i*2)
+		objs = append(objs, a, streamObj(
+			"/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+			fmt.Sprintf("%s rg 0 0 10 10 re f", []string{"1 0 0", "0 1 0", "0 0 1"}[i%3])))
+	}
+	objs[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+		" /Annots [" + refs + "] >>"
+	return buildPDF(t, objs)
+}
+
+// TestAnnotationLink checks that a link is not drawn even when it carries an
+// appearance, which is what every renderer this is held to does.
+func TestAnnotationLink(t *testing.T) {
+	d := annotPDF(t, "<< /Type /Annot /Subtype /Link /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 50, 50); !same(c, 255, 255, 255) {
+		t.Errorf("a link appearance drew %v, want nothing", c)
+	}
+}
+
+// TestAnnotationUsage checks the print flag, which says an annotation is for
+// paper and not for the screen.
+func TestAnnotationUsage(t *testing.T) {
+	d := annotPDF(t, "<< /Type /Annot /Subtype /Square /F 4 /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 50, 50); !same(c, 255, 0, 0) {
+		t.Errorf("on the screen = %v, want red", c)
+	}
+	d.SetUsage(UsagePrint)
+	px = renderDoc(t, d, nil)
+	if c := pixel(px, 50, 50); !same(c, 255, 0, 0) {
+		t.Errorf("on paper = %v, want red", c)
+	}
+
+	d = annotPDF(t, "<< /Type /Annot /Subtype /Square /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
+	d.SetUsage(UsagePrint)
+	px = renderDoc(t, d, nil)
+	if c := pixel(px, 50, 50); !same(c, 255, 255, 255) {
+		t.Errorf("an annotation with no print flag drew %v on paper", c)
+	}
+}
+
+// TestAnnotationHidden checks the two flags that hide an annotation outright.
+func TestAnnotationHidden(t *testing.T) {
+	for _, f := range []string{"/F 2", "/F 1"} {
+		d := annotPDF(t, "<< /Type /Annot /Subtype /Square "+f+
+			" /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
+		px := renderDoc(t, d, nil)
+		if c := pixel(px, 50, 50); !same(c, 255, 255, 255) {
+			t.Errorf("%s drew %v, want nothing", f, c)
+		}
+	}
+}
+
+// TestAnnotationWidgetsLast checks that a widget is drawn after the
+// annotations that come before it in the array, because a form field belongs
+// on top of the page it sits on.
+func TestAnnotationWidgetsLast(t *testing.T) {
+	d := annotPDF(t,
+		"<< /Type /Annot /Subtype /Widget /FT /Btn /T (b) /Rect [0 0 100 100] /AP << /N 6 0 R >> >>",
+		"<< /Type /Annot /Subtype /Square /Rect [0 0 100 100] /AP << /N 8 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 50, 50); !same(c, 255, 0, 0) {
+		t.Errorf("the widget is under the square: %v, want the widget's red", c)
+	}
+}

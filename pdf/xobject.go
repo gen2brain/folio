@@ -18,11 +18,11 @@ func (ip *interp) doXObject(n Name) {
 	case "Image":
 		ip.drawImage(st)
 	case "Form":
-		if ip.depth >= maxNesting {
+		if ip.depth < maxNesting {
+			ip.runForm(st, false)
+		} else {
 			ip.errorf("form XObject nested deeper than %d", maxNesting)
-			return
 		}
-		ip.runForm(st, false)
 	case "PS":
 	default:
 		ip.errorf("XObject /%s has no subtype", n)
@@ -73,6 +73,8 @@ func (ip *interp) runForm(st *Stream, asMask bool) {
 		ip.gs.softMask = nil
 	}
 
+	layers := ip.beginOC(st.Dict["OC"], 0)
+
 	clipped := false
 	if b := f.GetFloats(st.Dict["BBox"]); len(b) == 4 {
 		r := raster.Rect{X0: float32(b[0]), Y0: float32(b[1]), X1: float32(b[2]), Y1: float32(b[3])}.Normalized()
@@ -98,10 +100,11 @@ func (ip *interp) runForm(st *Stream, asMask bool) {
 			ip.dev.PopClip()
 		}
 	}
-	ip.popResources()
-
 	if clipped {
 		ip.dev.PopClip()
+	}
+	for i := 0; i < layers; i++ {
+		ip.dev.EndLayer()
 	}
 	if group {
 		ip.dev.EndGroup()
@@ -109,6 +112,7 @@ func (ip *interp) runForm(st *Stream, asMask bool) {
 	if masked {
 		ip.dev.PopClip()
 	}
+	ip.popResources()
 	ip.depth--
 	ip.gs = saved
 	ip.base = savedBase
@@ -151,8 +155,7 @@ func (ip *interp) popResources() {
 // hasDefaults reports whether a resource dictionary names any default color
 // space.
 func (d *Document) hasDefaults(res Dict) bool {
-	csres := d.f.GetDict(res["ColorSpace"])
-	return csres["DefaultGray"] != nil || csres["DefaultRGB"] != nil || csres["DefaultCMYK"] != nil
+	return d.f.GetDict(res["ColorSpace"]) != nil
 }
 
 // readDefaults reads /DefaultGray, /DefaultRGB and /DefaultCMYK out of a

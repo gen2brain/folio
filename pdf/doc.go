@@ -18,6 +18,8 @@ type Document struct {
 
 	fonts  map[any]*Font
 	ocOff  map[Ref]bool
+	layers []Layer
+	usage  Usage
 	fbFont *Font
 	intent *ColorSpace
 	glyphs *raster.GlyphCache
@@ -163,12 +165,20 @@ func (d *Document) fallbackFont() *Font {
 	return d.fbFont
 }
 
-// readOptionalContent notes which optional content groups are off in the
-// default configuration.
+// readOptionalContent applies the document's default optional content
+// configuration, which says which groups start off.
 func (d *Document) readOptionalContent() {
+	d.layers, d.ocOff = nil, nil
 	props := d.f.GetDict(d.f.Catalog()["OCProperties"])
 	if props == nil {
 		return
+	}
+	for _, g := range d.f.GetArray(props["OCGs"]) {
+		r, ok := g.(Ref)
+		if !ok {
+			continue
+		}
+		d.layers = append(d.layers, Layer{Name: d.layerName(g), On: true, ref: r})
 	}
 	cfg := d.f.GetDict(props["D"])
 	if cfg == nil {
@@ -176,10 +186,8 @@ func (d *Document) readOptionalContent() {
 	}
 	d.ocOff = map[Ref]bool{}
 	if d.f.GetName(cfg["BaseState"]) == "OFF" {
-		for _, g := range d.f.GetArray(props["OCGs"]) {
-			if r, ok := g.(Ref); ok {
-				d.ocOff[r] = true
-			}
+		for i := range d.layers {
+			d.ocOff[d.layers[i].ref] = true
 		}
 		for _, g := range d.f.GetArray(cfg["ON"]) {
 			if r, ok := g.(Ref); ok {
@@ -192,6 +200,120 @@ func (d *Document) readOptionalContent() {
 			d.ocOff[r] = true
 		}
 	}
+	d.applyUsage(cfg)
+	for i := range d.layers {
+		d.layers[i].On = !d.ocOff[d.layers[i].ref]
+	}
+}
+
+// applyUsage runs the usage application dictionaries of a configuration,
+// which is how a group says it is meant for the screen but not for paper.
+// ISO 32000-1 8.11.4.4.
+func (d *Document) applyUsage(cfg Dict) {
+	event := Name("View")
+	switch d.usage {
+	case UsagePrint:
+		event = "Print"
+	case UsageExport:
+		event = "Export"
+	}
+	for _, a := range d.f.GetArray(cfg["AS"]) {
+		use := d.f.GetDict(a)
+		if use == nil || d.f.GetName(use["Event"]) != event {
+			continue
+		}
+		for _, g := range d.f.GetArray(use["OCGs"]) {
+			r, ok := g.(Ref)
+			if !ok {
+				continue
+			}
+			usage := d.f.GetDict(d.f.GetDict(g)["Usage"])
+			for _, c := range d.f.GetArray(use["Category"]) {
+				cat := d.f.GetName(c)
+				st := d.f.GetDict(usage[cat])
+				switch d.f.GetName(st[cat+"State"]) {
+				case "OFF":
+					d.ocOff[r] = true
+				case "ON":
+					delete(d.ocOff, r)
+				}
+			}
+		}
+	}
+}
+
+func (d *Document) layerName(obj Object) string {
+	switch v := d.f.Resolve(d.f.GetDict(obj)["Name"]).(type) {
+	case String:
+		return decodeTextString(v)
+	case Name:
+		return string(v)
+	}
+	return ""
+}
+
+// Layer is one optional content group: a part of a document that can be drawn
+// or left out, with the name the file gives it.
+type Layer struct {
+	Name string
+	On   bool
+	ref  Ref
+}
+
+// Layers returns the document's optional content groups and whether each is
+// on, in the order the catalog lists them. It returns nothing for a document
+// that has no optional content.
+func (d *Document) Layers() []Layer {
+	return append([]Layer(nil), d.layers...)
+}
+
+// SetLayers turns optional content groups on and off. Only the On field of
+// each layer is read, and only layers this document declared are used, so the
+// slice Layers returned can be edited and passed back.
+func (d *Document) SetLayers(layers []Layer) {
+	known := make(map[Ref]bool, len(d.layers))
+	for i := range d.layers {
+		known[d.layers[i].ref] = true
+	}
+	if d.ocOff == nil {
+		d.ocOff = map[Ref]bool{}
+	}
+	for _, l := range layers {
+		if !known[l.ref] {
+			continue
+		}
+		if l.On {
+			delete(d.ocOff, l.ref)
+		} else {
+			d.ocOff[l.ref] = true
+		}
+	}
+	for i := range d.layers {
+		d.layers[i].On = !d.ocOff[d.layers[i].ref]
+	}
+}
+
+// Usage is what a document is being rendered for. Optional content groups and
+// annotations may be meant for the screen, for paper, or for neither; ISO
+// 32000-1 calls these the three events of a usage application dictionary.
+type Usage int
+
+// The three events.
+const (
+	UsageView Usage = iota
+	UsagePrint
+	UsageExport
+)
+
+// Usage returns what the document is being rendered for.
+func (d *Document) Usage() Usage { return d.usage }
+
+// SetUsage chooses what the document is rendered for, which decides both which
+// optional content groups are on and which annotations are drawn. It re-applies
+// the default configuration, so it undoes SetLayers. The default is UsageView.
+func (d *Document) SetUsage(u Usage) {
+	d.usage = u
+	d.readOptionalContent()
 }
 
 // optionalContentVisible reports whether content governed by an /OC entry is
