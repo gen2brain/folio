@@ -412,7 +412,11 @@ func (u *unpacker) run() {
 			r := bitRow(u.data, y*rowBytes, rowBytes, u.bpc)
 			for x := 0; x < i.Width; x++ {
 				v := r.next()
-				copy(row[x*n:x*n+px.N], lut[int(v)*px.N:])
+				e := lut[int(v)*px.N:][:px.N:px.N]
+				p := row[x*n:][:px.N:px.N]
+				for c, s := range e {
+					p[c] = s
+				}
 				if px.Alpha {
 					row[x*n+px.N] = u.keyed(v)
 				}
@@ -433,11 +437,21 @@ func (u *unpacker) run() {
 				break
 			}
 			src := u.data[start:min(start+rowBytes, len(u.data))]
-			for x := 0; x < i.Width && (x+1)*u.comps <= len(src); x++ {
-				copy(row[x*n:x*n+px.N], src[x*u.comps:])
-				if px.Alpha {
-					row[x*n+px.N] = u.keyedBytes(src[x*u.comps : (x+1)*u.comps])
+			w := min(i.Width, len(src)/u.comps)
+			if !px.Alpha {
+				// The samples are already the row, so it is one copy and
+				// not one a pixel.
+				copy(row[:w*n], src[:w*n])
+				u.sh.Commit()
+				continue
+			}
+			for x := 0; x < w; x++ {
+				e := src[x*u.comps:][:u.comps:u.comps]
+				p := row[x*n:][:px.N:px.N]
+				for c, s := range e {
+					p[c] = s
 				}
+				row[x*n+px.N] = u.keyedBytes(e)
 			}
 			u.sh.Commit()
 		}
@@ -446,7 +460,6 @@ func (u *unpacker) run() {
 
 	c := make([]float32, u.comps)
 	raw := make([]uint32, u.comps)
-	out := make([]uint8, px.N)
 	for y := 0; y < i.Height; y++ {
 		row := u.sh.Row()
 		if row == nil {
@@ -458,8 +471,7 @@ func (u *unpacker) run() {
 				raw[j] = r.next()
 				c[j] = u.value(j, raw[j], maxVal)
 			}
-			convertColor(u.cs, c, out)
-			copy(row[x*n:x*n+px.N], out)
+			convertColor(u.cs, c, row[x*n:x*n+px.N])
 			if px.Alpha {
 				row[x*n+px.N] = u.keyedAll(raw)
 			}
