@@ -987,6 +987,35 @@ func BenchmarkRenderImage(b *testing.B) {
 	}
 }
 
+func BenchmarkRenderShading(b *testing.B) {
+	// A radial gradient over a letter page, which is the quadratic per pixel
+	// and the table lookup and nothing else.
+	d := buildPDFB(b, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R" +
+			" /Resources << /Shading << /Sh 5 0 R >> >> >>",
+		streamObj("", "/Sh sh"),
+		"<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [306 396 0 306 396 400]" +
+			" /Function 6 0 R /Extend [true true] >>",
+		"<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >>",
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctm := p.Matrix(150)
+	px := raster.NewPixmap(DeviceRGB.Model(), 1275, 1650, false)
+	b.ResetTimer()
+	for b.Loop() {
+		px.ClearWhite()
+		dev := NewDrawDevice(d, px)
+		ip := p.newInterp(dev, ctm)
+		ip.run(p.Contents())
+		ip.finish()
+	}
+}
+
 // buildPDFB is buildPDF for a benchmark.
 func buildPDFB(b *testing.B, objs []string) *Document {
 	b.Helper()
@@ -1031,5 +1060,200 @@ func TestRegisterImageDecoder(t *testing.T) {
 	}
 	if got := pixel(px, 75, 50)[0]; got != 255 {
 		t.Fatalf("registered decoder: second sample = %d, want 255", got)
+	}
+}
+
+// shadingPDF builds a one page document whose content stream paints one
+// shading, given as the last object.
+func shadingPDF(t *testing.T, content, shade string, extra ...string) *Document {
+	t.Helper()
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Shading << /Sh 5 0 R >> /Pattern << /P 5 0 R >>" +
+			" /ColorSpace << /Cs [/Pattern /DeviceRGB] >> >> >>",
+		streamObj("", content),
+		shade,
+	}
+	return buildPDF(t, append(objs, extra...))
+}
+
+// grayRamp is a function from black to white over the unit domain.
+const grayRamp = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0] /C1 [1 1 1] /N 1 >>"
+
+func TestShadingAxial(t *testing.T) {
+	d := shadingPDF(t, "/Sh sh",
+		"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0]"+
+			" /Function 6 0 R /Extend [true true] >>", grayRamp)
+	px := renderDoc(t, d, nil)
+	for _, tc := range []struct{ x, want int }{{2, 6}, {50, 128}, {97, 249}} {
+		if got := int(pixel(px, tc.x, 50)[0]); got < tc.want-2 || got > tc.want+2 {
+			t.Errorf("x=%d is %d, want about %d", tc.x, got, tc.want)
+		}
+	}
+}
+
+// TestShadingAxialExtend checks that a shading paints past its axis only
+// where Extend says it may.
+func TestShadingAxialExtend(t *testing.T) {
+	d := shadingPDF(t, "/Sh sh",
+		"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [40 0 60 0]"+
+			" /Function 6 0 R /Extend [false true] >>", grayRamp)
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 10, 50); !same(got, 255, 255, 255) {
+		t.Errorf("before the axis = %v, want the page left alone", got)
+	}
+	if got := pixel(px, 90, 50); !same(got, 255, 255, 255) {
+		t.Errorf("past the extended end = %v, want white", got)
+	}
+	if got := int(pixel(px, 50, 50)[0]); got < 120 || got > 136 {
+		t.Errorf("the middle of the axis is %d, want about 128", got)
+	}
+}
+
+// TestShadingRadial checks the concentric arrangement, whose quadratic
+// degenerates to a distance from one point.
+func TestShadingRadial(t *testing.T) {
+	d := shadingPDF(t, "/Sh sh",
+		"<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [50 50 0 50 50 40]"+
+			" /Function 6 0 R /Extend [true true] >>", grayRamp)
+	px := renderDoc(t, d, nil)
+	if got := int(pixel(px, 50, 50)[0]); got > 8 {
+		t.Errorf("the center is %d, want black", got)
+	}
+	if got := int(pixel(px, 70, 50)[0]); got < 120 || got > 136 {
+		t.Errorf("halfway out is %d, want about 128", got)
+	}
+	if got := pixel(px, 95, 50); !same(got, 255, 255, 255) {
+		t.Errorf("past the outer circle = %v, want white", got)
+	}
+}
+
+func TestShadingPattern(t *testing.T) {
+	d := shadingPDF(t, "/Pattern cs /P scn 0 0 50 100 re f",
+		"<< /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB"+
+			" /Coords [0 0 100 0] /Function 6 0 R /Extend [true true] >> >>", grayRamp)
+	px := renderDoc(t, d, nil)
+	if got := int(pixel(px, 25, 50)[0]); got < 55 || got > 71 {
+		t.Errorf("inside the path is %d, want about 63", got)
+	}
+	if got := pixel(px, 75, 50); !same(got, 255, 255, 255) {
+		t.Errorf("outside the path = %v, want white", got)
+	}
+}
+
+// TestTilingPattern checks that a tile repeats on the XStep lattice and that
+// the pattern's own bounding box clips what each repetition draws.
+func TestTilingPattern(t *testing.T) {
+	d := shadingPDF(t, "/Pattern cs /P scn 0 0 100 100 re f",
+		streamObj("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"+
+			" /XStep 20 /YStep 20 /Resources << >>",
+			"1 0 0 rg 0 0 20 20 re f"))
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 2, 97); !same(got, 255, 0, 0) {
+		t.Errorf("the first cell = %v, want red", got)
+	}
+	if got := pixel(px, 12, 97); !same(got, 255, 255, 255) {
+		t.Errorf("past the cell box = %v, want white", got)
+	}
+	if got := pixel(px, 22, 97); !same(got, 255, 0, 0) {
+		t.Errorf("the next repetition = %v, want red", got)
+	}
+	if got := pixel(px, 2, 77); !same(got, 255, 0, 0) {
+		t.Errorf("the repetition one step up = %v, want red", got)
+	}
+}
+
+// TestTilingPatternUncolored checks PaintType 2, where the tile has no color
+// of its own and takes the one the pattern was selected with.
+func TestTilingPatternUncolored(t *testing.T) {
+	d := shadingPDF(t, "/Cs cs 0 0 1 /P scn 0 0 100 100 re f",
+		streamObj("/PatternType 1 /PaintType 2 /TilingType 1 /BBox [0 0 10 10]"+
+			" /XStep 10 /YStep 10 /Resources << >>", "0 0 5 5 re f"))
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 2, 97); !same(got, 0, 0, 255) {
+		t.Errorf("the uncolored cell = %v, want the blue it was selected with", got)
+	}
+}
+
+// TestTilingPatternPathIsolation checks that a tile's own path building does not
+// reach the path the pattern is filling, which the interpreter shares.
+func TestTilingPatternPathIsolation(t *testing.T) {
+	d := shadingPDF(t, "/Pattern cs /P scn 20 20 60 60 re f",
+		streamObj("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"+
+			" /XStep 10 /YStep 10 /Resources << >>",
+			"1 0 0 rg 0 0 10 10 re f"))
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 50, 50); !same(got, 255, 0, 0) {
+		t.Errorf("inside the filled path = %v, want red", got)
+	}
+	if got := pixel(px, 5, 5); !same(got, 255, 255, 255) {
+		t.Errorf("outside the filled path = %v, want white", got)
+	}
+}
+
+// TestShadingFunctionBased checks a type 1 shading, which is evaluated over
+// a grid of its own domain and mapped onto the page by its matrix.
+func TestShadingFunctionBased(t *testing.T) {
+	d := shadingPDF(t, "/Sh sh",
+		"<< /ShadingType 1 /ColorSpace /DeviceRGB /Domain [0 1 0 1]"+
+			" /Matrix [100 0 0 100 0 0] /Function 6 0 R >>",
+		streamObj("/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1]",
+			"{ pop dup dup }"))
+	px := renderDoc(t, d, nil)
+	for _, tc := range []struct{ x, want int }{{25, 64}, {75, 191}} {
+		if got := int(pixel(px, tc.x, 50)[0]); got < tc.want-3 || got > tc.want+3 {
+			t.Errorf("x=%d is %d, want about %d", tc.x, got, tc.want)
+		}
+	}
+}
+
+// TestShadingMesh checks a type 4 free form mesh: one triangle with a color
+// at each corner, interpolated across it.
+func TestShadingMesh(t *testing.T) {
+	data := "\x00\x00\x00\xff\x00\x00" + // (0,0) red
+		"\x00\xff\x00\x00\xff\x00" + // (100,0) green
+		"\x00\x00\xff\x00\x00\xff" // (0,100) blue
+	d := shadingPDF(t, "/Sh sh",
+		streamObj("/ShadingType 4 /ColorSpace /DeviceRGB /BitsPerCoordinate 8"+
+			" /BitsPerComponent 8 /BitsPerFlag 8 /Decode [0 100 0 100 0 1 0 1 0 1]",
+			data))
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 4, 95); got[0] < 200 || got[1] > 60 {
+		t.Errorf("the corner by the red vertex = %v", got)
+	}
+	if got := pixel(px, 90, 95); got[1] < 200 || got[0] > 60 {
+		t.Errorf("the corner by the green vertex = %v", got)
+	}
+	if got := pixel(px, 4, 6); got[2] < 200 || got[0] > 60 {
+		t.Errorf("the corner by the blue vertex = %v", got)
+	}
+	if got := pixel(px, 90, 6); !same(got, 255, 255, 255) {
+		t.Errorf("outside the triangle = %v, want white", got)
+	}
+}
+
+// TestOptionalContentOff checks that a marked content section naming a group
+// the default configuration turns off draws nothing. The group is named by a
+// reference, so the property has to reach the visibility test unresolved.
+func TestOptionalContentOff(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R]" +
+			" /D << /OFF [6 0 R] >> >> >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Properties << /On 5 0 R /Off 6 0 R >> >> >>",
+		streamObj("", "/OC /On BDC 1 0 0 rg 0 0 40 100 re f EMC "+
+			"/OC /Off BDC 0 0 1 rg 60 0 40 100 re f EMC"),
+		"<< /Type /OCG /Name (on) >>",
+		"<< /Type /OCG /Name (off) >>",
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 20, 50); !same(got, 255, 0, 0) {
+		t.Errorf("the visible group = %v, want red", got)
+	}
+	if got := pixel(px, 80, 50); !same(got, 255, 255, 255) {
+		t.Errorf("the hidden group = %v, want white", got)
 	}
 }

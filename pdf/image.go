@@ -128,15 +128,18 @@ func (ip *interp) paintImage(img *Image) {
 }
 
 func (ip *interp) drawImageBody(img *Image, ctm raster.Matrix) {
-	if img.Mask {
-		if ip.gs.fill.cs.IsPattern() {
-			ip.dev.FillImageMask(img, ctm, DeviceGray, []float32{0}, ip.gs.fillAlpha, ip.gs.params)
-		} else {
-			ip.dev.FillImageMask(img, ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
-		}
-	} else {
+	if !img.Mask {
 		ip.dev.FillImage(img, ctm, ip.gs.fillAlpha, ip.gs.params)
+		return
 	}
+	if ip.gs.fill.cs.IsPattern() {
+		shape := ctm.ApplyRect(unitRect)
+		ip.paintPattern(&ip.gs.fill, ip.gs.fillAlpha, shape, func() {
+			ip.dev.ClipImageMask(img, ctm, shape)
+		})
+		return
+	}
+	ip.dev.FillImageMask(img, ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
 }
 
 // inlineImage reads BI ... ID ... EI. The binary data lies in the content

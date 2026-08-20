@@ -332,7 +332,10 @@ func (ip *interp) op(kw syntax.Keyword, stack []Object) {
 func (ip *interp) markedProperty(stack []Object) Object {
 	switch v := lastObject(stack).(type) {
 	case Name:
-		return ip.doc.f.Lookup(ip.doc.f.GetDict(ip.res["Properties"]), v)
+		if props := ip.doc.f.GetDict(ip.res["Properties"]); props != nil {
+			return props[v]
+		}
+		return nil
 	default:
 		return v
 	}

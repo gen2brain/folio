@@ -44,6 +44,7 @@ type Rasterizer struct {
 	cover    []uint8
 	solid    solidBlitter
 	image    imageBlitter
+	shader   shaderBlitter
 }
 
 // NewRasterizer returns a rasterizer for a w by h pixel target.

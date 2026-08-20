@@ -250,6 +250,113 @@ func (d *DrawDevice) PopClip() {
 	}
 }
 
+// FillShade implements Device.
+func (d *DrawDevice) FillShade(sh *Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
+	if !d.drawing() || sh == nil {
+		return
+	}
+	m := raster.Concat(sh.Matrix, ctm)
+	box := d.clip.rect
+	if !sh.BBox.IsEmpty() {
+		box = box.Intersect(m.ApplyRect(sh.BBox))
+	}
+	if box.IsEmpty() {
+		return
+	}
+	var s raster.Shader
+	switch sh.Type {
+	case 1:
+		if p := d.functionShader(sh, m, box); p != nil {
+			s = p
+		}
+	case 2, 3:
+		if g := newGradient(sh, m, d.dst.N); g != nil {
+			s = g
+		}
+	case 4, 5, 6, 7:
+		if p := d.meshShader(sh, m, box); p != nil {
+			s = p
+		}
+	}
+	if s == nil {
+		return
+	}
+	var p raster.Path
+	p.Rect(box.X0, box.Y0, box.X1-box.X0, box.Y1-box.Y0)
+	d.ras.Reset()
+	d.ras.SetClip(d.clip.rect)
+	d.ras.AddPath(&p, raster.Identity)
+	d.ras.FillShader(d.dst, raster.NonZero, s, raster.Paint{
+		Alpha: alphaByte(alpha), Clip: d.clip.mask,
+	})
+}
+
+// functionShader evaluates a type 1 shading over a grid of its domain, sized
+// to how much of the page the domain covers.
+func (d *DrawDevice) functionShader(sh *Shade, m raster.Matrix, box raster.Rect) *pixmapShader {
+	if len(sh.Function) == 0 {
+		return nil
+	}
+	full := raster.Concat(sh.FuncMatrix, m)
+	inv, ok := full.Invert()
+	if !ok {
+		return nil
+	}
+	dom := sh.Domain4()
+	dx, dy := dom[1]-dom[0], dom[3]-dom[2]
+	if dx <= 0 || dy <= 0 {
+		return nil
+	}
+	on := full.ApplyRect(raster.Rect{X0: dom[0], Y0: dom[2], X1: dom[1], Y1: dom[3]}).Intersect(box)
+	if on.IsEmpty() {
+		return nil
+	}
+	w := clampInt(int(on.X1-on.X0)+1, 1, maxShadeGrid)
+	h := clampInt(int(on.Y1-on.Y0)+1, 1, maxShadeGrid)
+	px := raster.NewPixmap(d.dst.Model, w, h, true)
+	if px == nil {
+		return nil
+	}
+
+	n := px.Comps()
+	col := make([]float32, shadeComps(sh))
+	for j := 0; j < h; j++ {
+		y := float64(dom[2]) + (float64(j)+0.5)/float64(h)*float64(dy)
+		row := px.Row(j)
+		for i := 0; i < w; i++ {
+			x := float64(dom[0]) + (float64(i)+0.5)/float64(w)*float64(dx)
+			shadeColor(sh, col, x, y)
+			convertColor(sh.CS, col, row[i*n:i*n+px.N])
+			row[i*n+px.N] = 255
+		}
+	}
+	grid := raster.Matrix{
+		A: float32(w) / dx, D: float32(h) / dy,
+		E: -dom[0] * float32(w) / dx, F: -dom[2] * float32(h) / dy,
+	}
+	return &pixmapShader{px: px, inv: raster.Concat(inv, grid), n: d.dst.N}
+}
+
+// meshShader paints a type 4 to 7 shading into a pixmap of the part of the
+// page it covers. The triangles meet without anti-aliasing, so that the mesh
+// is smooth inside and its own edge is the only one the rasterizer sees.
+func (d *DrawDevice) meshShader(sh *Shade, m raster.Matrix, box raster.Rect) *pixmapShader {
+	x0, y0, x1, y1 := outerBox(box)
+	if x1 <= x0 || y1 <= y0 {
+		return nil
+	}
+	px := raster.NewPixmap(d.dst.Model, x1-x0, y1-y0, true)
+	if px == nil {
+		return nil
+	}
+	if !d.paintMesh(sh, raster.Concat(m, raster.Translate(float32(-x0), float32(-y0))), px) {
+		return nil
+	}
+	return &pixmapShader{
+		px: px, inv: raster.Translate(float32(-x0), float32(-y0)), n: d.dst.N,
+	}
+}
+
 // BeginMask implements Device. A soft mask is not composited yet, so what it
 // draws is thrown away rather than painted onto the page.
 func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams) {
@@ -275,10 +382,10 @@ func (d *DrawDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knoc
 // EndGroup implements Device.
 func (d *DrawDevice) EndGroup() { d.PopClip() }
 
-// BeginTile implements Device. Tiling patterns are not painted yet.
+// BeginTile implements Device. Returning zero asks the interpreter to run the
+// pattern's content once for every repetition, which is what draws it.
 func (d *DrawDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int {
-	d.stack = append(d.stack, drawFrame{clip: d.clip, off: true})
-	d.off++
+	d.push(d.clip)
 	return 0
 }
 

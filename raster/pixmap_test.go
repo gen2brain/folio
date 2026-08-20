@@ -209,3 +209,96 @@ func TestMulMask(t *testing.T) {
 		t.Fatalf("mul mask = %v", a.Samples)
 	}
 }
+
+// rampShader paints a gray ramp along x, and nothing at all past a column,
+// so that a shader's alpha is exercised as well as its color.
+type rampShader struct{ n, stop int }
+
+func (s rampShader) Shade(x, y, w int, span []uint8) {
+	for i := 0; i < w; i++ {
+		out := span[i*(s.n+1):]
+		if x+i >= s.stop {
+			clear(out[:s.n+1])
+			continue
+		}
+		for c := 0; c < s.n; c++ {
+			out[c] = uint8(x + i)
+		}
+		out[s.n] = 255
+	}
+}
+
+func TestFillShader(t *testing.T) {
+	p := NewPixmap(ModelRGB, 16, 4, false)
+	p.ClearWhite()
+	r := NewRasterizer(16, 4)
+	rect(r, 0, 0, 16, 4)
+	r.FillShader(p, NonZero, rampShader{n: 3, stop: 12}, Paint{Alpha: 255})
+	for x := 0; x < 12; x++ {
+		if got := p.Samples[(2*16+x)*3]; got != uint8(x) {
+			t.Fatalf("x=%d shaded %d, want %d", x, got, x)
+		}
+	}
+	if got := p.Samples[(2*16+13)*3]; got != 255 {
+		t.Fatalf("a transparent shader pixel painted %d", got)
+	}
+}
+
+func TestFillShaderAlpha(t *testing.T) {
+	p := NewPixmap(ModelGray, 8, 2, false)
+	p.ClearWhite()
+	r := NewRasterizer(8, 2)
+	rect(r, 0, 0, 8, 2)
+	r.FillShader(p, NonZero, rampShader{n: 1, stop: 8}, Paint{Alpha: 128})
+	// Half of the way from white to the shader's own value.
+	if got, want := p.Samples[4], mul255(128, 4)+mul255(127, 255); got != want {
+		t.Fatalf("half alpha over white = %d, want %d", got, want)
+	}
+}
+
+func TestFillTriangleInterpolates(t *testing.T) {
+	p := NewPixmap(ModelRGB, 16, 16, true)
+	p.FillTriangle(
+		Vertex{X: 0, Y: 0, Color: [4]uint8{255, 0, 0}},
+		Vertex{X: 16, Y: 0, Color: [4]uint8{0, 255, 0}},
+		Vertex{X: 0, Y: 16, Color: [4]uint8{0, 0, 255}},
+	)
+	if got := pixelAt(p, 0, 0); got[0] < 200 || got[3] != 255 {
+		t.Fatalf("the corner by the red vertex = %v", got)
+	}
+	if got := pixelAt(p, 14, 0); got[1] < 200 {
+		t.Fatalf("the corner by the green vertex = %v", got)
+	}
+	if got := pixelAt(p, 0, 14); got[2] < 200 {
+		t.Fatalf("the corner by the blue vertex = %v", got)
+	}
+	if got := pixelAt(p, 14, 14); got[3] != 0 {
+		t.Fatalf("outside the triangle = %v, want nothing", got)
+	}
+}
+
+// TestFillTriangleSeam checks that two triangles sharing an edge leave no
+// pixel of the square they make up unpainted, which is why they are not
+// anti-aliased.
+func TestFillTriangleSeam(t *testing.T) {
+	p := NewPixmap(ModelGray, 8, 8, true)
+	c := [4]uint8{200}
+	a := Vertex{X: 1.5, Y: 1.5, Color: c}
+	b := Vertex{X: 6.5, Y: 1.5, Color: c}
+	d := Vertex{X: 1.5, Y: 6.5, Color: c}
+	e := Vertex{X: 6.5, Y: 6.5, Color: c}
+	p.FillTriangle(a, b, d)
+	p.FillTriangle(b, e, d)
+	for y := 2; y < 6; y++ {
+		for x := 2; x < 6; x++ {
+			if got := pixelAt(p, x, y); got[1] != 255 {
+				t.Fatalf("a seam at %d,%d: %v", x, y, got)
+			}
+		}
+	}
+}
+
+func pixelAt(p *Pixmap, x, y int) []uint8 {
+	n := p.Comps()
+	return p.Samples[y*p.Stride+x*n : y*p.Stride+x*n+n]
+}

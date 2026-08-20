@@ -27,19 +27,31 @@ func (ip *interp) doShading(n Name) {
 func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
 	c := &ip.gs.fill
 	alpha := ip.gs.fillAlpha
+	shape := path.Bounds(ip.gs.ctm)
 	if stroke {
 		c = &ip.gs.strokeColor
 		alpha = ip.gs.strokeAlpha
+		shape = path.StrokeBounds(&ip.gs.stroke, ip.gs.ctm)
 	}
-	if c.pattern == nil || ip.depth >= maxNesting {
+	ip.paintPattern(c, alpha, shape, func() {
+		if stroke {
+			ip.dev.ClipStrokePath(path, &ip.gs.stroke, ip.gs.ctm, ip.scissor)
+		} else {
+			ip.dev.ClipPath(path, evenOdd, ip.gs.ctm, ip.scissor)
+		}
+	})
+}
+
+// paintPattern fills whatever clip pushes with the pattern a color names.
+// shape is the device space box of what is being painted, which is what
+// bounds the repetitions of a tiling pattern.
+func (ip *interp) paintPattern(c *color, alpha float32, shape raster.Rect, clip func()) {
+	if c.pattern == nil || ip.depth >= maxNesting || alpha == 0 {
 		return
 	}
 	f := ip.doc.f
 	dict := f.GetDict(c.pattern)
 	if dict == nil {
-		return
-	}
-	if alpha == 0 {
 		return
 	}
 
@@ -50,17 +62,6 @@ func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
 			D: float32(m[3]), E: float32(m[4]), F: float32(m[5]),
 		}
 	}
-	ptm := raster.Concat(pm, c.patternCTM)
-
-	shape := path.Bounds(ip.gs.ctm)
-	if stroke {
-		shape = path.StrokeBounds(&ip.gs.stroke, ip.gs.ctm)
-	}
-	if alpha != 1 {
-		ip.dev.BeginGroup(shape, nil, false, false, BlendNormal, alpha)
-		defer ip.dev.EndGroup()
-		alpha = 1
-	}
 
 	switch f.GetInt(dict["PatternType"], 0) {
 	case 2:
@@ -69,11 +70,7 @@ func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
 			return
 		}
 		sh.Matrix = pm
-		if stroke {
-			ip.dev.ClipStrokePath(path, &ip.gs.stroke, ip.gs.ctm, ip.scissor)
-		} else {
-			ip.dev.ClipPath(path, evenOdd, ip.gs.ctm, ip.scissor)
-		}
+		clip()
 		ip.dev.FillShade(sh, c.patternCTM, alpha, ip.gs.params)
 		ip.dev.PopClip()
 
@@ -82,12 +79,13 @@ func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
 		if st == nil {
 			return
 		}
-		if stroke {
-			ip.dev.ClipStrokePath(path, &ip.gs.stroke, ip.gs.ctm, ip.scissor)
-		} else {
-			ip.dev.ClipPath(path, evenOdd, ip.gs.ctm, ip.scissor)
+		if alpha != 1 {
+			ip.dev.BeginGroup(shape, nil, false, false, BlendNormal, alpha)
+			defer ip.dev.EndGroup()
+			alpha = 1
 		}
-		ip.runTile(st, ptm, shape, alpha)
+		clip()
+		ip.runTile(st, raster.Concat(pm, c.patternCTM), shape, alpha)
 		ip.dev.PopClip()
 	}
 }
@@ -131,6 +129,8 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 	ip.gs = ip.gs.clone()
 	savedBase := ip.base
 	savedStack := len(ip.gstack)
+	savedPath, savedClip := ip.path, ip.clip
+	ip.path, ip.clip = raster.Path{}, clipNone
 	ip.depth++
 	ip.gs.fillAlpha, ip.gs.strokeAlpha = alpha, alpha
 	ip.gs.softMask = nil
@@ -150,14 +150,18 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 	if !cached {
 		x0, y0, x1, y1 = tileRange(area, view, xstep, ystep)
 	}
+	var cell raster.Path
+	cell.Rect(view.X0, view.Y0, view.X1-view.X0, view.Y1-view.Y0)
 	for y := y0; y < y1; y++ {
 		for x := x0; x < x1; x++ {
 			ip.gs.ctm = raster.Concat(raster.Translate(float32(x)*xstep, float32(y)*ystep), ptm)
 			ip.base = ip.gs.ctm
 			ip.gs.clipDepth = 0
+			ip.dev.ClipPath(&cell, false, ip.gs.ctm, ip.scissor)
 			ip.run(data)
 			ip.flushText()
 			ip.unwind(savedStack)
+			ip.dev.PopClip()
 		}
 	}
 
@@ -165,6 +169,7 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 	ip.depth--
 	ip.gs = saved
 	ip.base = savedBase
+	ip.path, ip.clip = savedPath, savedClip
 
 	ip.dev.EndTile()
 }

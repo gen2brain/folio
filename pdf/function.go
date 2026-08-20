@@ -97,12 +97,16 @@ func (f *Function) Eval(out []float64, in ...float64) []float64 {
 	if f == nil {
 		return out
 	}
-	var args [8]float64
+	var buf [maxComponents]float64
+	args := buf[:]
+	if f.m > len(args) {
+		args = make([]float64, f.m)
+	}
 	m := min(f.m, len(in))
 	for i := 0; i < m; i++ {
 		args[i] = clampRange(in[i], f.Domain, i)
 	}
-	for i := m; i < f.m && i < len(args); i++ {
+	for i := m; i < f.m; i++ {
 		args[i] = f.Domain[2*i]
 	}
 	in = args[:f.m]

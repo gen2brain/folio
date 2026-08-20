@@ -53,26 +53,24 @@ func (ip *interp) runForm(st *Stream, asMask bool) {
 	}
 
 	group, masked := false, false
-	if true {
-		if g := f.GetDict(st.Dict["Group"]); g != nil && f.GetName(g["S"]) == "Transparency" {
-			isolated := f.GetBool(g["I"], false) || asMask
-			var cs *ColorSpace
-			if isolated && g["CS"] != nil {
-				cs = ip.doc.colorSpace(g["CS"], ip.res, 0)
-			}
-			bbox := raster.InfiniteRect
-			if b := f.GetFloats(st.Dict["BBox"]); len(b) == 4 {
-				bbox = ip.gs.ctm.ApplyRect(raster.Rect{
-					X0: float32(b[0]), Y0: float32(b[1]), X1: float32(b[2]), Y1: float32(b[3]),
-				}.Normalized())
-			}
-			masked = ip.beginSoftMask(bbox)
-			ip.dev.BeginGroup(bbox, cs, isolated, f.GetBool(g["K"], false), ip.gs.blend, ip.gs.fillAlpha)
-			group = true
-			ip.gs.fillAlpha, ip.gs.strokeAlpha = 1, 1
-			ip.gs.blend = BlendNormal
-			ip.gs.softMask = nil
+	if g := f.GetDict(st.Dict["Group"]); g != nil && f.GetName(g["S"]) == "Transparency" {
+		isolated := f.GetBool(g["I"], false) || asMask
+		var cs *ColorSpace
+		if isolated && g["CS"] != nil {
+			cs = ip.doc.colorSpace(g["CS"], ip.res, 0)
 		}
+		bbox := raster.InfiniteRect
+		if b := f.GetFloats(st.Dict["BBox"]); len(b) == 4 {
+			bbox = ip.gs.ctm.ApplyRect(raster.Rect{
+				X0: float32(b[0]), Y0: float32(b[1]), X1: float32(b[2]), Y1: float32(b[3]),
+			}.Normalized())
+		}
+		masked = ip.beginSoftMask(bbox)
+		ip.dev.BeginGroup(bbox, cs, isolated, f.GetBool(g["K"], false), ip.gs.blend, ip.gs.fillAlpha)
+		group = true
+		ip.gs.fillAlpha, ip.gs.strokeAlpha = 1, 1
+		ip.gs.blend = BlendNormal
+		ip.gs.softMask = nil
 	}
 
 	clipped := false
