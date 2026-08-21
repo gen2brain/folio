@@ -264,7 +264,7 @@ type textCollector struct {
 }
 
 func (t *textCollector) walk(b *box) {
-	if b == nil || (b.h > 0 && (b.y >= t.bottom || b.y+b.h <= t.top)) {
+	if b == nil || (b.reach > b.y && (b.y >= t.bottom || b.reach <= t.top)) {
 		return
 	}
 	if len(b.lines) > 0 {

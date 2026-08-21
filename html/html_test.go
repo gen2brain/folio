@@ -1440,6 +1440,27 @@ func FuzzLayout(fu *testing.F) {
 
 // TestLayoutConcurrent renders the pages of one book from several goroutines,
 // which is what a reader drawing ahead of the page it shows does.
+// TestLayoutPlacedDeep checks a box placed below everything in the flow. The
+// column runs to the bottom of what it holds, and a page is culled by how far
+// its subtree reaches rather than by the height of the box itself.
+func TestLayoutPlacedDeep(t *testing.T) {
+	d, _ := styledPage(t, `body, p { margin: 0 } .a { position: absolute; top: 300px }`,
+		`<p>one</p><span class="a">deep</span>`,
+		&LayoutOptions{Width: 400, Height: 100, Margin: 0})
+	defer d.Close()
+	var all strings.Builder
+	for i := range d.NumPages() {
+		p, err := d.Page(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.WriteString(p.Text())
+	}
+	if got := all.String(); !strings.Contains(got, "deep") {
+		t.Errorf("the pages say %q, want the placed box on one of them", got)
+	}
+}
+
 func TestLayoutConcurrent(t *testing.T) {
 	var body strings.Builder
 	for i := range 60 {
@@ -1860,7 +1881,7 @@ func TestLayoutTable(t *testing.T) {
 	if table == nil {
 		t.Fatal("no table box")
 	}
-	rows := tableRows(table)
+	rows, _ := tableRows(table)
 	if len(rows) != 4 {
 		t.Fatalf("%d rows", len(rows))
 	}
@@ -1902,6 +1923,102 @@ func TestLayoutTable(t *testing.T) {
 	}
 	if rows[1].y < rows[0].y+rows[0].h-0.01 {
 		t.Errorf("rows overlap: %v against %v+%v", rows[1].y, rows[0].y, rows[0].h)
+	}
+}
+
+// TestCollapseResolution checks which border wins an edge two cells share:
+// hidden takes it away, the wider wins, and at the same width the style
+// order of CSS 2.1 decides, with the nearer owner taking a tie.
+func TestCollapseResolution(t *testing.T) {
+	b := func(w float32, st BorderStyle) Border { return Border{Width: w, Style: st} }
+	for _, tc := range []struct {
+		near, far, want Border
+	}{
+		{b(1, BorderSolid), b(9, BorderHidden), Border{Style: BorderHidden}},
+		{b(9, BorderHidden), b(1, BorderSolid), Border{Style: BorderHidden}},
+		{b(1, BorderSolid), b(2, BorderSolid), b(2, BorderSolid)},
+		{b(3, BorderSolid), b(2, BorderDouble), b(3, BorderSolid)},
+		{b(2, BorderSolid), b(2, BorderDouble), b(2, BorderDouble)},
+		{b(2, BorderDashed), b(2, BorderSolid), b(2, BorderSolid)},
+		{b(2, BorderDotted), b(2, BorderDashed), b(2, BorderDashed)},
+		{b(2, BorderSolid), b(2, BorderSolid), b(2, BorderSolid)},
+		{b(0, BorderNone), b(2, BorderSolid), b(2, BorderSolid)},
+	} {
+		if got := stronger(tc.near, tc.far); got != tc.want {
+			t.Errorf("stronger(%v, %v) = %v, want %v", tc.near, tc.far, got, tc.want)
+		}
+	}
+}
+
+// TestLayoutCollapse renders a table both ways. Separate borders draw the
+// line between two cells twice, collapsed borders draw it once, and a hidden
+// edge takes it away.
+func TestLayoutCollapse(t *testing.T) {
+	across := func(sheet, body string) int {
+		t.Helper()
+		d, p := styledPage(t, "body, table { margin: 0 } td { padding: 4px; width: 40px }"+sheet,
+			body, &LayoutOptions{Width: 300, Height: 300, Margin: 0})
+		defer d.Close()
+		img, err := p.ImageDPI(96)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for x := range 120 {
+			i := img.PixOffset(x, 12)
+			if img.Pix[i] == 0 && img.Pix[i+1] == 0 && img.Pix[i+2] == 0 {
+				n++
+			}
+		}
+		return n
+	}
+	const two = `<table><tr><td>a</td><td>b</td></tr></table>`
+	const border = `table, td { border: 2px solid black }`
+	if got := across(border, two); got != 12 {
+		t.Errorf("%d black pixels across a separate table, want 12", got)
+	}
+	if got := across(`table { border-collapse: collapse }`+border, two); got != 6 {
+		t.Errorf("%d black pixels across a collapsed table, want 6", got)
+	}
+	if got := across(`table { border-collapse: collapse } td.h { border-right: hidden }`+border,
+		`<table><tr><td class="h">a</td><td>b</td></tr></table>`); got != 4 {
+		t.Errorf("%d black pixels with a hidden edge, want 4", got)
+	}
+}
+
+// TestLayoutSpacing checks the gap a table leaves around its cells when its
+// borders are not collapsed.
+func TestLayoutSpacing(t *testing.T) {
+	geom := func(sheet string) [][2]float32 {
+		t.Helper()
+		d, _ := styledPage(t, "body, table { margin: 0 } td { padding: 0; width: 40px }"+sheet,
+			`<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>`,
+			&LayoutOptions{Width: 300, Height: 300, Margin: 0})
+		defer d.Close()
+		var out [][2]float32
+		var walk func(*box)
+		walk = func(b *box) {
+			if b.style.Display == DisplayTableCell && b.kind != textBox {
+				out = append(out, [2]float32{b.x, b.y})
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return out
+	}
+	tight := geom(``)
+	if len(tight) != 4 || tight[0] != [2]float32{0, 0} || tight[1][0] != 40 {
+		t.Fatalf("cells at %v", tight)
+	}
+	spaced := geom(`table { border-spacing: 10px 20px }`)
+	if len(spaced) != 4 || spaced[0] != [2]float32{10, 20} || spaced[1][0] != 60 {
+		t.Fatalf("cells at %v", spaced)
+	}
+	if spaced[2][1] != tight[2][1]+40 {
+		t.Errorf("the second row is at %v, want %v below the first",
+			spaced[2][1], tight[2][1]+40)
 	}
 }
 

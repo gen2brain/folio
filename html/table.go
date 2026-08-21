@@ -23,24 +23,25 @@ type cell struct {
 }
 
 // tableRows collects the rows of a table, through the row groups a document
-// writes them in.
-func tableRows(t *box) []*box {
-	var out []*box
-	var walk func(*box)
-	walk = func(b *box) {
+// writes them in, and the group each row came out of.
+func tableRows(t *box) ([]*box, []*box) {
+	var out, groups []*box
+	var walk func(b, group *box)
+	walk = func(b, group *box) {
 		for _, k := range b.kids {
 			switch k.style.Display {
 			case DisplayTableRow:
 				if len(out) < maxTableRows {
 					out = append(out, k)
+					groups = append(groups, group)
 				}
 			case DisplayTableRowGroup:
-				walk(k)
+				walk(k, k)
 			}
 		}
 	}
-	walk(t)
-	return out
+	walk(t, nil)
+	return out, groups
 }
 
 // buildGrid gives every cell a row and a column, stepping over the slots the
@@ -95,7 +96,7 @@ func spanOf(b *box, name string) int {
 // table lays a table out: the columns from what the cells want, then the rows
 // from what the cells become once they have their width.
 func (l *layout) table(b *box, x, avail float32) {
-	rows := tableRows(b)
+	rows, _ := tableRows(b)
 	cells, ncols := buildGrid(rows)
 	if ncols == 0 || len(cells) == 0 {
 		for _, k := range b.kids {
@@ -103,13 +104,21 @@ func (l *layout) table(b *box, x, avail float32) {
 		}
 		return
 	}
-	widths := l.columnWidths(b, cells, ncols, avail)
+	g := b.collapsed
+	sx, sy := b.style.SpacingX.Resolve(0), b.style.SpacingY.Resolve(0)
+	if g != nil {
+		sx, sy = 0, 0
+	}
+
+	widths := l.columnWidths(b, cells, ncols, max(avail-float32(ncols+1)*sx, 0))
 	edge := make([]float32, ncols+1)
+	edge[0] = sx
 	for i, w := range widths {
-		edge[i+1] = edge[i] + w
+		edge[i+1] = edge[i] + w + sx
 	}
 	for _, c := range cells {
-		c.x, c.w = edge[c.col], edge[min(c.col+c.cols, ncols)]-edge[c.col]
+		c.x = edge[c.col]
+		c.w = edge[min(c.col+c.cols, ncols)] - c.x - sx
 	}
 
 	// A caption is a block of its own above the rows.
@@ -122,7 +131,7 @@ func (l *layout) table(b *box, x, avail float32) {
 	l.apply()
 	top := l.y
 	rowTop := make([]float32, len(rows)+1)
-	rowTop[0] = top
+	rowTop[0] = top + sy
 	byRow := make([][]*cell, len(rows))
 	for _, c := range cells {
 		byRow[c.row] = append(byRow[c.row], c)
@@ -138,7 +147,7 @@ func (l *layout) table(b *box, x, avail float32) {
 				h = max(h, sub.y-rowTop[r])
 			}
 		}
-		rowTop[r+1] = rowTop[r] + h
+		rowTop[r+1] = rowTop[r] + h + sy
 	}
 
 	// A cell that spans rows may be taller than the rows it spans, which
@@ -167,9 +176,12 @@ func (l *layout) table(b *box, x, avail float32) {
 	}
 	for r := range rows {
 		rows[r].x, rows[r].y = x, rowTop[r]
-		rows[r].w, rows[r].h = edge[ncols], rowTop[r+1]-rowTop[r]
+		rows[r].w, rows[r].h = edge[ncols], rowTop[r+1]-rowTop[r]-sy
 		l.spans = append(l.spans, lineSpan{top: rowTop[r], bottom: rowTop[r+1], force: l.next})
 		l.next = false
+	}
+	if g != nil {
+		b.edges = g.lines(x, edge, rowTop)
 	}
 	b.natural = edge[ncols] + frameWidth(b.style)
 	if b.style.Width.Auto() {
@@ -187,7 +199,7 @@ func (l *layout) columnWidths(t *box, cells []*cell, ncols int, avail float32) [
 	for _, c := range cells {
 		c.min, c.max = l.contentWidths(c.box)
 		if w := c.box.style.Width; !w.Auto() {
-			want := w.Resolve(avail) + frameWidth(c.box.style)
+			want := w.Resolve(avail) + boxFrame(c.box)
 			c.min, c.max = max(c.min, want), max(c.max, want)
 		}
 		if c.cols != 1 {
@@ -271,7 +283,7 @@ func (l *layout) probe(b *box, avail float32) float32 {
 	}
 	p := l.sub(0)
 	p.flow(b, 0, avail)
-	w := widest(b) + frameWidth(b.style)
+	w := widest(b) + boxFrame(b)
 	reset(b)
 	return w
 }
@@ -280,6 +292,16 @@ func (l *layout) probe(b *box, avail float32) float32 {
 func frameWidth(s *Style) float32 {
 	return s.PaddingLeft.Resolve(0) + s.PaddingRight.Resolve(0) +
 		s.BorderLeft.Thickness() + s.BorderRight.Thickness()
+}
+
+// boxFrame is frameWidth for a box, which in a collapsed table gives its
+// borders half the room a cell beside it gives the same edge.
+func boxFrame(b *box) float32 {
+	if b.inset == nil {
+		return frameWidth(b.style)
+	}
+	return b.style.PaddingLeft.Resolve(0) + b.style.PaddingRight.Resolve(0) +
+		b.inset[3] + b.inset[1]
 }
 
 // shift moves a laid out subtree.

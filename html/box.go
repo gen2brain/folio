@@ -41,6 +41,24 @@ type box struct {
 	// markerFace what a list item draws its marker with.
 	natural    float32
 	markerFace face
+	// reach is how far down the subtree of a box goes, which is past its own
+	// height when something in it is out of the flow.
+	reach float32
+	// collapsed is the grid a table whose cells share their borders
+	// resolved, edges the segments it paints, skipBorders a box whose own
+	// borders they replace, and inset the widths such a box lays out with.
+	collapsed   *grid
+	edges       []edgeLine
+	skipBorders bool
+	inset       *[4]float32
+}
+
+// edgeLine is one segment of the grid a collapsed table draws, in absolute
+// CSS pixels.
+type edgeLine struct {
+	e          Border
+	x, y, w, h float32
+	horizontal bool
 }
 
 // lineBox is one line of a block.
@@ -180,6 +198,9 @@ func (b *box) blank() bool {
 func fixup(b *box) {
 	for _, k := range b.kids {
 		fixup(k)
+	}
+	if b.style.Display == DisplayTable && b.style.Collapse {
+		collapse(b)
 	}
 	if b.kind == inlineBox {
 		for _, k := range b.kids {

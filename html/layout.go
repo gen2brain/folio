@@ -225,6 +225,13 @@ func (l *layout) run(b *box, w float32) {
 	// A float's lines are laid out where the float was met, so the spans
 	// reach pagination out of order.
 	sort.Slice(l.spans, func(i, j int) bool { return l.spans[i].top < l.spans[j].top })
+	// A box placed out of the flow may sit below everything in it, and the
+	// column runs to the bottom of what it holds or the content is on no
+	// page at all.
+	for i := range l.spans {
+		l.y = max(l.y, l.spans[i].bottom)
+	}
+	reachOf(b)
 }
 
 // block places one block level box and everything under it, or puts it where
@@ -243,8 +250,7 @@ func (l *layout) flow(b *box, x, avail float32) {
 	ml, mr := s.MarginLeft.Resolve(avail), s.MarginRight.Resolve(avail)
 	pl, pr := s.PaddingLeft.Resolve(avail), s.PaddingRight.Resolve(avail)
 	pt, pb := s.PaddingTop.Resolve(avail), s.PaddingBottom.Resolve(avail)
-	bt, br := s.BorderTop.Thickness(), s.BorderRight.Thickness()
-	bb, bl := s.BorderBottom.Thickness(), s.BorderLeft.Thickness()
+	bt, br, bb, bl := borderInset(b)
 	frame := pl + pr + bl + br
 	w := avail - ml - mr - frame
 	// A cell is as wide as its column, which the table worked out from what
@@ -321,6 +327,29 @@ func (l *layout) flow(b *box, x, avail float32) {
 			shift(b, dx, dy)
 		}
 	}
+}
+
+// reachOf fills in how far down every subtree goes, which is what a page
+// culls a box by: its own height leaves out whatever was placed out of the
+// flow below it.
+func reachOf(b *box) float32 {
+	r := b.y + b.h
+	for _, k := range b.kids {
+		r = max(r, reachOf(k))
+	}
+	b.reach = r
+	return r
+}
+
+// borderInset is the room a box gives its four borders, which for a cell of a
+// collapsed table is half of the border it shares with the cell beside it.
+func borderInset(b *box) (top, right, bottom, left float32) {
+	if b.inset != nil {
+		return b.inset[0], b.inset[1], b.inset[2], b.inset[3]
+	}
+	s := b.style
+	return s.BorderTop.Thickness(), s.BorderRight.Thickness(),
+		s.BorderBottom.Thickness(), s.BorderLeft.Thickness()
 }
 
 // clampLength holds a length between what min and max ask for, treating a

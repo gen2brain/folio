@@ -199,6 +199,9 @@ const (
 	BorderDashed
 	BorderDotted
 	BorderDouble
+	// BorderHidden draws nothing, and in a collapsed table it takes the
+	// edge away from every other border that meets it.
+	BorderHidden
 )
 
 // Border is one edge of a box.
@@ -211,7 +214,7 @@ type Border struct {
 // Thickness is how much room the edge takes, which is none when nothing is
 // drawn there.
 func (b Border) Thickness() float32 {
-	if b.Style == BorderNone || b.Width <= 0 {
+	if b.Style == BorderNone || b.Style == BorderHidden || b.Width <= 0 {
 		return 0
 	}
 	return b.Width
@@ -253,6 +256,11 @@ type Style struct {
 
 	Float Float
 	Clear Clear
+
+	// Collapse is whether the cells of a table share the borders between
+	// them, and Spacing the gap between them when they do not.
+	Collapse           bool
+	SpacingX, SpacingY Length
 
 	// Radius is the corner radii of the border box, clockwise from the top
 	// left.
@@ -301,6 +309,8 @@ func (s *Style) inherit() Style {
 	c.Decoration = s.Decoration
 	c.WhiteSpace = s.WhiteSpace
 	c.ListStyle = s.ListStyle
+	c.Collapse = s.Collapse
+	c.SpacingX, c.SpacingY = s.SpacingX, s.SpacingY
 	return c
 }
 
@@ -358,6 +368,28 @@ func cornerAt(name string) int {
 		}
 	}
 	return 0
+}
+
+// spacing reads the one or two lengths a table leaves between its cells.
+func (v value) spacing() (Length, Length, bool) {
+	parts := splitSpace(v.toks)
+	if len(parts) == 0 || len(parts) > 2 || len(parts[0]) != 1 {
+		return Length{}, Length{}, false
+	}
+	x, ok := length(parts[0][0], v.em, v.rm)
+	if !ok || x.Unit != UnitPx {
+		return Length{}, Length{}, false
+	}
+	y := x
+	if len(parts) == 2 {
+		if len(parts[1]) != 1 {
+			return Length{}, Length{}, false
+		}
+		if y, ok = length(parts[1][0], v.em, v.rm); !ok || y.Unit != UnitPx {
+			return Length{}, Length{}, false
+		}
+	}
+	return x, y, true
 }
 
 // corner reads the one or two lengths a corner is rounded by, the vertical
@@ -977,6 +1009,17 @@ func applyProp(s *Style, name string, v value) bool {
 		}
 	case "content":
 		s.Content, s.HasContent = v.content()
+	case "border-collapse":
+		switch v.ident() {
+		case "collapse":
+			s.Collapse = true
+		case "separate":
+			s.Collapse = false
+		}
+	case "border-spacing":
+		if x, y, ok := v.spacing(); ok {
+			s.SpacingX, s.SpacingY = x, y
+		}
 	case "border-top-left-radius", "border-top-right-radius",
 		"border-bottom-right-radius", "border-bottom-left-radius":
 		if c, ok := v.corner(); ok {
@@ -1113,6 +1156,10 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.Float = src.Float
 	case "content":
 		dst.Content, dst.HasContent = src.Content, src.HasContent
+	case "border-collapse":
+		dst.Collapse = src.Collapse
+	case "border-spacing":
+		dst.SpacingX, dst.SpacingY = src.SpacingX, src.SpacingY
 	case "border-top-left-radius", "border-top-right-radius",
 		"border-bottom-right-radius", "border-bottom-left-radius":
 		dst.Radius[cornerAt(name)] = src.Radius[cornerAt(name)]
@@ -1143,8 +1190,10 @@ func setBorderWidth(b *Border, v value) {
 
 func setBorderStyle(b *Border, v value) {
 	switch v.ident() {
-	case "none", "hidden":
+	case "none":
 		b.Style = BorderNone
+	case "hidden":
+		b.Style = BorderHidden
 	case "solid", "groove", "ridge", "inset", "outset":
 		b.Style = BorderSolid
 	case "dashed":

@@ -22,7 +22,7 @@ func (p *painter) walk(b *box) {
 	if b == nil {
 		return
 	}
-	if b.h > 0 && (b.y >= p.bottom || b.y+b.h <= p.top) {
+	if b.reach > b.y && (b.y >= p.bottom || b.reach <= p.top) {
 		return
 	}
 	if c := b.style.Background; c.A > 0 && b.w > 0 && b.h > 0 {
@@ -136,7 +136,13 @@ func (p *painter) decorate(st *Style, f face, x0, x1, y float32) {
 // and otherwise rectangles that overlap at the corners rather than mitred,
 // which shows only where two edges of different colours meet.
 func (p *painter) borders(b *box) {
-	if b.w <= 0 || b.h <= 0 {
+	if len(b.edges) > 0 {
+		for _, e := range b.edges {
+			p.edge(e.e, e.x, e.y, e.w, e.h, e.horizontal)
+		}
+		return
+	}
+	if b.skipBorders || b.w <= 0 || b.h <= 0 {
 		return
 	}
 	s := b.style
