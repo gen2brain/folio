@@ -1,6 +1,9 @@
 package pdf
 
-import "github.com/gen2brain/folio/raster"
+import (
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
+)
 
 // showObject shows a string, or the mix of strings and numbers a TJ array
 // holds.
@@ -50,7 +53,9 @@ func (ip *interp) showString(s []byte) {
 	// content stream of its own and can reach this again, so the buffer is on
 	// the stack rather than on the interpreter.
 	var buf [64]Char
-	for _, c := range font.decode(buf[:0], s) {
+	chars := font.decode(buf[:0], s)
+	pref := font.RunFace(chars)
+	for _, c := range chars {
 		if ip.text != nil && ip.textMode != ts.render {
 			ip.flushText()
 		}
@@ -71,7 +76,7 @@ func (ip *interp) showString(s []byte) {
 			ip.textCTM = ip.gs.ctm
 		}
 
-		ip.addGlyph(font, trm, c)
+		ip.addGlyph(font, trm, c, pref)
 
 		if s := font.Text(c); len([]rune(s)) > 1 {
 			for _, extra := range []rune(s)[1:] {
@@ -97,28 +102,35 @@ func (ip *interp) showString(s []byte) {
 
 // addGlyph appends one glyph to the text being built, starting a new span
 // when the font or the shape of the matrix changes.
-func (ip *interp) addGlyph(font *Font, trm raster.Matrix, c Char) {
+func (ip *interp) addGlyph(font *Font, trm raster.Matrix, c Char, pref gfx.Font) {
 	t := ip.text
 	n := len(t.Spans)
+	cur := pref
+	if cur == nil && n > 0 {
+		cur = t.Spans[n-1].Font
+	}
+	face, gid := font.GlyphFace(c, cur)
 	if n == 0 {
-		t.Spans = append(t.Spans, TextSpan{Font: font, WMode: font.WMode, Trm: trm})
+		t.Spans = append(t.Spans, TextSpan{Font: face, WMode: font.WMode, Trm: trm})
 		n = 1
 	} else {
 		sp := &t.Spans[n-1]
-		if sp.Font != font || sp.WMode != font.WMode ||
+		if sp.Font != face || sp.WMode != font.WMode ||
 			sp.Trm.A != trm.A || sp.Trm.B != trm.B || sp.Trm.C != trm.C || sp.Trm.D != trm.D {
-			t.Spans = append(t.Spans, TextSpan{Font: font, WMode: font.WMode, Trm: trm})
+			t.Spans = append(t.Spans, TextSpan{Font: face, WMode: font.WMode, Trm: trm})
 			n++
 		}
 	}
-	gid := font.Glyph(c)
-	r := font.Rune(c)
+	name := ""
+	if p := face.Program(); p != nil && gid >= 0 && !font.Type3 {
+		name = p.GlyphName(gid)
+	}
 	sp := &t.Spans[n-1]
 	sp.Items = append(sp.Items, TextItem{
 		X: trm.E, Y: trm.F,
 		GID:  gid,
-		Rune: r,
-		Name: font.GlyphNameOf(c),
+		Rune: font.Rune(c),
+		Name: name,
 		Code: c.Code,
 		CID:  c.CID,
 		Adv:  c.Width,
@@ -206,6 +218,62 @@ func (ip *interp) addFiller(font *Font, trm raster.Matrix, r rune) {
 	})
 }
 
+// unifyFaces draws a whole text object out of one face where it can. A string
+// shown before the one that needed a face the stand in has no glyphs for went
+// to the stand in, and half a paragraph in one typeface and half in another is
+// what a reader sees; the positions come from the file either way.
+func unifyFaces(t *Text) {
+	var fb *fallbackFont
+	for _, sp := range t.Spans {
+		if f, ok := sp.Font.(*fallbackFont); ok {
+			if fb != nil && fb != f {
+				return
+			}
+			fb = f
+		}
+	}
+	if fb == nil {
+		return
+	}
+	gids := make([]int, 0, 16)
+	for i := range t.Spans {
+		sp := &t.Spans[i]
+		if sp.Font != gfx.Font(fb.Font) {
+			continue
+		}
+		gids = gids[:0]
+		for _, it := range sp.Items {
+			g := -1
+			if it.Rune > 0 {
+				g = fb.prog.GIDForRune(it.Rune)
+			}
+			if g <= 0 {
+				break
+			}
+			gids = append(gids, g)
+		}
+		if len(gids) != len(sp.Items) {
+			continue
+		}
+		sp.Font = fb
+		for j := range sp.Items {
+			sp.Items[j].GID = gids[j]
+			sp.Items[j].Name = fb.prog.GlyphName(gids[j])
+		}
+	}
+	out := t.Spans[:1]
+	for _, sp := range t.Spans[1:] {
+		last := &out[len(out)-1]
+		if last.Font == sp.Font && last.WMode == sp.WMode && last.Trm.A == sp.Trm.A &&
+			last.Trm.B == sp.Trm.B && last.Trm.C == sp.Trm.C && last.Trm.D == sp.Trm.D {
+			last.Items = append(last.Items, sp.Items...)
+			continue
+		}
+		out = append(out, sp)
+	}
+	t.Spans = out
+}
+
 // flushText hands the accumulated text to the device.
 func (ip *interp) flushText() {
 	t := ip.text
@@ -216,6 +284,7 @@ func (ip *interp) flushText() {
 	if len(t.Spans) == 0 {
 		return
 	}
+	unifyFaces(t)
 
 	if ip.hidden > 0 {
 		return

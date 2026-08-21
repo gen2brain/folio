@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
 	"github.com/gen2brain/folio/syntax"
 )
@@ -60,13 +61,26 @@ type Font struct {
 	// substituted is true when prog is a stand in rather than the font the
 	// document asked for.
 	substituted bool
-	// viaUnicode is set for a substitute chosen for a character collection:
-	// its glyphs are found through Unicode rather than through a CID.
+	// viaUnicode is set for a substituted CID keyed font: the CIDs address
+	// the glyph order of the font the file did not embed, so the stand in is
+	// asked for its glyphs through Unicode instead.
 	viaUnicode bool
 	// gids maps a character code to a glyph in prog, for a simple font.
 	gids [256]int32
 	// cid2gid is the /CIDToGIDMap stream of a CIDFontType2.
 	toUnicode *CMap
+	// std is set when the stand in is one of the base fourteen, whose
+	// repertoire is Latin-1. A character outside it is looked for in a face
+	// the machine has; a font given a face for its collection keeps that face
+	// and shows nothing for what it does not have, which is what the other
+	// readers do.
+	std bool
+	// fbMu guards fbFaces, which holds one wrapper per face a character the
+	// substitute has no glyph for was drawn out of. The pointer has to be the
+	// same one every time, so that a run of them is one span.
+	fbMu    sync.Mutex
+	fbFaces map[*font.Font]*fallbackFont
+
 	// base is the base-14 name a substituted font resolved to.
 	base string
 	// ordering is the character collection the CIDs belong to.
@@ -201,6 +215,7 @@ func (d *Document) substitute(ft *Font) {
 	}
 	ft.base = font.StandardName(name, ft.serif, ft.fixed, ft.symbolic, ft.forceBold, ft.italic)
 	ft.prog = font.Standard(ft.base)
+	ft.viaUnicode, ft.std = ft.Type0, true
 	if ft.prog == nil {
 		d.errorf("no substitute for font /%s", ft.Name)
 	}
@@ -634,7 +649,7 @@ func (ft *Font) Glyph(c Char) int {
 		if r := ft.textRune(c); r > 0 {
 			return ft.prog.GIDForRune(r)
 		}
-		return -1
+		return ft.standardOrder(c)
 	}
 	if ft.Type0 {
 		return ft.cidToGID(int(c.CID))
@@ -643,6 +658,19 @@ func (ft *Font) Glyph(c Char) int {
 		return int(ft.gids[c.Code])
 	}
 	return -1
+}
+
+// standardOrder is the last thing left for a CID keyed font the file did not
+// embed and gave no way to read: the CIDs index the glyphs of a font that is
+// not here, and a TrueType font that never rearranged its glyphs is in the
+// standard Macintosh order. Only what that order covers can be guessed at, so
+// a character collection stays undrawn rather than drawn wrongly.
+func (ft *Font) standardOrder(c Char) int {
+	name := font.MacGlyphName(int(c.CID))
+	if name == "" || name == ".notdef" || name == ".null" {
+		return -1
+	}
+	return ft.prog.GIDForName(name)
 }
 
 // cidToGID maps a CID onto a glyph, through /CIDToGIDMap or through the
@@ -716,11 +744,88 @@ func (ft *Font) textRune(c Char) rune {
 // GlyphNameOf returns what the font program calls the glyph a character
 // selects, which is what a trace of the device calls it too.
 func (ft *Font) GlyphNameOf(c Char) string {
-	gid := ft.Glyph(c)
-	if gid < 0 || ft.prog == nil || ft.Type3 {
+	face, gid := ft.GlyphFace(c, nil)
+	p := face.Program()
+	if gid < 0 || p == nil || ft.Type3 {
 		return ""
 	}
-	return ft.prog.GlyphName(gid)
+	return p.GlyphName(gid)
+}
+
+// GlyphFace resolves a character to the glyph that draws it and the face it
+// comes from, which is one the machine has when the character is outside what
+// the stand in for a font the file did not embed can draw. cur is the face the
+// run is already in, which keeps a space between two words of a script the
+// stand in has no glyphs for from splitting the run in three.
+func (ft *Font) GlyphFace(c Char, cur gfx.Font) (gfx.Font, int) {
+	if !ft.std {
+		return ft, ft.Glyph(c)
+	}
+	if fb, ok := cur.(*fallbackFont); ok && fb.Font == ft {
+		if r := ft.textRune(c); r > 0 {
+			if g := fb.prog.GIDForRune(r); g > 0 {
+				return fb, g
+			}
+		}
+	}
+	gid := ft.Glyph(c)
+	if gid > 0 {
+		return ft, gid
+	}
+	r := ft.textRune(c)
+	if r <= 0 {
+		return ft, gid
+	}
+	p := font.Fallback(r, ft.forceBold, ft.italic)
+	if p == nil || p == ft.prog {
+		return ft, gid
+	}
+	g := p.GIDForRune(r)
+	if g <= 0 {
+		return ft, gid
+	}
+	return ft.face(p), g
+}
+
+// RunFace is the face a whole shown string is drawn from: the one a character
+// the stand in has no glyph for reaches for, so that a word is not half in one
+// typeface and half in another. It is nil when the stand in covers the string.
+func (ft *Font) RunFace(cs []Char) gfx.Font {
+	if !ft.std {
+		return nil
+	}
+	for _, c := range cs {
+		if ft.Glyph(c) > 0 {
+			continue
+		}
+		if f, g := ft.GlyphFace(c, nil); g > 0 && f != gfx.Font(ft) {
+			return f
+		}
+	}
+	return nil
+}
+
+// fallbackFont is the font with one face swapped for another, which is all a
+// device needs to draw a glyph out of it.
+type fallbackFont struct {
+	*Font
+	prog *font.Font
+}
+
+func (f *fallbackFont) Program() *font.Font { return f.prog }
+
+func (ft *Font) face(p *font.Font) *fallbackFont {
+	ft.fbMu.Lock()
+	defer ft.fbMu.Unlock()
+	if f, ok := ft.fbFaces[p]; ok {
+		return f
+	}
+	if ft.fbFaces == nil {
+		ft.fbFaces = map[*font.Font]*fallbackFont{}
+	}
+	f := &fallbackFont{Font: ft, prog: p}
+	ft.fbFaces[p] = f
+	return f
 }
 
 // readW parses the /W array, which is a mix of "first last width" triples and

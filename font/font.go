@@ -233,6 +233,18 @@ func (f *Font) GIDForName(name string) int {
 
 // GIDForRune looks a Unicode value up in the font's character map, or -1.
 func (f *Font) GIDForRune(r rune) int {
+	g := f.gidForRune(r)
+	if g <= 0 {
+		if alt, ok := sameShape[r]; ok {
+			if a := f.gidForRune(alt); a > 0 {
+				return a
+			}
+		}
+	}
+	return g
+}
+
+func (f *Font) gidForRune(r rune) int {
 	if f.sfnt != nil {
 		return f.sfnt.lookupUnicode(r)
 	}
@@ -242,6 +254,25 @@ func (f *Font) GIDForRune(r rune) int {
 		}
 	}
 	return -1
+}
+
+// sameShape is what a character is drawn as when the face has no glyph of its
+// own for it, which Unicode says is the same mark.
+var sameShape = map[rune]rune{
+	'\u00a0': ' ',
+	'\u00ad': '-',
+	'\u2011': '-',
+	'\u202f': ' ',
+}
+
+// MacGlyphName is the name a glyph has at index i of the standard Macintosh
+// ordering, which is the order a TrueType font that has not rearranged its
+// glyphs is in and what a version 1 post table means.
+func MacGlyphName(i int) string {
+	if i < 0 || i >= len(macGlyphNames) {
+		return ""
+	}
+	return macGlyphNames[i]
 }
 
 // HasGlyphNames reports whether the program names its glyphs, which decides
