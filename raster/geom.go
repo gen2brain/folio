@@ -154,14 +154,15 @@ func (m Matrix) ApplyRect(r Rect) Rect {
 // Det is the determinant, zero when the transform collapses to a line.
 func (m Matrix) Det() float32 { return float32(m.A*m.D) - float32(m.B*m.C) }
 
-// Invert returns the inverse transform. A singular matrix inverts to the
-// identity, which keeps a degenerate CTM from taking coordinates to infinity.
+// Invert returns the inverse transform. A matrix whose inverse a float32
+// cannot hold inverts to the identity, which keeps a degenerate CTM from
+// taking coordinates to infinity.
 func (m Matrix) Invert() (Matrix, bool) {
 	det := m.Det()
-	if det > -1e-9 && det < 1e-9 {
+	r := 1 / det
+	if det == 0 || det != det || r-r != 0 {
 		return Identity, false
 	}
-	r := 1 / det
 	return Matrix{
 		m.D * r, -m.B * r,
 		-m.C * r, m.A * r,
