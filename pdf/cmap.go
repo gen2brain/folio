@@ -2,6 +2,8 @@ package pdf
 
 import (
 	"cmp"
+	"compress/flate"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -439,4 +441,114 @@ func builtinCMap(name string) (*CMap, bool) {
 func hexCode(s string) uint32 {
 	v, _ := strconv.ParseUint(s, 16, 32)
 	return uint32(v)
+}
+
+// uniRun is a run of CIDs standing for consecutive characters.
+type uniRun struct{ lo, hi, uni uint16 }
+
+var (
+	uniTablesMu sync.Mutex
+	uniTables   = map[string][]uniRun{}
+)
+
+// cidUnicode returns what every CID of a character collection stands for. A
+// document that names a collection and embeds neither a font nor a
+// /ToUnicode says nothing else about what its text is. Nothing is decoded
+// until a document uses the collection.
+func cidUnicode(ordering string) []uniRun {
+	uniTablesMu.Lock()
+	defer uniTablesMu.Unlock()
+	if t, ok := uniTables[ordering]; ok {
+		return t
+	}
+	t := decodeCIDUnicode(cidUnicodeTables[ordering])
+	uniTables[ordering] = t
+	return t
+}
+
+// decodeCIDUnicode reads the runs back: three varints each, the first CID
+// past the end of the run before, the length, and the signed step from the
+// character the run before ended on.
+func decodeCIDUnicode(enc string) []uniRun {
+	if enc == "" {
+		return nil
+	}
+	data, err := io.ReadAll(flate.NewReader(strings.NewReader(enc)))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var out []uniRun
+	var cid, uni int
+	for i := 0; i < len(data); {
+		gap, n := uvarint(data, i)
+		if n == 0 {
+			break
+		}
+		i = n
+		length, n := uvarint(data, i)
+		if n == 0 {
+			break
+		}
+		i = n
+		step, n := uvarint(data, i)
+		if n == 0 {
+			break
+		}
+		i = n
+		cid += gap
+		uni += unzigzag(step)
+		if cid < 0 || cid+length > 0xffff || uni < 0 || uni+length > 0xffff {
+			break
+		}
+		out = append(out, uniRun{uint16(cid), uint16(cid + length), uint16(uni)})
+		cid += length + 1
+		uni += length + 1
+	}
+	return out
+}
+
+// uvarint reads one varint and returns where it ended, or zero for a value
+// that runs off the end or does not fit.
+func uvarint(b []byte, i int) (int, int) {
+	v, shift := 0, 0
+	for ; i < len(b); i++ {
+		if shift > 28 {
+			return 0, 0
+		}
+		v |= int(b[i]&0x7f) << shift
+		if b[i] < 0x80 {
+			return v, i + 1
+		}
+		shift += 7
+	}
+	return 0, 0
+}
+
+func unzigzag(v int) int {
+	if v&1 == 0 {
+		return v >> 1
+	}
+	return -(v >> 1) - 1
+}
+
+// rune returns the character a CID stands for, and zero when the collection
+// does not say.
+func uniRuneOf(t []uniRun, cid uint32) rune {
+	if cid > 0xffff {
+		return 0
+	}
+	c := uint16(cid)
+	i, ok := slices.BinarySearchFunc(t, c, func(r uniRun, c uint16) int {
+		if r.hi < c {
+			return -1
+		}
+		if r.lo > c {
+			return 1
+		}
+		return 0
+	})
+	if !ok {
+		return 0
+	}
+	return rune(t[i].uni + (c - t[i].lo))
 }

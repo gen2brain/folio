@@ -17,6 +17,10 @@ const (
 	lineDrift = 0.8
 )
 
+// dupTol is how far apart, as a fraction of the narrower advance, two of the
+// same character may be and still be one character drawn twice.
+const dupTol = 0.5
+
 // How far apart two baselines may be, as a fraction of the larger font size,
 // and still belong to the same paragraph.
 const blockGap = 1.6
@@ -269,9 +273,12 @@ func (d *TextDevice) joins(c TextChar, dir raster.Point, wmode int, size float32
 		return joinBreak
 	}
 	prev := d.line.Chars[n-1]
-	// A page that draws the same character twice in the same place is
-	// emboldening it, not saying it twice.
-	if prev.Rune == c.Rune && near(prev.Origin, c.Origin, 0.05*size) {
+	// A page that draws the same character twice in nearly the same place is
+	// emboldening it, or drawing it in a second font over the first, not
+	// saying it twice. The tolerance is a fraction of the narrower of the two
+	// advances, because what separates a double from a real repetition is
+	// that a repetition is a whole advance away.
+	if prev.Rune == c.Rune && near(prev.Origin, c.Origin, dupTol*minAdv(prev, c, size)) {
 		return joinDrop
 	}
 	// The gap is measured along the baseline from where the previous
@@ -427,6 +434,21 @@ func normalize(p raster.Point) raster.Point {
 }
 
 func dot(a, b raster.Point) float32 { return a.X*b.X + a.Y*b.Y }
+
+// minAdv is the narrower of two characters' advances, falling back to the
+// font size for a character that has none.
+func minAdv(a, b TextChar, size float32) float32 {
+	wa, wb := advOf(a), advOf(b)
+	if wa <= 0 || wb <= 0 {
+		return size
+	}
+	return min(wa, wb)
+}
+
+func advOf(c TextChar) float32 {
+	dx, dy := c.Quad.LR.X-c.Quad.LL.X, c.Quad.LR.Y-c.Quad.LL.Y
+	return float32(math.Hypot(float64(dx), float64(dy)))
+}
 
 func near(a, b raster.Point, tol float32) bool {
 	return abs32(a.X-b.X) <= tol && abs32(a.Y-b.Y) <= tol

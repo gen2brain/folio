@@ -2423,3 +2423,53 @@ func TestPageSVG(t *testing.T) {
 		}
 	}
 }
+
+// TestCIDUnicode checks the character collection standing in for a
+// /ToUnicode: a composite font that names one and embeds nothing says what
+// its text is only through the collection's own Unicode mapping.
+func TestCIDUnicode(t *testing.T) {
+	cases := []struct {
+		ordering string
+		cid      uint32
+		want     rune
+	}{
+		{"Japan1", 34, 'A'},
+		{"Japan1", 3284, '日'},
+		{"GB1", 34, 'A'},
+		{"GB1", 4559, '中'},
+		{"CNS1", 34, 'A'},
+		{"Korea1", 34, 'A'},
+		{"KR", 34, 'A'},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s/%d", tc.ordering, tc.cid), func(t *testing.T) {
+			d := buildPDF(t, []string{
+				"<< /Type /Catalog /Pages 2 0 R >>",
+				"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+				"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]" +
+					" /Resources << /Font << /F 4 0 R >> >> >>",
+				"<< /Type /Font /Subtype /Type0 /BaseFont /Nothing /Encoding /Identity-H" +
+					" /DescendantFonts [5 0 R] >>",
+				"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Nothing" +
+					" /CIDSystemInfo << /Registry (Adobe) /Ordering (" + tc.ordering + ") /Supplement 0 >> >>",
+			})
+			ft := d.font(Ref{Num: 4}, nil)
+			if ft == nil {
+				t.Fatal("no font")
+			}
+			if got := ft.Rune(Char{Code: tc.cid, CID: tc.cid}); got != tc.want {
+				t.Fatalf("CID %d in %s is %q, want %q", tc.cid, tc.ordering, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCIDUnicodePrefersTheIdeograph checks the rule the tables are built
+// under: where Unicode has a compatibility form of a character, the character
+// itself is what a CID stands for. CID 843 of Adobe-Japan1 is reachable from
+// the Kangxi radical as well as from the ideograph.
+func TestCIDUnicodePrefersTheIdeograph(t *testing.T) {
+	if got := uniRuneOf(cidUnicode("Japan1"), 3284); got == '⽇' {
+		t.Fatalf("CID 843 came back as the Kangxi radical")
+	}
+}

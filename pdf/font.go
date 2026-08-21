@@ -65,6 +65,9 @@ type Font struct {
 	toUnicode *CMap
 	// base is the base-14 name a substituted font resolved to.
 	base string
+	// ordering is the character collection a composite font's CIDs belong
+	// to, from /CIDSystemInfo.
+	ordering string
 
 	doc *Document
 }
@@ -443,6 +446,9 @@ func (d *Document) readType0(ft *Font, dict Dict) {
 	if df == nil {
 		return
 	}
+	if si := f.GetDict(df["CIDSystemInfo"]); si != nil {
+		ft.ordering = string(f.GetBytes(si["Ordering"]))
+	}
 	ft.defWidth = f.GetFloat(df["DW"], 1000)
 	ft.cidWidth = map[uint32]float64{}
 	readW(f, f.GetArray(df["W"]), ft.cidWidth)
@@ -588,6 +594,12 @@ func (ft *Font) Rune(c Char) rune {
 	}
 	if r == 0 && !ft.Type0 && c.Code < 256 {
 		r = font.RuneForName(ft.names[c.Code])
+	}
+	// The character collection comes before the font program, because a
+	// composite font that names one and does not embed a program is drawn
+	// with a substitute whose glyph names say nothing about the text.
+	if r == 0 && ft.Type0 && ft.ordering != "" {
+		r = uniRuneOf(cidUnicode(ft.ordering), c.CID)
 	}
 	if r == 0 && !ft.Type3 && ft.prog != nil {
 		r = font.RuneForName(ft.prog.GlyphName(ft.Glyph(c)))
