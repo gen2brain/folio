@@ -23,6 +23,7 @@ func specificity(a, b, c int) Specificity {
 type Selector struct {
 	parts []compound
 	spec  Specificity
+	elem  PseudoElement
 }
 
 // Spec returns the specificity of the selector.
@@ -37,8 +38,11 @@ type compound struct {
 	classes []string
 	attrs   []attrSel
 	pseudo  []pseudoSel
-	// never marks a compound nothing matches: a pseudo-element, or a pseudo
-	// class about a state a page under a book reader is never in.
+	// elem is the pseudo-element the compound names, which only the subject
+	// of a selector may carry.
+	elem PseudoElement
+	// never marks a compound nothing matches: a pseudo-element layout has no
+	// notion of, or a pseudo class about a state a book reader is never in.
 	never bool
 }
 
@@ -126,6 +130,12 @@ func parseSelector(toks []cssToken) (Selector, bool) {
 			}
 			reverse(s.parts)
 			s.spec = specificity(a, b, c)
+			s.elem = s.parts[0].elem
+			for i := 1; i < len(s.parts); i++ {
+				if s.parts[i].elem != PseudoNone {
+					s.parts[0].never = true
+				}
+			}
 			return s, true
 		}
 	}
@@ -262,23 +272,39 @@ func parseAttr(toks []cssToken) (attrSel, []cssToken, bool) {
 // every state a book reader has no notion of make the compound unmatchable.
 func parsePseudo(toks []cssToken, cur *compound, a, b, c *int) ([]cssToken, bool) {
 	toks = toks[1:]
+	double := false
 	if len(toks) > 0 && toks[0].kind == cssColon {
-		toks = toks[1:]
-		if len(toks) == 0 || toks[0].kind != cssIdent {
-			return toks, false
-		}
-		cur.never = true
-		*c++
-		return toks[1:], true
+		double, toks = true, toks[1:]
 	}
 	if len(toks) == 0 {
 		return toks, false
+	}
+	if double {
+		if toks[0].kind != cssIdent {
+			return toks, false
+		}
+		switch strings.ToLower(toks[0].value) {
+		case "before":
+			cur.elem = PseudoBefore
+		case "after":
+			cur.elem = PseudoAfter
+		default:
+			cur.never = true
+		}
+		*c++
+		return toks[1:], true
 	}
 	switch t := toks[0]; t.kind {
 	case cssIdent:
 		name := strings.ToLower(t.value)
 		switch name {
-		case "before", "after", "first-line", "first-letter":
+		case "before", "after":
+			cur.elem = PseudoBefore
+			if name == "after" {
+				cur.elem = PseudoAfter
+			}
+			*c++
+		case "first-line", "first-letter":
 			cur.never = true
 			*c++
 		case "root", "empty", "first-child", "last-child", "only-child",
@@ -430,8 +456,15 @@ func skipSpace(toks []cssToken) []cssToken {
 	return toks
 }
 
-// Match reports whether an element matches the selector.
-func (s Selector) Match(n *Node) bool { return matchParts(s.parts, n) }
+// Match reports whether an element matches the selector. A selector that
+// names a pseudo-element matches no element: what it styles is a box the
+// element generates, which Pseudo names.
+func (s Selector) Match(n *Node) bool {
+	return s.elem == PseudoNone && matchParts(s.parts, n)
+}
+
+// Pseudo is the pseudo-element the selector styles, if it names one.
+func (s Selector) Pseudo() PseudoElement { return s.elem }
 
 func matchParts(parts []compound, n *Node) bool {
 	if !matchCompound(&parts[0], n) {

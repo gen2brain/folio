@@ -110,13 +110,36 @@ func build(n *Node, st Styles) *box {
 		s.Float == FloatNone && s.Position != PosAbsolute {
 		b.kind = inlineBox
 	}
+	if g := generated(n, st, PseudoBefore); g != nil {
+		b.kids = append(b.kids, g)
+	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if k := build(c, st); k != nil {
 			b.kids = append(b.kids, k)
 		}
 	}
+	if g := generated(n, st, PseudoAfter); g != nil {
+		b.kids = append(b.kids, g)
+	}
 	if b.kind == blockBox && s.Display == DisplayListItem {
 		b.marker = listMarker(n, s)
+	}
+	return b
+}
+
+// generated is the box a rule asks for before or after the content of an
+// element, and nil when no rule asks for one.
+func generated(n *Node, st Styles, p PseudoElement) *box {
+	s := st.Pseudo(n, p)
+	if s == nil || !s.HasContent || s.Display == DisplayNone {
+		return nil
+	}
+	b := &box{style: s}
+	if s.Display == DisplayInline && s.Float == FloatNone && s.Position != PosAbsolute {
+		b.kind = inlineBox
+	}
+	if s.Content != "" {
+		b.kids = []*box{{kind: textBox, style: s, text: s.Content}}
 	}
 	return b
 }

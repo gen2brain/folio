@@ -254,6 +254,11 @@ type Style struct {
 	Float Float
 	Clear Clear
 
+	// Content is the text a rule generates before or after an element, and
+	// HasContent whether it generates a box there at all.
+	Content    string
+	HasContent bool
+
 	BreakBefore, BreakAfter PageBreak
 }
 
@@ -321,6 +326,24 @@ func (v value) parentWeight() int {
 		return 400
 	}
 	return v.parent.FontWeight
+}
+
+// content reads what a rule generates: the strings it is written as, joined,
+// and nothing at all for none, normal and the functions this does not read.
+func (v value) content() (string, bool) {
+	var b strings.Builder
+	found := false
+	for _, t := range v.toks {
+		switch t.kind {
+		case cssSpace:
+		case cssString:
+			b.WriteString(t.value)
+			found = true
+		default:
+			return "", false
+		}
+	}
+	return b.String(), found
 }
 
 func (v value) ident() string {
@@ -900,6 +923,8 @@ func applyProp(s *Style, name string, v value) bool {
 		case "right":
 			s.Float = FloatRight
 		}
+	case "content":
+		s.Content, s.HasContent = v.content()
 	case "clear":
 		switch v.ident() {
 		case "none":
@@ -1029,6 +1054,8 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.ListStyle = src.ListStyle
 	case "float":
 		dst.Float = src.Float
+	case "content":
+		dst.Content, dst.HasContent = src.Content, src.HasContent
 	case "clear":
 		dst.Clear = src.Clear
 	case "page-break-before", "break-before":

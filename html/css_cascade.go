@@ -6,14 +6,30 @@ import (
 	xhtml "golang.org/x/net/html"
 )
 
-// Styles is the computed style of every element of a tree.
-type Styles map[*Node]*Style
+// PseudoElement is one of the two boxes a rule may generate around the
+// content of an element.
+type PseudoElement uint8
+
+// The pseudo-elements a rule may style.
+const (
+	PseudoNone PseudoElement = iota
+	PseudoBefore
+	PseudoAfter
+)
+
+// Styles is the computed style of every element of a tree, and of what a rule
+// generates before or after one.
+type Styles struct {
+	of     map[*Node]*Style
+	before map[*Node]*Style
+	after  map[*Node]*Style
+}
 
 // Of returns the style of an element, and of the nearest element above a
 // text node.
 func (s Styles) Of(n *Node) *Style {
 	for ; n != nil; n = n.Parent {
-		if st, ok := s[n]; ok {
+		if st, ok := s.of[n]; ok {
 			return st
 		}
 	}
@@ -21,10 +37,46 @@ func (s Styles) Of(n *Node) *Style {
 	return &st
 }
 
+// Has reports whether an element has a style of its own.
+func (s Styles) Has(n *Node) bool {
+	_, ok := s.of[n]
+	return ok
+}
+
+// Pseudo returns the style of what a rule generates around an element, and
+// nil when no rule generates anything there.
+func (s Styles) Pseudo(n *Node, p PseudoElement) *Style {
+	switch p {
+	case PseudoBefore:
+		return s.before[n]
+	case PseudoAfter:
+		return s.after[n]
+	}
+	return nil
+}
+
+func (s *Styles) set(n *Node, p PseudoElement, st *Style) {
+	switch p {
+	case PseudoBefore:
+		if s.before == nil {
+			s.before = map[*Node]*Style{}
+		}
+		s.before[n] = st
+	case PseudoAfter:
+		if s.after == nil {
+			s.after = map[*Node]*Style{}
+		}
+		s.after[n] = st
+	default:
+		s.of[n] = st
+	}
+}
+
 // Cascade computes the style of every element of a tree. The sheets are given
 // in the order they are read, the user agent sheet first.
 func Cascade(root *Node, media Media, sheets ...*Stylesheet) Styles {
-	c := cascader{media: media, out: Styles{}, medium: orDefault(media.FontSize, DefaultFontSize)}
+	c := cascader{media: media, out: Styles{of: map[*Node]*Style{}},
+		medium: orDefault(media.FontSize, DefaultFontSize)}
 	c.rem = c.medium
 	for _, s := range sheets {
 		if s == nil {
@@ -59,8 +111,13 @@ type cascader struct {
 
 func (c *cascader) walk(n *Node, parent *Style) {
 	if n.Type == xhtml.ElementNode {
-		s := c.compute(n, parent)
-		c.out[n] = s
+		s := c.compute(n, parent, PseudoNone)
+		c.out.set(n, PseudoNone, s)
+		for _, p := range [...]PseudoElement{PseudoBefore, PseudoAfter} {
+			if g := c.compute(n, s, p); g != nil {
+				c.out.set(n, p, g)
+			}
+		}
 		if parentElement(n) == nil {
 			c.rem = s.FontSize
 		}
@@ -97,10 +154,12 @@ func weightOf(o Origin, important bool, spec Specificity, order int) uint64 {
 	return rank<<61 | uint64(spec&maxSpecificity)<<31 | uint64(min(order, 1<<31-1))
 }
 
-func (c *cascader) compute(n *Node, parent *Style) *Style {
+// compute is the cascade over one element, or over one of the boxes a rule
+// generates around it, which is nil when no rule generates one.
+func (c *cascader) compute(n *Node, parent *Style, p PseudoElement) *Style {
 	win := make(map[string]cand)
 	for _, r := range c.rules {
-		spec, ok := matchRule(r.rule, n)
+		spec, ok := matchRule(r.rule, n, p)
 		if !ok {
 			continue
 		}
@@ -109,7 +168,11 @@ func (c *cascader) compute(n *Node, parent *Style) *Style {
 			add(win, d, weightOf(r.origin, d.Important, spec, r.order))
 		}
 	}
-	if attr := Attr(n, "style"); attr != "" {
+	if p != PseudoNone {
+		if len(win) == 0 {
+			return nil
+		}
+	} else if attr := Attr(n, "style"); attr != "" {
 		for _, d := range parseInline(attr) {
 			add(win, &d, weightOf(OriginAuthor, d.Important, maxSpecificity, 1<<31-1))
 		}
@@ -158,11 +221,12 @@ func add(win map[string]cand, d *Declaration, w uint64) {
 }
 
 // matchRule returns the specificity of the strongest selector of a rule that
-// the element matches.
-func matchRule(r *Rule, n *Node) (Specificity, bool) {
+// the element matches, for the element itself or for one of the two boxes a
+// rule may generate around it.
+func matchRule(r *Rule, n *Node, p PseudoElement) (Specificity, bool) {
 	best, ok := Specificity(0), false
 	for _, sel := range r.Selectors {
-		if sel.spec >= best && sel.Match(n) {
+		if sel.elem == p && sel.spec >= best && matchParts(sel.parts, n) {
 			best, ok = sel.spec, true
 		}
 	}

@@ -687,7 +687,7 @@ func (d *Document) Stylesheets(path string, root *Node) []*Stylesheet {
 func (d *Document) StylePart(path string, media Media) (*Node, Styles, error) {
 	root, err := d.ParsePart(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, Styles{}, err
 	}
 	return root, Cascade(root, media, d.Stylesheets(path, root)...), nil
 }

@@ -646,6 +646,9 @@ func TestCSSSelectors(t *testing.T) {
 		{`a:hover`, ""},
 		{`a:link`, ""},
 		{`p::before`, ""},
+		{`p:before`, ""},
+		{`p::first-line`, ""},
+		{`p::before em`, ""},
 		{`p, span`, "p1 p2 s1"},
 		{`html|p`, "p1 p2"},
 		{`*|p`, "p1 p2"},
@@ -1416,6 +1419,8 @@ func FuzzLayout(fu *testing.F) {
 	fu.Add("<div id=w><span id=a>x</span>y</div>",
 		"#w{position:relative;height:9px}#a{position:absolute;bottom:0;right:0}")
 	fu.Add("<p>Small Caps</p>", "p{font-variant:small-caps;letter-spacing:-9px;text-transform:capitalize}")
+	fu.Add("<div class=c><i class=f>f</i></div>",
+		".f{float:left;width:9px}.c::after{content:'';display:table;clear:both}i::before{content:'x'}")
 	fu.Fuzz(func(t *testing.T, body, sheet string) {
 		root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
 		if err != nil {
@@ -1569,6 +1574,123 @@ func TestLayoutFloat(t *testing.T) {
 	walk(d2.parts[0].root)
 	if len(lines) == 0 || lines[0].y < 200 {
 		t.Fatalf("cleared line at %v, want it below the float", lines)
+	}
+}
+
+// TestGeneratedContent checks the boxes a rule asks for before and after the
+// content of an element: what they say, that a later declaration takes the
+// box away again, and that they inherit from the element they hang off.
+func TestGeneratedContent(t *testing.T) {
+	d, p := styledPage(t, `p { margin: 0; color: red }
+		p::before { content: "X " } p:after { content: " Z" }`,
+		"<p>one</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
+	defer d.Close()
+	if got := p.Text(); got != "X one Z\n" {
+		t.Errorf("page text = %q", got)
+	}
+
+	// The reset every book copies from another book: a rule that asks for an
+	// empty box and then takes it away.
+	d2, p2 := styledPage(t, `q::before, q::after { content: ''; content: none }`,
+		"<p>a<q>b</q>c</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
+	defer d2.Close()
+	if got := p2.Text(); got != "abc\n" {
+		t.Errorf("page text = %q", got)
+	}
+
+	d3, p3 := styledPage(t, `p::before { content: "A"; display: none }
+		 p::after { content: attr(title) }`,
+		"<p>one</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
+	defer d3.Close()
+	if got := p3.Text(); got != "one\n" {
+		t.Errorf("page text = %q", got)
+	}
+
+	root, err := Parse([]byte(`<html><body><p id="i">one</p></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheet := ParseCSS([]byte(`p { color: red } p::before { content: "x" }
+		p::before { font-weight: bold }`), OriginAuthor)
+	st := Cascade(root, Media{Width: 600, Height: 800, FontSize: 16}, UserAgent(), sheet)
+	var el *Node
+	Walk(root, func(n *Node) bool {
+		if Attr(n, "id") == "i" {
+			el = n
+		}
+		return true
+	})
+	if el == nil {
+		t.Fatal("no paragraph")
+	}
+	g := st.Pseudo(el, PseudoBefore)
+	if g == nil {
+		t.Fatal("nothing generated before the paragraph")
+	}
+	if g.Content != "x" || !g.HasContent || g.FontWeight != 700 {
+		t.Errorf("generated %q, weight %d", g.Content, g.FontWeight)
+	}
+	if g.Color != (Color{R: 255, A: 255}) {
+		t.Errorf("generated colour %v, want the paragraph's", g.Color)
+	}
+	if st.Pseudo(el, PseudoAfter) != nil {
+		t.Error("something generated after the paragraph")
+	}
+	if st.Of(el).HasContent {
+		t.Error("the element itself generates content")
+	}
+}
+
+// TestLayoutClearfix checks the one thing a container needs generated content
+// for: a box after its floats, cleared, gives it their height.
+func TestLayoutClearfix(t *testing.T) {
+	const body = `<div class="c"><div class="f">f</div></div><p>after</p>`
+	const sheet = `* { margin: 0 } .f { float: left; width: 50px; height: 60px }`
+	find := func(d *Document) float32 {
+		t.Helper()
+		var out float32 = -1
+		var walk func(*box)
+		walk = func(b *box) {
+			for i := range b.lines {
+				for _, f := range b.lines[i].frags {
+					if f.text == "after" && out < 0 {
+						out = b.y
+					}
+				}
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		if out < 0 {
+			t.Fatal("no paragraph")
+		}
+		return out
+	}
+	d, _ := styledPage(t, sheet, body, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+	defer d.Close()
+	if y := find(d); y != 0 {
+		t.Errorf("without a clearfix the paragraph is at %v, want 0", y)
+	}
+	d2, _ := styledPage(t, sheet+` .c::after { content: ""; display: table; clear: both }`,
+		body, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+	defer d2.Close()
+	if y := find(d2); y != 60 {
+		t.Errorf("with a clearfix the paragraph is at %v, want 60", y)
+	}
+}
+
+// TestLayoutFloatText checks that what a float says is extracted. Its text
+// is not on the lines of the block it was written in, so a walk that stops at
+// the lines of a block loses it.
+func TestLayoutFloatText(t *testing.T) {
+	d, p := styledPage(t, `p { margin: 0 } .f { float: left; width: 30px }`,
+		`<p>one <span class="f">FLOAT</span> two</p>`,
+		&LayoutOptions{Width: 400, Height: 400, Margin: 0})
+	defer d.Close()
+	if got := p.Text(); got != "one two\nFLOAT\n" {
+		t.Errorf("page text = %q", got)
 	}
 }
 

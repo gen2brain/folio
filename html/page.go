@@ -281,6 +281,14 @@ func (t *textCollector) walk(b *box) {
 				t.b.WriteByte('\n')
 			}
 		}
+		// The rest of the children are the inline boxes the lines were made
+		// of, and say nothing the lines do not, except a float or a placed
+		// box, which was laid out on its own.
+		for _, k := range b.kids {
+			if k.floated() || k.placed() {
+				t.walk(k)
+			}
+		}
 		return
 	}
 	for _, k := range b.kids {
