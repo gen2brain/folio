@@ -34,9 +34,14 @@ type layout struct {
 	// placed against: the nearest ancestor that is positioned itself. posH is
 	// zero when that box has no height of its own yet.
 	posX, posY, posW, posH float32
+	// fonts are the faces the book brings with it for this part.
+	fonts *fontSet
 	// root is the tree run laid out.
 	root *box
 }
+
+// face is the face a style asks for, out of what the part has.
+func (l *layout) face(s *Style) face { return styleFace(s, l.fonts) }
 
 // layoutProbes is how many trial layouts one part may measure with.
 const layoutProbes = 1 << 16
@@ -45,7 +50,7 @@ const layoutProbes = 1 << 16
 // cell, or a trial of either.
 func (l *layout) sub(y float32) *layout {
 	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y,
-		posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH}
+		fonts: l.fonts, posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH}
 }
 
 // spend takes one trial layout out of the budget.
@@ -267,6 +272,9 @@ func (l *layout) flow(b *box, x, avail float32) {
 	if l.pend != 0 {
 		l.waiting = append(l.waiting, b)
 	}
+	if b.marker != "" {
+		b.markerFace = l.face(s)
+	}
 	l.y += bt + pt
 	top := l.y
 	savedX, savedY, savedW, savedH := l.posX, l.posY, l.posW, l.posH
@@ -411,7 +419,7 @@ func (l *layout) inline(b *box, x, w float32) {
 		return
 	}
 
-	sf := styleFace(b.style)
+	sf := l.face(b.style)
 	above, below := strut(b.style, sf)
 	indent := b.style.TextIndent.Resolve(w)
 	start, prev := 0, -1
@@ -501,7 +509,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	hi = trimEnd(c.str, hi)
 	l.apply()
 
-	sf := styleFace(b.style)
+	sf := l.face(b.style)
 	above, below := strut(b.style, sf)
 	line := lineBox{y: l.y}
 
@@ -714,7 +722,7 @@ func (c *inlineCtx) addText(s string, st *Style) {
 		return
 	}
 	s = transform(s, st.TextTransform)
-	f := styleFace(st)
+	f := c.l.face(st)
 	first := -1
 	put := func(run string) {
 		c.open(st, f, nil)
@@ -807,7 +815,7 @@ func transform(s string, t TextTransform) string {
 }
 
 func (c *inlineCtx) addBreak(s *Style) {
-	c.open(s, styleFace(s), nil)
+	c.open(s, c.l.face(s), nil)
 	c.space = false
 	c.text.WriteByte('\n')
 	c.begun = true
@@ -823,12 +831,12 @@ func (c *inlineCtx) addImage(b *box) {
 		return
 	}
 	c.flushSpace()
-	c.open(b.style, styleFace(b.style), pic)
+	c.open(b.style, c.l.face(b.style), pic)
 	c.text.WriteString(objectChar)
 	c.begun = true
 	n := len(c.items) - 1
 	c.items[n].iw, c.items[n].ih = pictureSize(b, pic, c.avail)
-	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: styleFace(b.style)})
+	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: c.l.face(b.style)})
 }
 
 // itemAt is which item a byte of the text belongs to.

@@ -1268,7 +1268,7 @@ func TestLayoutWraps(t *testing.T) {
 	if got := strings.Join(strings.Fields(p.Text()), " "); got != strings.TrimSpace(long) {
 		t.Errorf("the words changed: %q", got)
 	}
-	f := styleFace(&Style{FontSize: 16, FontWeight: 400})
+	f := styleFace(&Style{FontSize: 16, FontWeight: 400}, nil)
 	for _, ln := range lines {
 		if w := f.width(ln); w > 300 {
 			t.Errorf("line %q is %.1f wide, want at most 300", ln, w)
@@ -1767,7 +1767,7 @@ func TestLayoutPositioned(t *testing.T) {
 // TestLayoutFallbackFace checks that a character the base fourteen cannot
 // draw finds a face that can, which is what a book in any other script needs.
 func TestLayoutFallbackFace(t *testing.T) {
-	base := styleFace(&Style{FontSize: 16, FontWeight: 400})
+	base := styleFace(&Style{FontSize: 16, FontWeight: 400}, nil)
 	if base.m.has('日') {
 		t.Skip("the substitute already has the ideographs")
 	}
@@ -1814,5 +1814,78 @@ func TestLayoutFallbackFace(t *testing.T) {
 	}
 	if !hasInk(img) {
 		t.Error("the page rendered blank")
+	}
+}
+
+func TestCSSFontFace(t *testing.T) {
+	s := ParseCSS([]byte(`
+		@font-face { font-family: "Old Standard"; src: url(a.otf) format("opentype") }
+		@font-face { font-family: Old Standard; font-weight: bold; font-style: italic;
+		             src: local("Nothing"), url("b.woff") format("woff"), url(c.ttf) }
+		@font-face { src: url(d.otf) }
+		@font-face { font-family: X }
+		p { color: red }
+	`), OriginAuthor)
+	if len(s.Errors) > 0 {
+		t.Fatalf("errors %v", s.Errors)
+	}
+	if len(s.Rules) != 1 {
+		t.Fatalf("%d rules, want the p to survive the at-rules", len(s.Rules))
+	}
+	if len(s.Faces) != 2 {
+		t.Fatalf("%d faces, want the two that name a family and a source: %+v", len(s.Faces), s.Faces)
+	}
+	if got := s.Faces[0]; got.Family != "Old Standard" || got.Weight != 400 || got.Italic ||
+		len(got.Src) != 1 || got.Src[0] != "a.otf" {
+		t.Errorf("first = %+v", got)
+	}
+	// A local face is not a place this can read, so it is left out; the two
+	// urls after it stay in the order they were written.
+	if got := s.Faces[1]; got.Weight != 700 || !got.Italic ||
+		len(got.Src) != 2 || got.Src[0] != "b.woff" || got.Src[1] != "c.ttf" {
+		t.Errorf("second = %+v", got)
+	}
+
+	resolveFaces(s, "EPUB/css/main.css")
+	if got := s.Faces[0].Src[0]; got != "EPUB/css/a.otf" {
+		t.Errorf("resolved to %q", got)
+	}
+}
+
+// TestLayoutEmbeddedFont checks that a book which brings a font with it is
+// drawn in it, whatever the machine has.
+func TestLayoutEmbeddedFont(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(cmp.Or(os.Getenv("CONFORMANCE_DIR"), "/temp/pdf"),
+		"corpus/books/epub3/packed/wasteland-woff-obf.epub"))
+	if err != nil {
+		t.Skip("no corpus")
+	}
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if len(d.obfuscated) == 0 {
+		t.Fatal("the book says its fonts are scrambled and none was recorded")
+	}
+	it := d.Spine()[len(d.Spine())/2]
+	root, err := d.ParsePart(it.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := newFontSet(d, d.Stylesheets(it.Path, root))
+	if set == nil {
+		t.Fatal("the book declares no faces")
+	}
+	prog := set.pick([]string{"OldStandard"}, false, false)
+	if prog == nil {
+		t.Fatal("the face the book brings did not load")
+	}
+	if prog.Family != "Old Standard TT" {
+		t.Errorf("loaded %q", prog.Family)
+	}
+	// The same file is read once however many parts name it.
+	if again := set.pick([]string{"OldStandard"}, false, false); again != prog {
+		t.Error("the font was read twice")
 	}
 }

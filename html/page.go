@@ -107,7 +107,7 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 		if opt.UserSheet != nil {
 			sheets = append(sheets[:1:1], append([]*Stylesheet{opt.UserSheet}, sheets[1:]...)...)
 		}
-		l := &layout{doc: d, path: it.Path}
+		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets)}
 		l.run(buildBoxes(root, Cascade(root, media, sheets...)), cw)
 		errs = append(errs, l.errs...)
 		if len(l.spans) == 0 {

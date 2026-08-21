@@ -23,10 +23,23 @@ const (
 type Stylesheet struct {
 	Rules   []Rule
 	Imports []Import
-	Origin  Origin
+	// Faces are the fonts the sheet's @font-face rules bring with them.
+	Faces  []FontFace
+	Origin Origin
 	// Errors are what the sheet dropped: a selector that did not parse, a
 	// declaration with no colon.
 	Errors []error
+}
+
+// FontFace is what an @font-face rule describes: a family the book brings
+// with it, and where in the container the program is.
+type FontFace struct {
+	Family string
+	// Src are the parts the rule names, in the order it names them, already
+	// resolved against the sheet they were written in.
+	Src    []string
+	Weight int
+	Italic bool
 }
 
 // Import is what an @import rule asks for.
@@ -303,11 +316,67 @@ func (p *cssParser) atRule(name string, media []MediaList) {
 			Path:  path,
 			Media: parseMediaList(skipSpace(rest)),
 		})
+	case "font-face":
+		if !brace {
+			return
+		}
+		if f, ok := fontFace(p.declarations()); ok {
+			p.sheet.Faces = append(p.sheet.Faces, f)
+		}
 	default:
 		if brace {
 			p.skipBlock()
 		}
 	}
+}
+
+// fontFace reads the declarations of an @font-face rule.
+func fontFace(decls []Declaration) (FontFace, bool) {
+	f := FontFace{Weight: 400}
+	for i := range decls {
+		v := value{toks: decls[i].value}
+		switch decls[i].Name {
+		case "font-family":
+			if names, ok := v.families(); ok {
+				f.Family = names[0]
+			}
+		case "font-weight":
+			if w, ok := v.fontWeight(400); ok {
+				f.Weight = w
+			}
+		case "font-style":
+			f.Italic = v.ident() == "italic" || v.ident() == "oblique"
+		case "src":
+			f.Src = fontSrc(decls[i].value)
+		}
+	}
+	return f, f.Family != "" && len(f.Src) > 0
+}
+
+// fontSrc reads the src of an @font-face rule, which is a list of places the
+// program may be. A local face is skipped: what a book brings with it is what
+// it means, and the machine's own fonts are found by name anyway.
+func fontSrc(toks []cssToken) []string {
+	var out []string
+	for _, part := range splitCommas(toks) {
+		part = skipSpace(part)
+		if len(part) == 0 {
+			continue
+		}
+		switch t := part[0]; {
+		case t.kind == cssURL && t.value != "":
+			out = append(out, t.value)
+		case t.kind == cssFunction && strings.EqualFold(t.value, "url"):
+			args, _, ok := parseArgs(part)
+			if !ok {
+				continue
+			}
+			if a := skipSpace(args); len(a) == 1 && a[0].kind == cssString && a[0].value != "" {
+				out = append(out, a[0].value)
+			}
+		}
+	}
+	return out
 }
 
 // prelude reads what comes before a block, and reports whether a block
@@ -601,6 +670,7 @@ func (d *Document) Stylesheets(path string, root *Node) []*Stylesheet {
 			}
 			s := ParseCSS([]byte(rawText(n)), OriginAuthor)
 			under(s, mediaOf(n))
+			resolveFaces(s, path)
 			for _, imp := range s.Imports {
 				out = d.importSheet(out, Resolve(path, imp.Path), nestMedia(mediaOf(n), imp.Media), seen, 1)
 			}
@@ -633,10 +703,21 @@ func (d *Document) importSheet(out []*Stylesheet, path string, media []MediaList
 	}
 	s := ParseCSS(b, OriginAuthor)
 	under(s, media)
+	resolveFaces(s, path)
 	for _, imp := range s.Imports {
 		out = d.importSheet(out, Resolve(path, imp.Path), nestMedia(media, imp.Media), seen, depth+1)
 	}
 	return append(out, s)
+}
+
+// resolveFaces turns the places an @font-face names into the paths the
+// container knows its parts by.
+func resolveFaces(s *Stylesheet, base string) {
+	for i := range s.Faces {
+		for j, src := range s.Faces[i].Src {
+			s.Faces[i].Src[j] = Resolve(base, src)
+		}
+	}
 }
 
 // under puts every rule of a sheet behind the conditions the sheet itself was

@@ -37,8 +37,10 @@ type box struct {
 	// picture an image box draws.
 	marker string
 	img    *picture
-	// natural is how wide a table came out, which its lines do not say.
-	natural float32
+	// natural is how wide a table came out, which its lines do not say, and
+	// markerFace what a list item draws its marker with.
+	natural    float32
+	markerFace face
 }
 
 // lineBox is one line of a block.

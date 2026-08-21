@@ -196,11 +196,15 @@ func (m *faceMetrics) advance(r rune) float32 {
 	return m.space
 }
 
-// styleFace picks the face a computed style asks for: what the machine has
-// for one of the families it names, and one of the base fourteen otherwise.
-func styleFace(s *Style) face {
+// styleFace picks the face a computed style asks for: what the book brings
+// with it for one of the families it names, then what the machine has, then
+// one of the base fourteen.
+func styleFace(s *Style, set *fontSet) face {
 	bold, italic := s.FontWeight >= 600, s.FontStyle != StyleNormal
-	prog := namedFont(s.FontFamily, bold, italic)
+	prog := set.pick(s.FontFamily, bold, italic)
+	if prog == nil {
+		prog = namedFont(s.FontFamily, bold, italic)
+	}
 	if prog == nil {
 		kind := familySerif
 		for _, name := range s.FontFamily {
@@ -298,3 +302,102 @@ func (f face) gid(r rune) int { return int(f.m.glyph(r).gid) }
 // baseline at its size.
 func (f face) ascent() float32  { return f.m.ascent * f.size }
 func (f face) descent() float32 { return -f.m.descent * f.size }
+
+// fontSet are the faces a book brings with it, from the @font-face rules of
+// the sheets that style a part.
+type fontSet struct {
+	doc   *Document
+	faces map[string][]FontFace
+}
+
+// newFontSet collects what the sheets declare, in the order they are read: a
+// family declared twice resolves to the last one that said it.
+func newFontSet(d *Document, sheets []*Stylesheet) *fontSet {
+	var set *fontSet
+	for _, s := range sheets {
+		for _, f := range s.Faces {
+			key := foldFamily(f.Family)
+			if key == "" {
+				continue
+			}
+			if set == nil {
+				set = &fontSet{doc: d, faces: map[string][]FontFace{}}
+			}
+			set.faces[key] = append(set.faces[key], f)
+		}
+	}
+	return set
+}
+
+// pick returns the face a book brings for the first family it names that it
+// has one for, and nil when it brings none of them.
+func (s *fontSet) pick(families []string, bold, italic bool) *font.Font {
+	if s == nil {
+		return nil
+	}
+	for _, name := range families {
+		if prog := s.find(name, bold, italic); prog != nil {
+			return prog
+		}
+	}
+	return nil
+}
+
+// find returns the face a book brings for a family at a weight and a slant,
+// and nil when it brings none.
+func (s *fontSet) find(family string, bold, italic bool) *font.Font {
+	list := s.faces[foldFamily(family)]
+	if len(list) == 0 {
+		return nil
+	}
+	want := 400
+	if bold {
+		want = 700
+	}
+	best, score := -1, -1
+	for i, f := range list {
+		v := 1000 - abs(f.Weight-want)
+		if f.Italic == italic {
+			v += 500
+		}
+		if v > score {
+			best, score = i, v
+		}
+	}
+	for _, src := range list[best].Src {
+		if prog := s.doc.embeddedFont(src); prog != nil {
+			return prog
+		}
+	}
+	return nil
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// embeddedFont reads and parses one of the font programs a book carries, once
+// per book however many parts name it.
+func (d *Document) embeddedFont(path string) *font.Font {
+	d.fontMu.Lock()
+	if prog, ok := d.fonts[path]; ok {
+		d.fontMu.Unlock()
+		return prog
+	}
+	d.fontMu.Unlock()
+
+	var prog *font.Font
+	if b, err := d.Read(path); err == nil {
+		prog, _ = font.Parse(b)
+	}
+	d.fontMu.Lock()
+	if d.fonts == nil {
+		d.fonts = map[string]*font.Font{}
+	}
+	d.fonts[path] = prog
+	d.fontMu.Unlock()
+	return prog
+}

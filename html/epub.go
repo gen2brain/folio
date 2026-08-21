@@ -3,12 +3,15 @@ package html
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha1"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // openEPUB reads the container and the package document it points at.
@@ -23,20 +26,22 @@ func openEPUB(r io.ReaderAt, size int64) (*Document, error) {
 			files[f.Name] = f
 		}
 	}
-	d := &Document{
-		kind: KindEPUB,
-		read: func(p string) ([]byte, error) {
-			f, ok := files[p]
-			if !ok {
-				return nil, fmt.Errorf("%w: %s", ErrNotFound, p)
-			}
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer rc.Close()
-			return io.ReadAll(io.LimitReader(rc, maxPartBytes))
-		},
+	d := &Document{kind: KindEPUB}
+	d.read = func(p string) ([]byte, error) {
+		f, ok := files[p]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, p)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(io.LimitReader(rc, maxPartBytes))
+		if err != nil {
+			return nil, err
+		}
+		return d.deobfuscate(p, b), nil
 	}
 
 	root, err := d.epubRoot()
@@ -50,8 +55,134 @@ func openEPUB(r io.ReaderAt, size int64) (*Document, error) {
 	if err := d.readPackage(root); err != nil {
 		return nil, err
 	}
+	d.readObfuscation()
 	d.readNav()
 	return d, nil
+}
+
+// The two ways a publisher scrambles an embedded font, and how much of the
+// file each touches.
+const (
+	obfIDPF  = "http://www.idpf.org/2008/embedding"
+	obfAdobe = "http://ns.adobe.com/pdf/enc#RC"
+	idpfHead = 1040
+	adobHead = 1024
+)
+
+// readObfuscation reads META-INF/encryption.xml, which says which parts are
+// scrambled and how. Nothing else in a book is encrypted this way: the
+// mechanism exists for embedded fonts and the key is the book's own
+// identifier.
+func (d *Document) readObfuscation() {
+	b, err := d.Read("META-INF/encryption.xml")
+	if err != nil {
+		return
+	}
+	// An attribute is read off the element that carries it, which no path
+	// expression reaches into.
+	var e struct {
+		Data []struct {
+			Method struct {
+				Algorithm string `xml:"Algorithm,attr"`
+			} `xml:"EncryptionMethod"`
+			Cipher struct {
+				Ref struct {
+					URI string `xml:"URI,attr"`
+				} `xml:"CipherReference"`
+			} `xml:"CipherData"`
+		} `xml:"EncryptedData"`
+	}
+	if unmarshal(b, &e) != nil {
+		return
+	}
+	for _, v := range e.Data {
+		uri := v.Cipher.Ref.URI
+		if uri == "" {
+			continue
+		}
+		var key []byte
+		switch v.Method.Algorithm {
+		case obfIDPF:
+			key = idpfKey(d.meta.Identifier)
+		case obfAdobe:
+			key = adobeKey(d.meta.Identifier)
+		default:
+			continue
+		}
+		if len(key) == 0 {
+			continue
+		}
+		if d.obfuscated == nil {
+			d.obfuscated = map[string][]byte{}
+		}
+		d.obfuscated[unescapeURI(uri)] = key
+	}
+}
+
+// deobfuscate undoes the scrambling of an embedded font: the first bytes of
+// the file are exclusive ored with a key made from the book's identifier.
+func (d *Document) deobfuscate(p string, b []byte) []byte {
+	key, ok := d.obfuscated[p]
+	if !ok || len(key) == 0 {
+		return b
+	}
+	n := adobHead
+	if len(key) == sha1.Size {
+		n = idpfHead
+	}
+	for i := 0; i < n && i < len(b); i++ {
+		b[i] ^= key[i%len(key)]
+	}
+	return b
+}
+
+// idpfKey is the SHA-1 of the identifier with every space taken out, which is
+// what the IDPF font mangling algorithm asks for.
+func idpfKey(id string) []byte {
+	var b strings.Builder
+	for _, r := range id {
+		if !unicode.IsSpace(r) {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return nil
+	}
+	sum := sha1.Sum([]byte(b.String()))
+	return sum[:]
+}
+
+// adobeKey is the sixteen bytes the hexadecimal digits of a UUID identifier
+// spell, which Adobe's method uses.
+func adobeKey(id string) []byte {
+	if i := strings.LastIndex(id, "urn:uuid:"); i >= 0 {
+		id = id[i+len("urn:uuid:"):]
+	}
+	var hex []byte
+	for i := 0; i < len(id) && len(hex) < 32; i++ {
+		if c := id[i]; isHexByte(c) {
+			hex = append(hex, c)
+		}
+	}
+	if len(hex) != 32 {
+		return nil
+	}
+	key := make([]byte, 16)
+	for i := range key {
+		key[i] = byte(hexValue(hex[2*i])<<4 | hexValue(hex[2*i+1]))
+	}
+	return key
+}
+
+// unescapeURI undoes the percent escaping a cipher reference may carry.
+func unescapeURI(s string) string {
+	if !strings.ContainsRune(s, '%') {
+		return s
+	}
+	if v, err := url.PathUnescape(s); err == nil {
+		return v
+	}
+	return s
 }
 
 // maxPartBytes bounds what one part of a book may decompress to.

@@ -45,10 +45,10 @@
 // does. Page.Text is what the page says and Page.Run draws it through a
 // gfx.Device, which is the seam a PDF page draws through as well.
 //
-// A face comes from the machine when it has one for a family the book names,
-// and from the base fourteen otherwise. A character no face in hand can draw
-// finds one that can, so a book in any script the machine has a font for
-// renders.
+// A face comes from the book itself when an @font-face rule brings one, from
+// the machine when it has one for a family the book names, and from the base
+// fourteen otherwise. A character no face in hand can draw finds one that
+// can, so a book in any script the machine has a font for renders.
 //
 // Layout is block and inline formatting with the line breaking of UAX #14:
 // margins, padding, borders, floats and clearance, tables with cells that
@@ -70,6 +70,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gen2brain/pdf/font"
 )
 
 // Errors returned by this package.
@@ -160,9 +162,15 @@ type Document struct {
 	read     func(path string) ([]byte, error)
 	// base is the directory the paths are relative to.
 	base string
-	// tocID is what the spine calls the EPUB 2 table of contents.
-	tocID    string
-	headings sync.Once
+	// tocID is what the spine calls the EPUB 2 table of contents, and
+	// obfuscated the parts a publisher scrambled and the key to each.
+	obfuscated map[string][]byte
+	tocID      string
+	headings   sync.Once
+
+	// fontMu guards the font programs the book carries, read once each.
+	fontMu sync.Mutex
+	fonts  map[string]*font.Font
 
 	// layoutMu guards what Layout produced, which every page reads.
 	layoutMu sync.Mutex

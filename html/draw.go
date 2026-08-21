@@ -76,7 +76,10 @@ func (p *painter) line(ln *lineBox) {
 // marker draws what a list item carries before its first line, hanging in the
 // padding the user agent sheet leaves for it.
 func (p *painter) marker(b *box, ln *lineBox) {
-	f := styleFace(b.style)
+	f := b.markerFace
+	if f.prog == nil {
+		return
+	}
 	w := f.width(b.marker)
 	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, 0)
 }

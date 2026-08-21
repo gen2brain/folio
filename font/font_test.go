@@ -367,3 +367,64 @@ func TestScriptOf(t *testing.T) {
 		}
 	}
 }
+
+// TestWOFF unpacks the container a web font is delivered in, which is a
+// deflated table at a time.
+func TestWOFF(t *testing.T) {
+	src := Standard("Times-Roman")
+	if src == nil {
+		t.Skip("no substitute to pack")
+	}
+	for _, name := range []string{"", "wOFF"} {
+		if _, err := Parse([]byte(name)); err == nil {
+			t.Errorf("%q parsed as a font", name)
+		}
+	}
+	// A truncated container is refused rather than read past.
+	b := append([]byte("wOFF"), make([]byte, 60)...)
+	if _, err := Parse(b); err == nil {
+		t.Error("an empty WOFF parsed")
+	}
+}
+
+// TestWOFFCorpus reads the web fonts of the corpus, which is the only place
+// this has real ones.
+func TestWOFFCorpus(t *testing.T) {
+	dir := envOr("PDF_REF_DIR", "/temp/pdf")
+	// The obfuscated copies of a book are scrambled until the container
+	// unscrambles them, which is the html package's work and not this one's.
+	all, _ := filepath.Glob(filepath.Join(dir, "corpus/books/epub3/30/*/EPUB/*.woff"))
+	var paths []string
+	for _, p := range all {
+		if !strings.Contains(p, ".obf.") {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		t.Skip("no web fonts in the corpus")
+	}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		f, err := Parse(b)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			continue
+		}
+		if f.Family == "" || f.NumGlyphs() == 0 || f.GIDForRune('A') <= 0 {
+			t.Errorf("%s: family %q, %d glyphs, A is %d", p, f.Family, f.NumGlyphs(), f.GIDForRune('A'))
+		}
+		if f.GlyphPath(f.GIDForRune('A')) == nil {
+			t.Errorf("%s: the A has no outline", p)
+		}
+	}
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
