@@ -45,6 +45,11 @@
 // does. Page.Text is what the page says and Page.Run draws it through a
 // gfx.Device, which is the seam a PDF page draws through as well.
 //
+// A face comes from the machine when it has one for a family the book names,
+// and from the base fourteen otherwise. A character no face in hand can draw
+// finds one that can, so a book in any script the machine has a font for
+// renders.
+//
 // Layout is block and inline formatting with the line breaking of UAX #14:
 // margins, padding, borders, floats and clearance, tables with cells that
 // span rows and columns, relative and absolute positioning, text alignment,

@@ -37,9 +37,11 @@ type Document struct {
 	ocOff  map[Ref]bool
 	layers []Layer
 	usage  Usage
-	fbFont *Font
-	intent *ColorSpace
-	glyphs *raster.GlyphCache
+	// noSystemFonts stops a substitute being looked for outside the file.
+	noSystemFonts bool
+	fbFont        *Font
+	intent        *ColorSpace
+	glyphs        *raster.GlyphCache
 
 	images     map[imageKey]*imageEntry
 	imageHead  *imageEntry
@@ -367,6 +369,13 @@ const (
 	UsagePrint
 	UsageExport
 )
+
+// SetSystemFonts chooses whether a font the file does not embed may be
+// substituted with one the machine has, which is what a page in a script the
+// base fourteen cannot draw needs. It is on by default; turning it off makes
+// a render depend on nothing outside the file. It has to be called before the
+// first page is rendered.
+func (d *Document) SetSystemFonts(on bool) { d.noSystemFonts = !on }
 
 // Usage returns what the document is being rendered for.
 func (d *Document) Usage() Usage { return d.usage }

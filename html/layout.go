@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 )
 
 // layout flows a box tree down a column of a given width. Everything it
@@ -751,36 +750,39 @@ func (c *inlineCtx) addText(s string, st *Style) {
 	}
 }
 
-// write puts one run of text in, splitting it where small capitals need a
-// face of their own.
-func (c *inlineCtx) write(s string, st *Style, f face) {
+// write puts one run of text in, splitting it where the face has to change:
+// for the small capitals of a lower case run, and for a character the face in
+// hand has no glyph for.
+func (c *inlineCtx) write(s string, st *Style, base face) {
 	c.begun = true
-	if !st.SmallCaps {
-		c.text.WriteString(s)
-		return
+	small := smallCapsFace(base)
+	var run []rune
+	cur := base
+	flush := func() {
+		if len(run) == 0 {
+			return
+		}
+		c.open(st, cur, nil)
+		c.text.WriteString(string(run))
+		run = run[:0]
 	}
-	small := smallCapsFace(f)
-	for len(s) > 0 {
-		r, n := utf8.DecodeRuneInString(s)
-		lower := unicode.IsLower(r)
-		i := n
-		for i < len(s) {
-			r2, n2 := utf8.DecodeRuneInString(s[i:])
-			if unicode.IsLower(r2) != lower {
-				break
+	for _, r := range s {
+		f, out := base, r
+		if st.SmallCaps && unicode.IsLower(r) {
+			f, out = small, unicode.ToUpper(r)
+		}
+		if f.m != nil && !f.m.has(out) {
+			if fb := fallbackFace(f, out); fb.prog != nil {
+				f = fb
 			}
-			i += n2
 		}
-		run := s[:i]
-		if lower {
-			c.open(st, small, nil)
-			c.text.WriteString(strings.ToUpper(run))
-		} else {
-			c.open(st, f, nil)
-			c.text.WriteString(run)
+		if f != cur {
+			flush()
+			cur = f
 		}
-		s = s[i:]
+		run = append(run, out)
 	}
+	flush()
 }
 
 // transform is what text-transform asks for.

@@ -45,6 +45,11 @@
 // The interface and the devices are in the gfx package, which knows nothing
 // about PDF, and are aliased here so that one import is enough.
 //
+// A font the file does not embed is substituted: one of the base fourteen for
+// a Latin face, and one the machine has for a character collection they have
+// no glyphs for. SetSystemFonts(false) turns the second off, which makes a
+// render depend on nothing outside the file.
+//
 // A damaged file renders the part that could be read. What went wrong on the
 // way is collected in Document.Err rather than returned, unless
 // Options.Strict asks for the first of them.

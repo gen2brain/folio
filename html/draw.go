@@ -94,7 +94,7 @@ func (p *painter) text(s string, f face, st *Style, x, y, extra float32) {
 		adv := f.advance(r)
 		if r == ' ' {
 			adv += extra
-		} else if gid := f.prog.GIDForRune(r); gid > 0 {
+		} else if gid := f.gid(r); gid > 0 {
 			span.Items = append(span.Items, gfx.TextItem{
 				X: x, Y: y, GID: gid, Rune: r, Adv: adv / f.size,
 			})

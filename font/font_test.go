@@ -253,3 +253,117 @@ func TestStandardConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestSystemIndex asks the machine for what it has. There is nothing to
+// compare against on a machine with no fonts, so it skips there.
+func TestSystemIndex(t *testing.T) {
+	ix := systemIndex()
+	if len(ix.all) == 0 {
+		t.Skip("the machine has no fonts")
+	}
+	for _, e := range ix.all {
+		if e.family == "" {
+			t.Errorf("%s is indexed under no family", e.path)
+		}
+		if e.weight < 1 || e.weight > 1000 {
+			t.Errorf("%s has weight %d", e.path, e.weight)
+		}
+	}
+	// Whatever the machine has, the family it is indexed under is the one it
+	// answers to.
+	e := ix.all[0]
+	f := SystemFont(e.family, e.weight >= 600, e.italic)
+	if f == nil {
+		t.Fatalf("%q is indexed and not found", e.family)
+	}
+	if foldName(f.Family) != foldName(e.family) && !hasPrefixFold(foldName(f.Family), foldName(e.family)) {
+		t.Errorf("asked for %q and got %q", e.family, f.Family)
+	}
+	if SystemFont("a family no machine has, surely", false, false) != nil {
+		t.Error("a family that is not there was found")
+	}
+	if SystemFont("", false, false) != nil {
+		t.Error("the empty family was found")
+	}
+}
+
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// TestFallback checks that a character the base fourteen cannot draw finds a
+// face that can, when the machine has one.
+func TestFallback(t *testing.T) {
+	if len(systemIndex().all) == 0 {
+		t.Skip("the machine has no fonts")
+	}
+	for _, r := range []rune{'日', 'あ', '한', 'Ж', 'α'} {
+		f := Fallback(r, false, false)
+		if f == nil {
+			t.Logf("%c: the machine has no face for it", r)
+			continue
+		}
+		if f.GIDForRune(r) <= 0 {
+			t.Errorf("%c: %q was chosen and has no glyph for it", r, f.Family)
+		}
+		if f2 := Fallback(r, false, false); f2 != f {
+			t.Errorf("%c: the answer is not remembered", r)
+		}
+	}
+	if Fallback(0x10fffd, false, false) != nil {
+		t.Log("a private use character found a face, which is allowed")
+	}
+}
+
+// TestAddFontDir checks that a caller's own directory is searched, which is
+// what a program shipping its own fonts needs.
+func TestAddFontDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notafont.ttf"), []byte("nonsense"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	AddFontDir(dir)
+	// The index is built once, so this only checks that describe survives a
+	// file that is not a font.
+	if e := describe(filepath.Join(dir, "notafont.ttf")); e != nil {
+		t.Errorf("nonsense described as %+v", e)
+	}
+	if e := describe(filepath.Join(dir, "missing.ttf")); e != nil {
+		t.Errorf("a missing file described as %+v", e)
+	}
+}
+
+func TestFoldName(t *testing.T) {
+	cases := [][2]string{
+		{"Noto Sans CJK JP", "notosanscjkjp"},
+		{"Times New Roman", "timesnewroman"},
+		{"  DejaVu-Sans  ", "dejavusans"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := foldName(c[0]); got != c[1] {
+			t.Errorf("foldName(%q) = %q, want %q", c[0], got, c[1])
+		}
+	}
+}
+
+func TestScriptOf(t *testing.T) {
+	cases := []struct {
+		r rune
+		s script
+	}{
+		{'a', scriptLatin}, {'日', scriptHan}, {'あ', scriptKana}, {'한', scriptHangul},
+		{'Ж', scriptCyrillic}, {'α', scriptGreek}, {'ع', scriptArabic}, {'א', scriptHebrew},
+		{'ก', scriptThai}, {'क', scriptDevanagari},
+	}
+	for _, c := range cases {
+		if got := scriptOf(c.r); got != c.s {
+			t.Errorf("scriptOf(%c) = %d, want %d", c.r, got, c.s)
+		}
+	}
+	for k := range scriptOther {
+		if len(fallbackFamilies[k]) == 0 {
+			t.Errorf("script %d has no families to try", k)
+		}
+	}
+}

@@ -34,6 +34,13 @@ type Font struct {
 	// Name is what the program calls itself, which is not the name the PDF
 	// font dictionary uses.
 	Name string
+	// Family is the family the program belongs to, which is the name a
+	// stylesheet asks for a font by.
+	Family string
+	// Weight is the usWeightClass of the program, 400 when it declares none,
+	// and Italic whether it is slanted.
+	Weight int
+	Italic bool
 	// UnitsPerEm is the glyph space of a TrueType font; a CFF or Type1 font
 	// carries a matrix instead.
 	UnitsPerEm int

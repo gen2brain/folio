@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/gen2brain/pdf/font"
@@ -59,6 +60,9 @@ type Font struct {
 	// substituted is true when prog is a stand in rather than the font the
 	// document asked for.
 	substituted bool
+	// viaUnicode is set for a substitute chosen for a character collection:
+	// its glyphs are found through Unicode rather than through a CID.
+	viaUnicode bool
 	// gids maps a character code to a glyph in prog, for a simple font.
 	gids [256]int32
 	// cid2gid is the /CIDToGIDMap stream of a CIDFontType2.
@@ -184,18 +188,49 @@ func (d *Document) loadProgram(ft *Font, dict Dict) {
 	d.substitute(ft)
 }
 
-// substitute picks one of the fourteen for a font the file did not embed.
+// substitute picks a face for a font the file did not embed: one the machine
+// has for a character collection the fourteen cannot draw, one of the fourteen
+// otherwise.
 func (d *Document) substitute(ft *Font) {
 	name := string(ft.Name)
-	if ft.Type0 {
-		ft.substituted = true
+	ft.substituted = true
+	if prog := d.systemCJK(name, ft.ordering, ft.forceBold, ft.italic); prog != nil {
+		ft.prog, ft.viaUnicode = prog, true
+		ft.base = prog.Family
+		return
 	}
 	ft.base = font.StandardName(name, ft.serif, ft.fixed, ft.symbolic, ft.forceBold, ft.italic)
 	ft.prog = font.Standard(ft.base)
-	ft.substituted = true
 	if ft.prog == nil {
 		d.errorf("no substitute for font /%s", ft.Name)
 	}
+}
+
+// cjkSample is a character of each collection, which a face for it is asked
+// for by.
+var cjkSample = map[string]rune{
+	"GB1": '\u4e00', "CNS1": '\u4e00', "Japan1": '\u3042', "Korea1": '\uac00', "KR": '\uac00',
+}
+
+// systemCJK finds a face the machine has for a character collection the base
+// fourteen have no glyphs for. The document's own name for the font comes
+// first: a file naming SimSun and not embedding it means the face, not a
+// substitute for it.
+func (d *Document) systemCJK(name, ordering string, bold, italic bool) *font.Font {
+	sample, ok := cjkSample[ordering]
+	if !ok || d.noSystemFonts {
+		return nil
+	}
+	if i := strings.IndexByte(name, '+'); i == 6 {
+		name = name[7:]
+	}
+	if i := strings.IndexByte(name, ','); i >= 0 {
+		name = name[:i]
+	}
+	if f := font.SystemFont(name, bold, italic); f != nil && f.GIDForRune(sample) > 0 {
+		return f
+	}
+	return font.Fallback(sample, bold, italic)
 }
 
 // readToUnicode reads the /ToUnicode CMap, which maps codes to text.
@@ -592,6 +627,12 @@ func (ft *Font) Glyph(c Char) int {
 	if ft.prog == nil {
 		return -1
 	}
+	if ft.viaUnicode {
+		if r := ft.textRune(c); r > 0 {
+			return ft.prog.GIDForRune(r)
+		}
+		return -1
+	}
 	if ft.Type0 {
 		return ft.cidToGID(int(c.CID))
 	}
@@ -640,10 +681,8 @@ func (ft *Font) Rune(c Char) rune {
 	if r == 0 && !ft.Type0 && c.Code < 256 {
 		r = font.RuneForName(ft.names[c.Code])
 	}
-	// The collection comes before the program, which for such a font is a
-	// substitute whose glyph names say nothing about the text.
-	if r == 0 && ft.Type0 && ft.ordering != "" {
-		r = uniRuneOf(cidUnicode(ft.ordering), c.CID)
+	if r == 0 {
+		r = ft.textRune(c)
 	}
 	if r == 0 && !ft.Type3 && ft.prog != nil {
 		r = font.RuneForName(ft.prog.GlyphName(ft.Glyph(c)))
@@ -652,6 +691,23 @@ func (ft *Font) Rune(c Char) rune {
 		return 0xFFFD
 	}
 	return r
+}
+
+// textRune is what a character stands for as far as the file itself says: the
+// ToUnicode map, then the character collection. It does not ask the font
+// program, which Glyph needs of it.
+func (ft *Font) textRune(c Char) rune {
+	if s := ft.Text(c); s != "" {
+		if r := []rune(s)[0]; r >= 32 && !(r >= 127 && r < 160) {
+			return r
+		}
+	}
+	// The collection comes before the program, which for such a font is a
+	// substitute whose glyph names say nothing about the text.
+	if ft.Type0 && ft.ordering != "" {
+		return uniRuneOf(cidUnicode(ft.ordering), c.CID)
+	}
+	return 0
 }
 
 // GlyphNameOf returns what the font program calls the glyph a character

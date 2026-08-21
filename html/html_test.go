@@ -1763,3 +1763,56 @@ func TestLayoutPositioned(t *testing.T) {
 		t.Errorf("right edge = %v, want %v", got, want)
 	}
 }
+
+// TestLayoutFallbackFace checks that a character the base fourteen cannot
+// draw finds a face that can, which is what a book in any other script needs.
+func TestLayoutFallbackFace(t *testing.T) {
+	base := styleFace(&Style{FontSize: 16, FontWeight: 400})
+	if base.m.has('日') {
+		t.Skip("the substitute already has the ideographs")
+	}
+	f := fallbackFace(base, '日')
+	if f.prog == nil {
+		t.Skip("the machine has no face for the ideographs")
+	}
+	if !f.m.has('日') {
+		t.Fatalf("%q was chosen and has no glyph for it", f.prog.Family)
+	}
+	if f.size != base.size || f.track != base.track {
+		t.Errorf("the fallback changed the size: %+v against %+v", f, base)
+	}
+
+	// The run is split where the face has to change, and the text survives.
+	d, p := styledPage(t, `body, p { margin: 0 }`, "<p>one 日本 two</p>",
+		&LayoutOptions{Width: 400, Height: 400, Margin: 0})
+	defer d.Close()
+	if got, want := strings.TrimSpace(p.Text()), "one 日本 two"; got != want {
+		t.Fatalf("page text = %q, want %q", got, want)
+	}
+	var faces []face
+	var walk func(*box)
+	walk = func(b *box) {
+		for i := range b.lines {
+			for _, fr := range b.lines[i].frags {
+				faces = append(faces, fr.face)
+			}
+		}
+		for _, k := range b.kids {
+			walk(k)
+		}
+	}
+	walk(d.parts[0].root)
+	if len(faces) < 3 {
+		t.Fatalf("%d fragments, want the ideographs in one of their own", len(faces))
+	}
+	if faces[0].prog == faces[1].prog {
+		t.Errorf("the ideographs were drawn with the Latin face")
+	}
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasInk(img) {
+		t.Error("the page rendered blank")
+	}
+}

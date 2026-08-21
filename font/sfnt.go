@@ -3,6 +3,8 @@ package font
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/gen2brain/pdf/raster"
 )
@@ -112,6 +114,7 @@ func parseSFNT(data []byte) (*Font, error) {
 			return nil, err
 		}
 		inner.sfnt = s
+		inner.readNames(s)
 		if s.numGlyphs > 0 && s.numGlyphs != inner.glyphs {
 			s.numGlyphs = inner.glyphs
 		}
@@ -120,6 +123,7 @@ func parseSFNT(data []byte) (*Font, error) {
 		return inner, nil
 	}
 
+	f.readNames(s)
 	f.glyphs = s.numGlyphs
 	if f.glyphs == 0 {
 		f.glyphs = s.locaGlyphs()
@@ -292,26 +296,28 @@ func (t *cmapTable) lookup(c uint32) int {
 		starts := ends + segs*2 + 2
 		deltas := starts + segs*2
 		ranges := deltas + segs*2
-		for i := 0; i < segs; i++ {
-			if uint32(be16(b, ends+2*i)) < c {
-				continue
-			}
-			start := uint32(be16(b, starts+2*i))
-			if c < start {
-				return -1
-			}
-			ro := be16(b, ranges+2*i)
-			if ro == 0 {
-				return int(uint16(int(c) + be16s(b, deltas+2*i)))
-			}
-			at := ranges + 2*i + ro + 2*int(c-start)
-			g := be16(b, at)
-			if g == 0 {
-				return -1
-			}
-			return int(uint16(g + be16s(b, deltas+2*i)))
+		if ranges+2*segs > len(b) {
+			return -1
 		}
-		return -1
+		// The segments are sorted by their end, which the format requires.
+		i := sort.Search(segs, func(i int) bool { return uint32(be16(b, ends+2*i)) >= c })
+		if i >= segs {
+			return -1
+		}
+		start := uint32(be16(b, starts+2*i))
+		if c < start {
+			return -1
+		}
+		ro := be16(b, ranges+2*i)
+		if ro == 0 {
+			return int(uint16(int(c) + be16s(b, deltas+2*i)))
+		}
+		at := ranges + 2*i + ro + 2*int(c-start)
+		g := be16(b, at)
+		if g == 0 {
+			return -1
+		}
+		return int(uint16(g + be16s(b, deltas+2*i)))
 
 	case 6:
 		first, count := uint32(be16(b, 6)), uint32(be16(b, 8))
@@ -322,18 +328,18 @@ func (t *cmapTable) lookup(c uint32) int {
 
 	case 12:
 		n := be32(b, 12)
-		for i := 0; i < n; i++ {
-			g := 16 + 12*i
-			if g+12 > len(b) {
-				break
-			}
-			start, end := uint32(be32(b, g)), uint32(be32(b, g+4))
-			if c < start {
-				break
-			}
-			if c <= end {
-				return be32(b, g+8) + int(c-start)
-			}
+		if n < 0 {
+			return -1
+		}
+		n = min(n, max(len(b)-16, 0)/12)
+		// The groups are sorted by the character they start at.
+		i := sort.Search(n, func(i int) bool { return uint32(be32(b, 16+12*i+4)) >= c })
+		if i >= n {
+			return -1
+		}
+		g := 16 + 12*i
+		if start := uint32(be32(b, g)); c >= start {
+			return be32(b, g+8) + int(c-start)
 		}
 		return -1
 	}
@@ -383,3 +389,119 @@ func (s *sfnt) glyphName(gid int) string {
 }
 
 func (s *sfnt) hasNames() bool { return s != nil && len(s.postNames) > 0 }
+
+// The name table records this reads.
+const (
+	nameFamily     = 1
+	nameSubfamily  = 2
+	namePostScript = 6
+	nameTypoFamily = 16
+	nameTypoSubfam = 17
+)
+
+// readNames takes the family, the weight and the slant off a program, which
+// is what a face is looked up by.
+func (f *Font) readNames(s *sfnt) {
+	f.Weight = 400
+	if os2 := s.tables["OS/2"]; len(os2) >= 64 {
+		if w := be16(os2, 4); w >= 1 && w <= 1000 {
+			f.Weight = w
+		}
+		sel := be16(os2, 62)
+		f.Italic = sel&1 != 0
+		if sel&(1<<5) != 0 {
+			f.Weight = max(f.Weight, 700)
+		}
+	} else if head := s.tables["head"]; len(head) >= 46 {
+		style := be16(head, 44)
+		f.Italic = style&2 != 0
+		if style&1 != 0 {
+			f.Weight = 700
+		}
+	}
+	f.Family = sfntName(s.tables["name"], nameTypoFamily, nameFamily)
+	if f.Name == "" {
+		f.Name = sfntName(s.tables["name"], namePostScript)
+	}
+	switch sub := sfntName(s.tables["name"], nameTypoSubfam, nameSubfamily); {
+	case containsFold(sub, "italic"), containsFold(sub, "oblique"):
+		f.Italic = true
+	}
+}
+
+// sfntName reads the first of the name records that is there, preferring the
+// Windows encoding a modern font writes and falling back to the Macintosh one.
+func sfntName(name []byte, want ...int) string {
+	if len(name) < 6 {
+		return ""
+	}
+	n, off := be16(name, 2), be16(name, 4)
+	best, bestScore := "", -1
+	for i := range n {
+		e := 6 + 12*i
+		if e+12 > len(name) {
+			break
+		}
+		id := be16(name, e+6)
+		rank := -1
+		for j, w := range want {
+			if id == w {
+				rank = len(want) - j
+			}
+		}
+		if rank < 0 {
+			continue
+		}
+		plat, enc, lang := be16(name, e), be16(name, e+2), be16(name, e+4)
+		score := rank * 8
+		switch {
+		case plat == 3 && (enc == 1 || enc == 10):
+			score += 4
+		case plat == 0:
+			score += 3
+		case plat == 1 && enc == 0:
+			score += 2
+		default:
+			continue
+		}
+		if plat == 3 && lang != 0x409 || plat == 1 && lang != 0 {
+			score--
+		}
+		if score <= bestScore {
+			continue
+		}
+		start, length := off+be16(name, e+10), be16(name, e+8)
+		if start < 0 || length < 0 || start+length > len(name) {
+			continue
+		}
+		v := name[start : start+length]
+		if plat == 1 {
+			best, bestScore = string(v), score
+			continue
+		}
+		best, bestScore = utf16Name(v), score
+	}
+	return best
+}
+
+// utf16Name decodes the big endian UTF-16 a name record is written in.
+func utf16Name(b []byte) string {
+	out := make([]rune, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		r := rune(b[i])<<8 | rune(b[i+1])
+		if r >= 0xd800 && r <= 0xdbff && i+3 < len(b) {
+			lo := rune(b[i+2])<<8 | rune(b[i+3])
+			if lo >= 0xdc00 && lo <= 0xdfff {
+				out = append(out, 0x10000+(r-0xd800)<<10+(lo-0xdc00))
+				i += 2
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
+func containsFold(s, sub string) bool {
+	return len(s) >= len(sub) && strings.Contains(strings.ToLower(s), sub)
+}
