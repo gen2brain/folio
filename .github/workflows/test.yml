@@ -61,6 +61,8 @@ jobs:
             target: FuzzCMap
           - package: ./pdf
             target: FuzzDocument
+          - package: ./html
+            target: FuzzBook
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
