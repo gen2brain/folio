@@ -71,7 +71,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gen2brain/pdf/font"
+	"github.com/gen2brain/folio/font"
 )
 
 // Errors returned by this package.

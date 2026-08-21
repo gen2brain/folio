@@ -3,8 +3,8 @@ package gfx
 import (
 	"testing"
 
-	"github.com/gen2brain/pdf/font"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/raster"
 )
 
 // testFont is a glyph source with nothing behind it: the text device needs a

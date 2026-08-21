@@ -1,8 +1,8 @@
 package gfx
 
 import (
-	"github.com/gen2brain/pdf/font"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/raster"
 )
 
 // Font is the glyph source a text span names.

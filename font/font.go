@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // Errors returned by this package.

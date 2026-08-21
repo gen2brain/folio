@@ -1,6 +1,6 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // Link is a link annotation: the area of the page it covers, and where
 // following it goes.

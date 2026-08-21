@@ -86,7 +86,7 @@
 package pdf
 
 import (
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // The object model comes from the syntax package. It is aliased here so that

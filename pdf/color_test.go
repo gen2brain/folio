@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // grabber keeps the color of the first fill on a page.

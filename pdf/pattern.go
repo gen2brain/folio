@@ -1,6 +1,6 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // doShading runs the sh operator, which paints a shading over the clip.
 func (ip *interp) doShading(n Name) {

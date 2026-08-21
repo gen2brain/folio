@@ -1,8 +1,10 @@
-## pdf
+## folio
 
-[PDF](https://en.wikipedia.org/wiki/PDF) renderer in pure Go.
+[PDF](https://en.wikipedia.org/wiki/PDF), [EPUB](https://en.wikipedia.org/wiki/EPUB) and
+[MOBI](https://en.wikipedia.org/wiki/Mobipocket) renderer in pure Go.
 
-Work in progress: every page element a PDF can carry renders.
+Work in progress: every page element a PDF can carry renders, and a book lays out and draws
+through the same device seam.
 
 ```go
 doc, err := pdf.Open("file.pdf")
@@ -14,7 +16,7 @@ txt, err := p.Text()
 ```
 
 Over the pdf.js test corpus it renders a page in about the time MuPDF takes, and it renders
-files MuPDF refuses. See the [package documentation](https://pkg.go.dev/github.com/gen2brain/pdf/pdf)
+files MuPDF refuses. See the [package documentation](https://pkg.go.dev/github.com/gen2brain/folio/pdf)
 for text extraction, SVG, rendering into another color space, driving a device other than the
 renderer, concurrency, and optional content.
 
@@ -38,12 +40,12 @@ and PDF/A validation.
 
 | | |
 | --- | --- |
-| [pdf](https://pkg.go.dev/github.com/gen2brain/pdf/pdf) | the interpreter and the public API |
-| [gfx](https://pkg.go.dev/github.com/gen2brain/pdf/gfx) | the device interface and the devices behind it |
-| [raster](https://pkg.go.dev/github.com/gen2brain/pdf/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes |
-| [font](https://pkg.go.dev/github.com/gen2brain/pdf/font) | font programs in, outlines and metrics out |
-| [syntax](https://pkg.go.dev/github.com/gen2brain/pdf/syntax) | the file format: objects, filters, encryption, repair |
-| [html](https://pkg.go.dev/github.com/gen2brain/pdf/html) | reflowable books: EPUB, MOBI and plain text, and the HTML, CSS and layout over them |
+| [pdf](https://pkg.go.dev/github.com/gen2brain/folio/pdf) | the interpreter and the public API |
+| [gfx](https://pkg.go.dev/github.com/gen2brain/folio/gfx) | the device interface and the devices behind it |
+| [raster](https://pkg.go.dev/github.com/gen2brain/folio/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes |
+| [font](https://pkg.go.dev/github.com/gen2brain/folio/font) | font programs in, outlines and metrics out |
+| [syntax](https://pkg.go.dev/github.com/gen2brain/folio/syntax) | the file format: objects, filters, encryption, repair |
+| [html](https://pkg.go.dev/github.com/gen2brain/folio/html) | reflowable books: EPUB, MOBI and plain text, and the HTML, CSS and layout over them |
 
 `raster` and `font` know nothing about PDF, `gfx` knows no file format, and `syntax` has no
 graphics in it. Rendering a PDF pulls in nothing outside the standard library; `html` is the one

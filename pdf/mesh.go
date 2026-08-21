@@ -1,6 +1,6 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // meshSplitMin and meshSplitMax bound how finely a patch is tessellated, and
 // meshSplitPixels is how many device pixels one cell aims for.

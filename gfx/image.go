@@ -1,6 +1,6 @@
 package gfx
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // Image is a picture a device draws, decoded only when it asks.
 type Image interface {

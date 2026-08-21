@@ -1,6 +1,6 @@
 package gfx
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5. It is
 // raster's, because a blend mode is a function of two colors and nothing

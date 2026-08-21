@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // codespace is one range of byte codes of a given length.

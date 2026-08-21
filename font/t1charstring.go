@@ -1,6 +1,6 @@
 package font
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // t1 runs a Type 1 charstring.
 type t1 struct {

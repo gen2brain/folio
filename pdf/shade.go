@@ -1,6 +1,6 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // Shade is a shading dictionary: the sh operator paints one directly, and a
 // shading pattern paints one through a path.

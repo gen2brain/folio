@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gen2brain/pdf/raster"
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // Document is an open PDF file.

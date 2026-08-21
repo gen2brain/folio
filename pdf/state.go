@@ -1,6 +1,6 @@
 package pdf
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // color is one of the two colors in the graphics state.
 type color struct {

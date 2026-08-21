@@ -1,6 +1,6 @@
 package gfx
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // BBoxDevice accumulates the bounding box of everything drawn.
 type BBoxDevice struct {

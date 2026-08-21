@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // Function is a PDF function, ISO 32000-1 7.10: sampled, exponential,

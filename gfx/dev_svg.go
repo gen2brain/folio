@@ -9,8 +9,8 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/gen2brain/pdf/font"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/raster"
 )
 
 // SVGDevice writes what a page draws as SVG. Paths, text and images come out

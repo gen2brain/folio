@@ -3,7 +3,7 @@ package font
 import (
 	"fmt"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // cffFont is a Compact Font Format program, bare or inside an sfnt.

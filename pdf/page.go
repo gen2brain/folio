@@ -7,8 +7,8 @@ import (
 	"image/draw"
 	"sync"
 
-	"github.com/gen2brain/pdf/raster"
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // Page is one page of a document.

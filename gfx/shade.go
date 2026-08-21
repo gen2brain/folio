@@ -1,6 +1,6 @@
 package gfx
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // Shade is a smooth gradation of color filling an area: a PDF shading, or a
 // CSS gradient.

@@ -3,7 +3,7 @@ package font
 import (
 	"strconv"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 const (

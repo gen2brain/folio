@@ -1,8 +1,8 @@
 package pdf
 
 import (
-	"github.com/gen2brain/pdf/gfx"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
 )
 
 // The graphics model comes from the gfx package, aliased here so that a

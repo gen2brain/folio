@@ -8,8 +8,8 @@ import (
 	"image/jpeg"
 	"sync"
 
-	"github.com/gen2brain/pdf/raster"
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // Image is an image XObject or an inline image. The pixels are not decoded

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gen2brain/pdf/font"
-	"github.com/gen2brain/pdf/raster"
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // Font is a PDF font dictionary: what the interpreter needs to turn a string

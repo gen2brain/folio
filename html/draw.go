@@ -3,9 +3,9 @@ package html
 import (
 	"sync"
 
-	"github.com/gen2brain/pdf/font"
-	"github.com/gen2brain/pdf/gfx"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
 )
 
 // painter draws a laid out tree through a device. Everything it hands over is

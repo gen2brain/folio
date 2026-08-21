@@ -7,8 +7,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/gen2brain/pdf/gfx"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
 )
 
 // pxPerPoint is what a CSS pixel is worth: 96 to the inch against 72.

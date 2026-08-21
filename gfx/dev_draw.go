@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gen2brain/pdf/font"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/raster"
 )
 
 // maxCachedGlyph is the area above which a glyph is drawn straight into the

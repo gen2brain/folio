@@ -6,8 +6,8 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/gen2brain/pdf/gfx"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
 )
 
 // TraceDevice writes every device call as XML, in the format mutool trace

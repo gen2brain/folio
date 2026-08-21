@@ -13,8 +13,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	"github.com/gen2brain/pdf/gfx"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
 )
 
 // picture is a decoded image a box draws. It is what a device is handed, so

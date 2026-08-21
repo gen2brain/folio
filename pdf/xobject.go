@@ -3,7 +3,7 @@ package pdf
 import (
 	"slices"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // doXObject runs the Do operator.

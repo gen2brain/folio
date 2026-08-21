@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // type1Font is a Type 1 font program, in PFB, PFA or bare form.

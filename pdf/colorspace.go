@@ -1,6 +1,6 @@
 package pdf
 
-import "github.com/gen2brain/pdf/syntax"
+import "github.com/gen2brain/folio/syntax"
 
 // colorSpace resolves a color space object, which is either a name, an array,
 // or a name that has to be looked up in the resource dictionary.

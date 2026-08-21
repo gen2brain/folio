@@ -3,7 +3,7 @@ package pdf
 import (
 	"fmt"
 
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // JPEG 2000 decoding, ITU-T T.800, ported from pdf.js with OpenJPEG read for

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // The gaps that end a word and a line, and the drift that ends a line, as

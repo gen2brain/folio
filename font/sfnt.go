@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // sfnt is the OpenType container: a directory of tables.

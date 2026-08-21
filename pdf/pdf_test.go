@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 func open(t *testing.T, name string) *Document {

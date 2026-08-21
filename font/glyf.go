@@ -1,6 +1,6 @@
 package font
 
-import "github.com/gen2brain/pdf/raster"
+import "github.com/gen2brain/folio/raster"
 
 // Composite glyph flags, OpenType glyf table.
 const (

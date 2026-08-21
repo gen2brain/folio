@@ -1,7 +1,7 @@
 package gfx
 
 import (
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/raster"
 )
 
 // listKind names the device call a recorded command replays.

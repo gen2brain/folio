@@ -5,8 +5,8 @@ import (
 	"image"
 	"io"
 
-	"github.com/gen2brain/pdf/gfx"
-	"github.com/gen2brain/pdf/raster"
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/raster"
 )
 
 // The structured text model comes from the gfx package.

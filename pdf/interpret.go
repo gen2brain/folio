@@ -1,8 +1,8 @@
 package pdf
 
 import (
-	"github.com/gen2brain/pdf/raster"
-	"github.com/gen2brain/pdf/syntax"
+	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/syntax"
 )
 
 // Limits on what one page may ask for. A content stream is untrusted input

@@ -1,4 +1,4 @@
-module github.com/gen2brain/pdf
+module github.com/gen2brain/folio
 
 go 1.26.4
 

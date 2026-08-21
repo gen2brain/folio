@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gen2brain/pdf/font"
+	"github.com/gen2brain/folio/font"
 )
 
 // The three kinds of face the base fourteen can stand in for.
