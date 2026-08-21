@@ -151,6 +151,38 @@ func (m Matrix) ApplyRect(r Rect) Rect {
 	return out
 }
 
+// UnapplyRect maps r back through the transform. The arithmetic is float64
+// because the answer is a difference of two products of the inverse, and under
+// a transform that scales by a millionth those two are equal to seven figures:
+// in float32 the whole answer is lost to the cancellation.
+func (m Matrix) UnapplyRect(r Rect) (Rect, bool) {
+	if r.IsInfinite() {
+		return r, true
+	}
+	a, b := float64(m.A), float64(m.B)
+	c, d := float64(m.C), float64(m.D)
+	e, f := float64(m.E), float64(m.F)
+	det := a*d - b*c
+	if det == 0 || det != det {
+		return EmptyRect, false
+	}
+	ia, ib, ic, id := d/det, -b/det, -c/det, a/det
+	ie, iff := (c*f-d*e)/det, (b*e-a*f)/det
+	out := EmptyRect
+	for _, p := range [4][2]float64{
+		{float64(r.X0), float64(r.Y0)}, {float64(r.X1), float64(r.Y0)},
+		{float64(r.X0), float64(r.Y1)}, {float64(r.X1), float64(r.Y1)},
+	} {
+		x := float32(ia*p[0] + ic*p[1] + ie)
+		y := float32(ib*p[0] + id*p[1] + iff)
+		if x-x != 0 || y-y != 0 {
+			return EmptyRect, false
+		}
+		out = out.AddPoint(Point{x, y})
+	}
+	return out, true
+}
+
 // Det is the determinant, zero when the transform collapses to a line.
 func (m Matrix) Det() float32 { return float32(m.A*m.D) - float32(m.B*m.C) }
 

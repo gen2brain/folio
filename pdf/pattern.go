@@ -127,11 +127,10 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 		return
 	}
 
-	inv, ok := ptm.Invert()
+	area, ok := ptm.UnapplyRect(shape)
 	if !ok {
 		return
 	}
-	area := inv.ApplyRect(shape)
 
 	cached := ip.dev.BeginTile(area, view, xstep, ystep, ptm) != 0
 
