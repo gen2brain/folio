@@ -1599,7 +1599,7 @@ func TestImageJPX(t *testing.T) {
 		{"rgb.j2k", 3, color},
 		{"lazy.j2k", 3, color},
 	} {
-		img, err := jpxDecode([]byte(fixture(t, tc.name)))
+		img, err := jpxDecode([]byte(fixture(t, tc.name)), false)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -1736,7 +1736,7 @@ func FuzzJPX(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
-		jpxDecode(b)
+		jpxDecode(b, false)
 	})
 }
 

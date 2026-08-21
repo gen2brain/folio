@@ -147,6 +147,9 @@ type jpxContext struct {
 	qcd        *jpxQuant
 	qcc        map[int]*jpxQuant
 	current    *jpxTilePart
+	// indexed keeps the samples at the precision the codestream carries,
+	// which is what an image whose color space is Indexed reads them at.
+	indexed bool
 }
 
 // maxJPXBlocks bounds the code blocks one tile may be divided into, so that a
@@ -1938,6 +1941,9 @@ func jpxWriteComponent(img *jpxImage, ctx *jpxContext, tile *jpxTile, c int, ban
 		half = 1 << uint(precision-1)
 	}
 	shift := precision - 8
+	if ctx.indexed {
+		shift = 0
+	}
 
 	for y := tile.ty0; y < tile.ty1; y++ {
 		oy := y - siz.yosiz
@@ -1985,7 +1991,7 @@ func jpxComponents(data []byte) int {
 
 // jpxDecode reads a JPEG 2000 codestream, bare or wrapped in the JP2 boxes of
 // ISO 15444-1 Annex I, and returns interleaved eight bit samples.
-func jpxDecode(data []byte) (*jpxImage, error) {
+func jpxDecode(data []byte, indexed bool) (*jpxImage, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("%w: JPX stream is %d bytes", ErrInvalid, len(data))
 	}
@@ -1994,6 +2000,7 @@ func jpxDecode(data []byte) (*jpxImage, error) {
 		if ctx == nil {
 			return nil, err
 		}
+		ctx.indexed = indexed
 		return jpxAssemble(ctx)
 	}
 
@@ -2038,5 +2045,6 @@ func jpxDecode(data []byte) (*jpxImage, error) {
 		}
 		return nil, fmt.Errorf("%w: JP2 has no codestream", ErrInvalid)
 	}
+	ctx.indexed = indexed
 	return jpxAssemble(ctx)
 }

@@ -851,7 +851,7 @@ func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) (filtered, e
 		pix, w, h, n, err = jpegSamples(data)
 	case filter == "JPXDecode":
 		var img *jpxImage
-		img, err = jpxDecode(data)
+		img, err = jpxDecode(data, i.CS != nil && i.CS.Kind == KindIndexed)
 		if err == nil {
 			pix, w, h, n = img.pix, img.width, img.height, img.comps
 			pix, n, out.alpha, out.cs = i.adoptJPX(pix, w, h, n)
