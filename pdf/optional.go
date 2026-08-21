@@ -9,7 +9,7 @@ import (
 // content that names a group.
 func (ip *interp) beginMarkedContent(tag Name, prop Object) {
 	ip.flushText()
-	mc := markedContent{}
+	mc := markedContent{clip: ip.openClips()}
 
 	switch {
 	case ip.hidden > 0:
@@ -82,6 +82,13 @@ func (ip *interp) endMarkedContent() {
 	ip.mc = ip.mc[:n-1]
 	if mc.hid && ip.hidden > 0 {
 		ip.hidden--
+	}
+	if mc.layers == 0 {
+		return
+	}
+	if ip.openClips() > mc.clip {
+		ip.pending = append(ip.pending, pendingLayer{layers: mc.layers, clip: mc.clip})
+		return
 	}
 	for i := 0; i < mc.layers; i++ {
 		ip.dev.EndLayer()

@@ -230,6 +230,13 @@ func (ip *interp) finish() {
 		}
 	}
 	ip.gs.clipDepth = 0
+	for len(ip.pending) > 0 {
+		p := ip.pending[len(ip.pending)-1]
+		ip.pending = ip.pending[:len(ip.pending)-1]
+		for i := 0; i < p.layers; i++ {
+			ip.dev.EndLayer()
+		}
+	}
 }
 
 // usesTransparency reports whether the page needs a transparency group: it

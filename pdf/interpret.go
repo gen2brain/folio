@@ -54,8 +54,10 @@ type interp struct {
 	// mc is the marked content stack, and hidden counts how many enclosing
 	// optional content groups are switched off. Hidden content is still
 	// interpreted, so that the stacks stay balanced, but nothing is drawn.
-	mc     []markedContent
-	hidden int
+	mc []markedContent
+	// pending holds the layers whose EMC arrived inside a clip they opened.
+	pending []pendingLayer
+	hidden  int
 
 	depth int
 	// running is the form XObjects on the path from the page to here, so that
@@ -75,7 +77,40 @@ const (
 // markedContent is one entry of the BMC/BDC stack.
 type markedContent struct {
 	layers int  // layers opened on the device
+	clip   int  // clips open on the device when it began
 	hid    bool // this entry hid its content
+}
+
+// pendingLayer is a layer whose EMC arrived while a clip opened inside it was
+// still on the device. Ending it there would leave the layer and the clip
+// crossing rather than nesting, so it waits for the Q that pops the clip.
+type pendingLayer struct {
+	layers int
+	clip   int
+}
+
+// openClips counts the clips the device is holding, which q resets per level
+// and only the whole stack adds up.
+func (ip *interp) openClips() int {
+	n := ip.gs.clipDepth
+	for _, g := range ip.gstack {
+		n += g.clipDepth
+	}
+	return n
+}
+
+// closeLayers ends the layers that were waiting for a clip to be popped.
+func (ip *interp) closeLayers() {
+	for len(ip.pending) > 0 {
+		p := ip.pending[len(ip.pending)-1]
+		if ip.openClips() > p.clip {
+			return
+		}
+		ip.pending = ip.pending[:len(ip.pending)-1]
+		for i := 0; i < p.layers; i++ {
+			ip.dev.EndLayer()
+		}
+	}
 }
 
 func (ip *interp) errorf(format string, a ...any) { ip.doc.errorf(format, a...) }
@@ -158,6 +193,7 @@ func (ip *interp) op(kw syntax.Keyword, stack []syntax.Operand) {
 		} else {
 			ip.errorf("Q without q")
 		}
+		ip.closeLayers()
 	case "cm":
 		ip.flushText()
 		if len(stack) >= 6 {
