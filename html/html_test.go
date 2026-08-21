@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"cmp"
 	"errors"
+	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 )
@@ -1190,4 +1193,270 @@ func BenchmarkLineBreaks(b *testing.B) {
 	for b.Loop() {
 		lineBreaks(para)
 	}
+}
+
+// onePart is a package with a single chapter in its spine, which is what a
+// layout test wants: page zero is the fragment under test.
+const onePart = `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub">
+ <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:identifier id="pub">urn:uuid:1234</dc:identifier><dc:title>A Book</dc:title>
+ </metadata>
+ <manifest>
+  <item id="one" href="text/one.xhtml" media-type="application/xhtml+xml"/>
+ </manifest>
+ <spine><itemref idref="one"/></spine>
+</package>`
+
+// styledPage lays a fragment out on one page and returns it.
+func styledPage(t *testing.T, sheet, body string, o *LayoutOptions) (*Document, *Page) {
+	t.Helper()
+	parts := map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml": "<html><head><style>" + sheet + "</style></head><body>" +
+			body + "</body></html>",
+	}
+	d := openBook(t, parts)
+	n, err := d.Layout(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("the book laid out to nothing")
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, p
+}
+
+func TestLayout(t *testing.T) {
+	d, p := styledPage(t, `p { margin: 0 }`,
+		"<p>one two three</p><p>four five</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
+	defer d.Close()
+	if got := p.Text(); got != "one two three\nfour five\n" {
+		t.Fatalf("page text = %q", got)
+	}
+	if b := p.Bounds(); b.X1 != 300 || b.Y1 != 300 {
+		t.Errorf("bounds = %+v, want 300 by 300 points", b)
+	}
+	img, err := p.ImageDPI(72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := img.Bounds(); r.Dx() != 300 || r.Dy() != 300 {
+		t.Errorf("image = %v", r)
+	}
+	if !hasInk(img) {
+		t.Error("the page rendered blank")
+	}
+}
+
+// TestLayoutWraps checks that a line breaks where it no longer fits and that
+// the words survive it.
+func TestLayoutWraps(t *testing.T) {
+	long := strings.Repeat("word ", 40)
+	d, p := styledPage(t, `body, p { margin: 0; font-size: 16px }`,
+		"<p>"+long+"</p>", &LayoutOptions{Width: 300, Height: 800, Margin: 0})
+	defer d.Close()
+	lines := strings.Split(strings.TrimSpace(p.Text()), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("%d lines, want the text to wrap: %q", len(lines), p.Text())
+	}
+	if got := strings.Join(strings.Fields(p.Text()), " "); got != strings.TrimSpace(long) {
+		t.Errorf("the words changed: %q", got)
+	}
+	f := styleFace(&Style{FontSize: 16, FontWeight: 400})
+	for _, ln := range lines {
+		if w := f.width(ln); w > 300 {
+			t.Errorf("line %q is %.1f wide, want at most 300", ln, w)
+		}
+	}
+}
+
+// TestLayoutPaginates checks that every line reaches exactly one page, which
+// is the whole of what pagination is answerable for.
+func TestLayoutPaginates(t *testing.T) {
+	var body strings.Builder
+	for i := range 200 {
+		fmt.Fprintf(&body, "<p>paragraph number %d</p>", i)
+	}
+	d, _ := styledPage(t, ``, body.String(), &LayoutOptions{Width: 400, Height: 300, Margin: 10})
+	defer d.Close()
+	n := d.NumPages()
+	if n < 5 {
+		t.Fatalf("%d pages, want the text to run over several", n)
+	}
+	var all strings.Builder
+	for i := range n {
+		p, err := d.Page(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.WriteString(p.Text())
+	}
+	for i := range 200 {
+		if want := fmt.Sprintf("paragraph number %d\n", i); !strings.Contains(all.String(), want) {
+			t.Fatalf("%q is on no page", want)
+		}
+	}
+	if got, want := strings.Count(all.String(), "paragraph number "), 200; got != want {
+		t.Errorf("%d paragraphs across the pages, want %d", got, want)
+	}
+}
+
+// TestLayoutPageBreak checks that a page break the book asks for is taken.
+func TestLayoutPageBreak(t *testing.T) {
+	d, _ := styledPage(t, `h2 { page-break-before: always }`,
+		"<p>before</p><h2>heading</h2><p>after</p>", &LayoutOptions{Width: 400, Height: 600, Margin: 10})
+	defer d.Close()
+	if n := d.NumPages(); n != 2 {
+		t.Fatalf("%d pages, want 2", n)
+	}
+	p0, _ := d.Page(0)
+	p1, _ := d.Page(1)
+	if !strings.Contains(p0.Text(), "before") || strings.Contains(p0.Text(), "heading") {
+		t.Errorf("page 0 = %q", p0.Text())
+	}
+	if !strings.Contains(p1.Text(), "heading") || !strings.Contains(p1.Text(), "after") {
+		t.Errorf("page 1 = %q", p1.Text())
+	}
+}
+
+// TestLayoutMarginsCollapse checks the rule the rest of block layout is a
+// special case of: two vertical margins that meet become the larger.
+func TestLayoutMarginsCollapse(t *testing.T) {
+	at := func(sheet string) []float32 {
+		d, _ := styledPage(t, sheet, "<div><p>one</p></div><p>two</p>",
+			&LayoutOptions{Width: 400, Height: 800, Margin: 0})
+		defer d.Close()
+		var ys []float32
+		var walk func(*box)
+		walk = func(b *box) {
+			for i := range b.lines {
+				ys = append(ys, b.lines[i].y)
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return ys
+	}
+	// The div has no padding, so the paragraph's margin collapses through it
+	// and out to the body, and the two paragraphs share one gap.
+	ys := at(`body { margin: 0 } div { margin: 0 } p { margin: 20px 0 }`)
+	if len(ys) != 2 {
+		t.Fatalf("%d lines", len(ys))
+	}
+	if ys[0] != 20 {
+		t.Errorf("first line at %v, want the collapsed 20", ys[0])
+	}
+	gap := ys[1] - ys[0]
+	ys2 := at(`body { margin: 0 } div { margin: 0; padding-top: 1px } p { margin: 20px 0 }`)
+	if ys2[0] != 21 {
+		t.Errorf("first line at %v, want padding to stop the collapse", ys2[0])
+	}
+	if ys2[1]-ys2[0] != gap {
+		t.Errorf("gap %v, want the same %v", ys2[1]-ys2[0], gap)
+	}
+}
+
+func TestLayoutAlign(t *testing.T) {
+	left := func(sheet string) float32 {
+		d, _ := styledPage(t, sheet, "<p>short</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		defer d.Close()
+		var x float32 = -1
+		var walk func(*box)
+		walk = func(b *box) {
+			for i := range b.lines {
+				if len(b.lines[i].frags) > 0 && x < 0 {
+					x = b.lines[i].frags[0].x
+				}
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return x
+	}
+	l := left(`body, p { margin: 0 } p { text-align: left }`)
+	c := left(`body, p { margin: 0 } p { text-align: center }`)
+	r := left(`body, p { margin: 0 } p { text-align: right }`)
+	if !(l < c && c < r) {
+		t.Errorf("left %v, centre %v, right %v", l, c, r)
+	}
+	if l != 0 {
+		t.Errorf("left aligned at %v, want 0", l)
+	}
+}
+
+func hasInk(img *image.RGBA) bool {
+	for i := 0; i < len(img.Pix); i += 4 {
+		if img.Pix[i] != 255 || img.Pix[i+1] != 255 || img.Pix[i+2] != 255 {
+			return true
+		}
+	}
+	return false
+}
+
+// FuzzLayout lays arbitrary markup out and renders a page of it. A book is
+// untrusted input, and layout is where its numbers turn into allocations.
+func FuzzLayout(fu *testing.F) {
+	fu.Add("<p>one two three</p>", "p { margin: 1em }")
+	fu.Add("<ul><li>a</li><li>b</li></ul>", "li { list-style-type: decimal }")
+	fu.Add("<p style='font-size:900em'>x</p><h1>y</h1>", "* { width: 1e9px }")
+	fu.Add("<pre>a\nb</pre><br><img src='x.png'/>", "p { text-align: justify }")
+	fu.Fuzz(func(t *testing.T, body, sheet string) {
+		root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := Cascade(root, Media{Width: 300, Height: 400, FontSize: 16},
+			UserAgent(), ParseCSS([]byte(sheet), OriginAuthor))
+		l := &layout{}
+		l.run(buildBoxes(root, st), 300)
+		for _, top := range paginate(l.spans, 400) {
+			if top < 0 || top > l.y {
+				t.Fatalf("page at %v of a column %v deep", top, l.y)
+			}
+		}
+	})
+}
+
+// TestLayoutConcurrent renders the pages of one book from several goroutines,
+// which is what a reader drawing ahead of the page it shows does.
+func TestLayoutConcurrent(t *testing.T) {
+	var body strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&body, "<p>paragraph number %d with a few words in it</p>", i)
+	}
+	d, _ := styledPage(t, ``, body.String(), &LayoutOptions{Width: 400, Height: 300, Margin: 10})
+	defer d.Close()
+	n := d.NumPages()
+	want := make([]string, n)
+	for i := range n {
+		p, _ := d.Page(i)
+		want[i] = p.Text()
+	}
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			p, err := d.Page(i)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if got := p.Text(); got != want[i] {
+				t.Errorf("page %d = %q, want %q", i, got, want[i])
+			}
+			if _, err := p.ImageDPI(48); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
 }

@@ -67,6 +67,8 @@ jobs:
             target: FuzzCSS
           - package: ./html
             target: FuzzLineBreak
+          - package: ./html
+            target: FuzzLayout
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4

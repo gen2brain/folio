@@ -29,6 +29,29 @@
 //
 // A computed Style holds lengths in CSS pixels, except that a percentage is
 // left standing for the layout that knows what it resolves against.
+//
+// # Layout
+//
+// A reflowable document has no pages until it is laid out, so Layout comes
+// before NumPages and Page:
+//
+//	n, err := doc.Layout(&html.LayoutOptions{Width: 800, Height: 1200, Margin: 40})
+//
+//	p, err := doc.Page(0)
+//	img, err := p.ImageDPI(150)
+//
+// The page is given in CSS pixels, 96 to the inch, and Page.Bounds returns it
+// in points so that a page of a book measures the same way a page of a PDF
+// does. Page.Text is what the page says and Page.Run draws it through a
+// gfx.Device, which is the seam a PDF page draws through as well.
+//
+// Layout is block and inline formatting with the line breaking of UAX #14:
+// margins, padding, text alignment and indentation, font selection from the
+// base fourteen, line height, colours, list markers, images, and the page
+// breaks a book asks for. Floats, tables and positioning are not in it.
+//
+// Pages may be rendered from several goroutines at once. Layout may not run
+// while they are.
 package html
 
 import (
@@ -133,6 +156,12 @@ type Document struct {
 	// tocID is what the spine calls the EPUB 2 table of contents.
 	tocID    string
 	headings sync.Once
+
+	// layoutMu guards what Layout produced, which every page reads.
+	layoutMu sync.Mutex
+	opt      LayoutOptions
+	parts    []*laidPart
+	pages    []*Page
 }
 
 // Open reads the named file, deciding from its contents what it is.

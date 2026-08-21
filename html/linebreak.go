@@ -185,7 +185,7 @@ func (t *lbText) skipSP(k int) int {
 }
 
 // numBack reports whether walking back over the infix separators of a number
-// lands on a digit, which is what the several forms of rule LB25 share.
+// lands on a digit, which the several forms of rule LB25 share.
 func (t *lbText) numBack(k int) bool {
 	for k >= 0 && (t.c[k] == lbSY || t.c[k] == lbIS) {
 		k--

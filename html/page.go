@@ -1,0 +1,289 @@
+package html
+
+import (
+	"errors"
+	"fmt"
+	"image"
+	"math"
+	"strings"
+
+	"github.com/gen2brain/pdf/gfx"
+	"github.com/gen2brain/pdf/raster"
+)
+
+// pxPerPoint is what a CSS pixel is worth: 96 to the inch against 72.
+const pxPerPoint = 72.0 / 96.0
+
+// LayoutOptions is the page a book is laid out onto.
+type LayoutOptions struct {
+	// Width and Height are the page in CSS pixels, 96 to the inch. Zero is
+	// 800 by 1200, which is a page of about eight inches by twelve.
+	Width, Height float32
+	// Margin is what is left blank around the text, in CSS pixels.
+	Margin float32
+	// FontSize is the size the reader is set to, which every relative length
+	// resolves against. Zero is 16.
+	FontSize float32
+	// UserSheet is a stylesheet applied over the user agent's and under the
+	// book's own.
+	UserSheet *Stylesheet
+}
+
+func (o *LayoutOptions) or(def *LayoutOptions) LayoutOptions {
+	v := *def
+	if o != nil {
+		v = *o
+	}
+	if v.Width <= 0 {
+		v.Width = 800
+	}
+	if v.Height <= 0 {
+		v.Height = 1200
+	}
+	if v.FontSize <= 0 {
+		v.FontSize = DefaultFontSize
+	}
+	if v.Margin < 0 {
+		v.Margin = 0
+	}
+	return v
+}
+
+// laidPart is one part of the spine after it has been laid out.
+type laidPart struct {
+	path string
+	root *box
+	// tops are where each page of the part starts down the column.
+	tops []float32
+	// height is how far the column reaches.
+	height float32
+}
+
+// Page is one page of a laid out book.
+type Page struct {
+	doc  *Document
+	part *laidPart
+	num  int
+	// top and bottom bound the part of the column the page shows, in CSS
+	// pixels. bottom is where the next page starts, not top plus the page
+	// height.
+	top, bottom float32
+}
+
+// Layout lays the book out onto pages of a size and returns how many it
+// makes. It must be called before NumPages or Page, and calling it again with
+// another size lays the book out afresh. Pages may then be rendered from
+// several goroutines at once, but not while another Layout is running.
+func (d *Document) Layout(o *LayoutOptions) (int, error) {
+	opt := o.or(&LayoutOptions{Margin: 24})
+	cw := opt.Width - 2*opt.Margin
+	ch := opt.Height - 2*opt.Margin
+	if cw <= 0 || ch <= 0 {
+		return 0, fmt.Errorf("%w: page %gx%g leaves no room", ErrInvalid, opt.Width, opt.Height)
+	}
+	media := Media{Width: cw, Height: ch, FontSize: opt.FontSize}
+
+	var parts []*laidPart
+	var pages []*Page
+	var errs []error
+	for _, it := range d.Spine() {
+		if !it.IsChapter() {
+			p, err := d.imagePart(it, cw, ch)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			if p != nil {
+				parts = append(parts, p)
+				pages = append(pages, &Page{doc: d, part: p, num: len(pages), bottom: p.height})
+			}
+			continue
+		}
+		root, err := d.ParsePart(it.Path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		sheets := d.Stylesheets(it.Path, root)
+		if opt.UserSheet != nil {
+			sheets = append(sheets[:1:1], append([]*Stylesheet{opt.UserSheet}, sheets[1:]...)...)
+		}
+		l := &layout{doc: d, path: it.Path}
+		l.run(buildBoxes(root, Cascade(root, media, sheets...)), cw)
+		errs = append(errs, l.errs...)
+		if len(l.spans) == 0 {
+			continue
+		}
+
+		p := &laidPart{path: it.Path, root: l.root, tops: paginate(l.spans, ch), height: l.y}
+		parts = append(parts, p)
+		for i, top := range p.tops {
+			bottom := p.height
+			if i+1 < len(p.tops) {
+				bottom = p.tops[i+1]
+			}
+			pages = append(pages, &Page{doc: d, part: p, num: len(pages), top: top, bottom: max(bottom, top+1)})
+		}
+	}
+	d.layoutMu.Lock()
+	d.opt, d.parts, d.pages = opt, parts, pages
+	d.layoutMu.Unlock()
+	return len(pages), errors.Join(errs...)
+}
+
+// imagePart makes a page of a spine item that is a picture rather than a
+// document, which is how a comic and a picture book are written.
+func (d *Document) imagePart(it Item, cw, ch float32) (*laidPart, error) {
+	if !strings.HasPrefix(it.Type, "image/") || strings.Contains(it.Type, "svg") {
+		return nil, nil
+	}
+	raw, err := d.Read(it.Path)
+	if err != nil {
+		return nil, err
+	}
+	pic, err := decodePicture(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", it.Path, err)
+	}
+	w, h := float32(pic.w), float32(pic.h)
+	if s := min(cw/w, ch/h); s < 1 {
+		w, h = w*s, h*s
+	}
+	root := &box{style: &Style{}, w: cw, h: ch}
+	root.lines = []lineBox{{
+		h: h, baseline: h,
+		frags: []frag{{x: (cw - w) / 2, w: w, h: h, img: pic, style: root.style}},
+	}}
+	return &laidPart{path: it.Path, root: root, tops: []float32{0}, height: h}, nil
+}
+
+// NumPages is how many pages the last Layout made, and zero before one.
+func (d *Document) NumPages() int {
+	d.layoutMu.Lock()
+	defer d.layoutMu.Unlock()
+	return len(d.pages)
+}
+
+// Page returns one page of the laid out book.
+func (d *Document) Page(i int) (*Page, error) {
+	d.layoutMu.Lock()
+	defer d.layoutMu.Unlock()
+	if len(d.pages) == 0 {
+		return nil, fmt.Errorf("%w: the book is not laid out", ErrInvalid)
+	}
+	if i < 0 || i >= len(d.pages) {
+		return nil, fmt.Errorf("%w: page %d of %d", ErrNotFound, i, len(d.pages))
+	}
+	return d.pages[i], nil
+}
+
+// Number is where the page sits in the book, counting from zero.
+func (p *Page) Number() int { return p.num }
+
+// Path is the part of the spine the page came out of.
+func (p *Page) Path() string { return p.part.path }
+
+// Bounds returns the page in points.
+func (p *Page) Bounds() raster.Rect {
+	o := p.doc.options()
+	return raster.Rect{X1: o.Width * pxPerPoint, Y1: o.Height * pxPerPoint}
+}
+
+// Matrix returns the transform from page space to a device at a resolution.
+func (p *Page) Matrix(dpi float64) raster.Matrix {
+	s := float32(dpi / 72)
+	return raster.Scale(s, s)
+}
+
+// DeviceBounds is the page at a resolution, in whole pixels.
+func (p *Page) DeviceBounds(dpi float64) raster.Rect {
+	r := p.Matrix(dpi).ApplyRect(p.Bounds())
+	return raster.Rect{
+		X0: float32(math.Floor(float64(r.X0))), Y0: float32(math.Floor(float64(r.Y0))),
+		X1: float32(math.Ceil(float64(r.X1))), Y1: float32(math.Ceil(float64(r.Y1))),
+	}
+}
+
+func (d *Document) options() LayoutOptions {
+	d.layoutMu.Lock()
+	defer d.layoutMu.Unlock()
+	return d.opt
+}
+
+// Run draws the page through a device, under a transform from page space in
+// points to the device.
+func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
+	o := p.doc.options()
+	m := raster.Concat(raster.Matrix{
+		A: pxPerPoint, D: pxPerPoint,
+		E: o.Margin * pxPerPoint, F: (o.Margin - p.top) * pxPerPoint,
+	}, ctm)
+	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom}
+	r.walk(p.part.root)
+	return nil
+}
+
+// ImageDPI renders the page at a resolution.
+func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
+	b := p.DeviceBounds(dpi)
+	w, h := int(b.X1-b.X0), int(b.Y1-b.Y0)
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("%w: page is %dx%d", ErrInvalid, w, h)
+	}
+	px := raster.NewPixmap(raster.ModelRGB, w, h, false)
+	px.ClearWhite()
+	dev := gfx.NewDrawDevice(px)
+	if err := p.Run(dev, p.Matrix(dpi)); err != nil {
+		return nil, err
+	}
+	dev.Close()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		src := px.Samples[y*px.Stride:]
+		dst := img.Pix[y*img.Stride:]
+		for x := range w {
+			dst[x*4], dst[x*4+1], dst[x*4+2], dst[x*4+3] = src[x*3], src[x*3+1], src[x*3+2], 255
+		}
+	}
+	return img, nil
+}
+
+// Image renders the page at 96 dots per inch, one device pixel per CSS pixel.
+func (p *Page) Image() (*image.RGBA, error) { return p.ImageDPI(96) }
+
+// Text returns what the page says, a line of the text for each line box.
+func (p *Page) Text() string {
+	t := &textCollector{top: p.top, bottom: p.bottom}
+	t.walk(p.part.root)
+	return t.b.String()
+}
+
+// textCollector reads the text off the lines of one page.
+type textCollector struct {
+	b           strings.Builder
+	top, bottom float32
+}
+
+func (t *textCollector) walk(b *box) {
+	if b == nil || (b.h > 0 && (b.y >= t.bottom || b.y+b.h <= t.top)) {
+		return
+	}
+	if len(b.lines) > 0 {
+		for i := range b.lines {
+			ln := &b.lines[i]
+			if ln.y >= t.bottom || ln.y+ln.h <= t.top {
+				continue
+			}
+			n := t.b.Len()
+			for j := range ln.frags {
+				t.b.WriteString(ln.frags[j].text)
+			}
+			if t.b.Len() > n {
+				t.b.WriteByte('\n')
+			}
+		}
+		return
+	}
+	for _, k := range b.kids {
+		t.walk(k)
+	}
+}
