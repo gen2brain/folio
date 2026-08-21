@@ -2022,6 +2022,93 @@ func TestLayoutSpacing(t *testing.T) {
 	}
 }
 
+// TestCSSWritingMode reads the writing mode in the spellings a book writes
+// it in, including the two prefixed ones EPUB 3 was published with and the
+// old names that mean a horizontal line.
+func TestCSSWritingMode(t *testing.T) {
+	for _, tc := range []struct {
+		decl string
+		want Writing
+	}{
+		{`writing-mode: vertical-rl`, WritingVerticalRL},
+		{`-epub-writing-mode: vertical-rl`, WritingVerticalRL},
+		{`-webkit-writing-mode: vertical-rl`, WritingVerticalRL},
+		{`writing-mode: tb-rl`, WritingVerticalRL},
+		{`writing-mode: vertical-lr`, WritingVerticalLR},
+		{`writing-mode: horizontal-tb`, WritingHorizontal},
+		{`writing-mode: rl-tb`, WritingHorizontal},
+		{`writing-mode: sideways`, WritingHorizontal},
+	} {
+		if got := styleOf(t, "#i {"+tc.decl+"}", `<p id="i">t</p>`, "i").Writing; got != tc.want {
+			t.Errorf("%s gave %d, want %d", tc.decl, got, tc.want)
+		}
+	}
+	if got := styleOf(t, `#i { text-orientation: upright }`, `<p id="i">t</p>`, "i").Orient; got != OrientUpright {
+		t.Errorf("text-orientation gave %d", got)
+	}
+
+	// A character stands upright in vertical text when UAX #50 says it
+	// does, and turns with the line otherwise.
+	f := face{vertical: true}
+	for _, tc := range []struct {
+		r    rune
+		want bool
+	}{{'日', true}, {'あ', true}, {'。', true}, {'A', false}, {'1', false}, {'—', false}} {
+		if got := f.standsUp(tc.r); got != tc.want {
+			t.Errorf("%c stands up %v, want %v", tc.r, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		o    Orientation
+		r    rune
+		want bool
+	}{{OrientUpright, 'A', true}, {OrientSideways, '日', false}} {
+		if got := (face{vertical: true, orient: tc.o}).standsUp(tc.r); got != tc.want {
+			t.Errorf("%c under orientation %d stands up %v", tc.r, tc.o, got)
+		}
+	}
+	if (face{}).standsUp('日') {
+		t.Error("a character stands up on a horizontal line")
+	}
+}
+
+// TestLayoutVertical lays a Japanese page out down the page and right to
+// left, which is where the ink lands: the first line is against the right
+// edge and runs from the top.
+func TestLayoutVertical(t *testing.T) {
+	d, p := styledPage(t, `html { -epub-writing-mode: vertical-rl; font-size: 20px }
+		body, p { margin: 0 }`, `<p>日本語です</p>`,
+		&LayoutOptions{Width: 300, Height: 200, Margin: 0})
+	defer d.Close()
+	if got := p.Text(); got != "日本語です\n" {
+		t.Errorf("page text = %q", got)
+	}
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ink := func(x0, y0, x1, y1 int) int {
+		n := 0
+		for y := y0; y < y1; y++ {
+			for x := x0; x < x1; x++ {
+				if i := img.PixOffset(x, y); img.Pix[i] < 200 {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	if n := ink(280, 0, 300, 100); n < 100 {
+		t.Errorf("%d dark pixels down the right edge, want the first line there", n)
+	}
+	if n := ink(0, 0, 20, 100); n != 0 {
+		t.Errorf("%d dark pixels down the left edge, want none", n)
+	}
+	if n := ink(280, 100, 300, 200); n > 50 {
+		t.Errorf("%d dark pixels below the line, want it to end above", n)
+	}
+}
+
 func TestCSSTypography(t *testing.T) {
 	s := styleOf(t, `#i { font-variant: small-caps; letter-spacing: 2px; text-transform: uppercase }`,
 		`<p id="i">t</p>`, "i")

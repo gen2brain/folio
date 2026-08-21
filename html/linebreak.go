@@ -65,6 +65,9 @@ const (
 	// lbIsDotted marks U+25CC DOTTED CIRCLE, which rule LB28a names on its
 	// own.
 	lbIsDotted = 1 << 10
+	// lbIsUpright marks a character that stands upright in vertical text
+	// rather than turning with the line, which is UAX #50.
+	lbIsUpright = 1 << 11
 )
 
 // lbLookup returns the packed class and properties of a code point.

@@ -7,6 +7,9 @@ import (
 	"math"
 	"strings"
 
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
+
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
 )
@@ -57,6 +60,9 @@ type laidPart struct {
 	tops []float32
 	// height is how far the column reaches.
 	height float32
+	// vertical is a part whose lines run down the page and whose pages run
+	// right to left.
+	vertical bool
 }
 
 // Page is one page of a laid out book.
@@ -107,14 +113,21 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 		if opt.UserSheet != nil {
 			sheets = append(sheets[:1:1], append([]*Stylesheet{opt.UserSheet}, sheets[1:]...)...)
 		}
-		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets)}
-		l.run(buildBoxes(root, Cascade(root, media, sheets...)), cw)
+		st := Cascade(root, media, sheets...)
+		vertical := writingOf(root, st).Vertical()
+		colw, pageLen := cw, ch
+		if vertical {
+			colw, pageLen = ch, cw
+		}
+		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets), vertical: vertical}
+		l.run(buildBoxes(root, st), colw)
 		errs = append(errs, l.errs...)
 		if len(l.spans) == 0 {
 			continue
 		}
 
-		p := &laidPart{path: it.Path, root: l.root, tops: paginate(l.spans, ch), height: l.y}
+		p := &laidPart{path: it.Path, root: l.root, tops: paginate(l.spans, pageLen),
+			height: l.y, vertical: vertical}
 		parts = append(parts, p)
 		for i, top := range p.tops {
 			bottom := p.height
@@ -128,6 +141,28 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 	d.opt, d.parts, d.pages = opt, parts, pages
 	d.layoutMu.Unlock()
 	return len(pages), errors.Join(errs...)
+}
+
+// writingOf is the writing mode a part is laid out in, which is what its root
+// element or its body asks for.
+func writingOf(root *Node, st Styles) Writing {
+	out := WritingHorizontal
+	n := 0
+	Walk(root, func(k *Node) bool {
+		if k.Type != xhtml.ElementNode || n >= 2 {
+			return n < 2
+		}
+		if w := st.Of(k).Writing; w != WritingHorizontal {
+			out = w
+		}
+		if k.DataAtom == atom.Body {
+			n = 2
+		} else {
+			n++
+		}
+		return true
+	})
+	return out
 }
 
 // imagePart makes a page of a spine item that is a picture rather than a
@@ -213,11 +248,20 @@ func (d *Document) options() LayoutOptions {
 // points to the device.
 func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
 	o := p.doc.options()
-	m := raster.Concat(raster.Matrix{
+	page := raster.Matrix{
 		A: pxPerPoint, D: pxPerPoint,
 		E: o.Margin * pxPerPoint, F: (o.Margin - p.top) * pxPerPoint,
-	}, ctm)
-	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom}
+	}
+	if p.part.vertical {
+		// The lines run down the page and the pages run right to left: the
+		// column turns a quarter and starts at the right edge.
+		page = raster.Matrix{
+			B: pxPerPoint, C: -pxPerPoint,
+			E: (o.Width - o.Margin + p.top) * pxPerPoint, F: o.Margin * pxPerPoint,
+		}
+	}
+	m := raster.Concat(page, ctm)
+	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom, vertical: p.part.vertical}
 	r.walk(p.part.root)
 	return nil
 }

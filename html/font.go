@@ -94,6 +94,10 @@ type face struct {
 	// bold and italic are what was asked for, which a fallback for a script
 	// this face cannot draw is looked up by.
 	bold, italic bool
+	// vertical is a face measured down a line rather than across one, and
+	// orient how it turns a character there.
+	vertical bool
+	orient   Orientation
 }
 
 // faceMetrics is what a program says about itself, worked out once: the em
@@ -223,7 +227,8 @@ func styleFace(s *Style, set *fontSet) face {
 		prog = font.Standard(base14[kind][slot])
 	}
 	return face{prog: prog, m: metricsOf(prog), size: s.FontSize,
-		track: s.LetterSpacing, bold: bold, italic: italic}
+		track: s.LetterSpacing, bold: bold, italic: italic,
+		vertical: s.Writing.Vertical(), orient: s.Orient}
 }
 
 // namedKey is what a resolved family is remembered by.
@@ -293,7 +298,29 @@ func (f face) width(s string) float32 {
 	return w*f.size + float32(n)*f.track
 }
 
-func (f face) advance(r rune) float32 { return f.m.advance(r)*f.size + f.track }
+// advance is what a character takes along its line, which for one that stands
+// upright in vertical text is the em rather than its own width.
+func (f face) advance(r rune) float32 {
+	if f.standsUp(r) {
+		return f.size + f.track
+	}
+	return f.m.advance(r)*f.size + f.track
+}
+
+// standsUp reports a character drawn upright rather than turned with the
+// line, which only happens in vertical text.
+func (f face) standsUp(r rune) bool {
+	if !f.vertical {
+		return false
+	}
+	switch f.orient {
+	case OrientUpright:
+		return true
+	case OrientSideways:
+		return false
+	}
+	return lbLookup(r)&lbIsUpright != 0
+}
 
 // gid is the glyph a character is drawn with, and -1 when the face has none.
 func (f face) gid(r rune) int { return int(f.m.glyph(r).gid) }

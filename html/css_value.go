@@ -204,6 +204,29 @@ const (
 	BorderHidden
 )
 
+// Writing is the direction the lines of a box run in.
+type Writing uint8
+
+// The writing modes.
+const (
+	WritingHorizontal Writing = iota
+	WritingVerticalRL
+	WritingVerticalLR
+)
+
+// Vertical reports a mode whose lines run down the page.
+func (w Writing) Vertical() bool { return w != WritingHorizontal }
+
+// Orientation is how a character is turned in vertical text.
+type Orientation uint8
+
+// The text orientations.
+const (
+	OrientMixed Orientation = iota
+	OrientUpright
+	OrientSideways
+)
+
 // Border is one edge of a box.
 type Border struct {
 	Width float32
@@ -257,6 +280,11 @@ type Style struct {
 	Float Float
 	Clear Clear
 
+	// Writing is the direction the lines run in, and Orient how a character
+	// is turned when they run down the page.
+	Writing Writing
+	Orient  Orientation
+
 	// Collapse is whether the cells of a table share the borders between
 	// them, and Spacing the gap between them when they do not.
 	Collapse           bool
@@ -309,6 +337,7 @@ func (s *Style) inherit() Style {
 	c.Decoration = s.Decoration
 	c.WhiteSpace = s.WhiteSpace
 	c.ListStyle = s.ListStyle
+	c.Writing, c.Orient = s.Writing, s.Orient
 	c.Collapse = s.Collapse
 	c.SpacingX, c.SpacingY = s.SpacingX, s.SpacingY
 	return c
@@ -1009,6 +1038,24 @@ func applyProp(s *Style, name string, v value) bool {
 		}
 	case "content":
 		s.Content, s.HasContent = v.content()
+	case "writing-mode", "-epub-writing-mode", "-webkit-writing-mode", "-ms-writing-mode":
+		switch v.ident() {
+		case "horizontal-tb", "lr-tb", "rl-tb":
+			s.Writing = WritingHorizontal
+		case "vertical-rl", "tb-rl", "tb":
+			s.Writing = WritingVerticalRL
+		case "vertical-lr":
+			s.Writing = WritingVerticalLR
+		}
+	case "text-orientation", "-epub-text-orientation", "-webkit-text-orientation":
+		switch v.ident() {
+		case "mixed":
+			s.Orient = OrientMixed
+		case "upright":
+			s.Orient = OrientUpright
+		case "sideways", "sideways-right", "rotate-right":
+			s.Orient = OrientSideways
+		}
 	case "border-collapse":
 		switch v.ident() {
 		case "collapse":
@@ -1156,6 +1203,10 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.Float = src.Float
 	case "content":
 		dst.Content, dst.HasContent = src.Content, src.HasContent
+	case "writing-mode", "-epub-writing-mode", "-webkit-writing-mode", "-ms-writing-mode":
+		dst.Writing = src.Writing
+	case "text-orientation", "-epub-text-orientation", "-webkit-text-orientation":
+		dst.Orient = src.Orient
 	case "border-collapse":
 		dst.Collapse = src.Collapse
 	case "border-spacing":

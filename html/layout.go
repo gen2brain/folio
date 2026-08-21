@@ -38,6 +38,8 @@ type layout struct {
 	fonts *fontSet
 	// root is the tree run laid out.
 	root *box
+	// vertical is a part whose lines run down the page.
+	vertical bool
 }
 
 // face is the face a style asks for, out of what the part has.
@@ -50,7 +52,8 @@ const layoutProbes = 1 << 16
 // cell, or a trial of either.
 func (l *layout) sub(y float32) *layout {
 	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y,
-		fonts: l.fonts, posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH}
+		fonts: l.fonts, posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH,
+		vertical: l.vertical}
 }
 
 // spend takes one trial layout out of the budget.

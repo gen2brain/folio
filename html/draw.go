@@ -16,6 +16,8 @@ type painter struct {
 	// top and bottom bound the part of the column the page shows.
 	top, bottom float32
 	path        raster.Path
+	// vertical is a page whose lines run down it.
+	vertical bool
 }
 
 func (p *painter) walk(b *box) {
@@ -67,13 +69,14 @@ func (p *painter) line(ln *lineBox) {
 		return
 	}
 	base := ln.y + ln.baseline
+	mid := ln.y + ln.h/2
 	for i := range ln.frags {
 		f := &ln.frags[i]
 		if f.img != nil {
 			p.image(f.img, f.x, base-f.h, f.w, f.h)
 			continue
 		}
-		p.text(f.text, f.face, f.style, f.x, base, f.extra)
+		p.text(f.text, f.face, f.style, f.x, base, mid, f.extra)
 	}
 }
 
@@ -85,31 +88,49 @@ func (p *painter) marker(b *box, ln *lineBox) {
 		return
 	}
 	w := f.width(b.marker)
-	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, 0)
+	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, ln.y+ln.h/2, 0)
 }
 
-func (p *painter) text(s string, f face, st *Style, x, y, extra float32) {
+func (p *painter) text(s string, f face, st *Style, x, y, mid, extra float32) {
 	if s == "" || f.prog == nil {
 		return
 	}
-	span := gfx.TextSpan{
-		Font: substFont(f.prog),
-		Trm:  raster.Matrix{A: f.size, D: -f.size},
-	}
+	prog := substFont(f.prog)
+	var spans []gfx.TextSpan
+	span := gfx.TextSpan{Font: prog, Trm: raster.Matrix{A: f.size, D: -f.size}}
+	up := false
 	start := x
 	for _, r := range s {
 		adv := f.advance(r)
+		if f.standsUp(r) != up && len(span.Items) > 0 {
+			spans = append(spans, span)
+			span = gfx.TextSpan{Font: prog, Trm: raster.Matrix{A: f.size, D: -f.size}}
+		}
+		up = f.standsUp(r)
+		gx, gy := x, y
+		if p.vertical {
+			gy = mid + f.size/2
+			if up {
+				span.Trm = raster.Matrix{B: -f.size, C: -f.size}
+				gx = x + f.ascent()
+			} else {
+				gy -= f.descent()
+			}
+		}
 		if r == ' ' {
 			adv += extra
 		} else if gid := f.gid(r); gid > 0 {
 			span.Items = append(span.Items, gfx.TextItem{
-				X: x, Y: y, GID: gid, Rune: r, Adv: adv / f.size,
+				X: gx, Y: gy, GID: gid, Rune: r, Adv: adv / f.size,
 			})
 		}
 		x += adv
 	}
 	if len(span.Items) > 0 {
-		t := &gfx.Text{Spans: []gfx.TextSpan{span}}
+		spans = append(spans, span)
+	}
+	if len(spans) > 0 {
+		t := &gfx.Text{Spans: spans}
 		col, alpha := colorOf(st.Color)
 		p.dev.FillText(t, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
 	}
