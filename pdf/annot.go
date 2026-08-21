@@ -27,9 +27,6 @@ func (p *Page) RunAnnotations(dev Device, ctm raster.Matrix) {
 		case "Popup", "Link":
 			continue
 		case "Widget":
-			if f.Lookup(dict, "FT") == nil || f.Lookup(dict, "T") == nil {
-				continue
-			}
 			widgets = append(widgets, dict)
 			continue
 		}

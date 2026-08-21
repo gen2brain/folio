@@ -2260,6 +2260,18 @@ func TestAnnotationWidgetsLast(t *testing.T) {
 	}
 }
 
+// TestAnnotationWidgetNoField checks that a widget whose field type and name
+// are on the parent field is drawn. Every widget of a page draws, which is
+// what MuPDF's own page list holds.
+func TestAnnotationWidgetNoField(t *testing.T) {
+	d := annotPDF(t,
+		"<< /Type /Annot /Subtype /Widget /Parent 9 0 R /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
+	px := renderDoc(t, d, nil)
+	if c := pixel(px, 50, 50); !same(c, 255, 0, 0) {
+		t.Errorf("the widget drew %v, want its red", c)
+	}
+}
+
 // textDoc is a page of Helvetica text: two lines, and a third far enough to
 // the right on the second baseline to be a line of its own.
 func textDoc(t *testing.T) *Document {
