@@ -173,8 +173,9 @@ func FuzzLoad(fu *testing.F) {
 }
 
 // BenchmarkJBIG2 decodes the fixtures, which between them cover the generic
-// region on its own, a region carried by a globals stream, and an intermediate
-// region buffer. Run it on a board: this laptop carries load.
+// region on its own, a region carried by a globals stream, an intermediate
+// region buffer, and a refinement region with typical prediction on. Run it on
+// a board: this laptop carries load.
 func BenchmarkJBIG2(b *testing.B) {
 	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.jb2"))
 	var data [][]byte

@@ -125,6 +125,15 @@ type jbCoder struct {
 	iaid   []uint8
 	gb     []uint8
 	gr     []uint8
+	// refKey and refTmpl cache the label tables of the refinement template,
+	// which every symbol of a dictionary refines through the same one.
+	refKey  refKey
+	refTmpl *refTemplate
+}
+
+type refKey struct {
+	template int
+	a0, a1   jbPoint
 }
 
 func newJBCoder(data []byte, start, end int, budget *int64) *jbCoder {
@@ -450,6 +459,16 @@ func (c *jbCoder) refinementBitmap(w, h, template int, ref *jbBitmap, dx, dy int
 	pseudo := jbRefinementReusedContexts[template]
 	ctx := c.refine()
 
+	// Reading a neighbour through at costs a bounds check and a multiply, and
+	// the loop runs thirteen times a pixel. Where every point of the template
+	// falls inside the three by three around the pixel, which is every file
+	// that does not move an adaptive pixel far away, the neighbourhood is six
+	// rows of three bits that slide along with j.
+	if t := c.refTemplate(template, coding, reference, at); t != nil {
+		c.refineNear(bm, ref, dx, dy, t, ctx, pseudo, prediction)
+		return bm, nil
+	}
+
 	ltp := 0
 	for i := 0; i < h; i++ {
 		if prediction {
@@ -491,6 +510,172 @@ func jbTypical(ref *jbBitmap, x, y int) (uint8, bool) {
 		return 1, true
 	}
 	return 0, false
+}
+
+// refTemplate is a refinement template whose every point lies in the three by
+// three square around the pixel. cells holds one entry per point, as the row
+// it reads and the bit of that row's window, and the label is those bits in
+// order from the top.
+type refTemplate struct {
+	coding, reference *[512]uint32
+	rbits             uint
+}
+
+// refTemplate returns the tables for one template, building them the first
+// time it is asked and once more whenever an adaptive pixel moves. A symbol
+// dictionary refines every one of its symbols through the same template, and
+// the tables are a thousand times the work of the smallest symbol.
+func (c *jbCoder) refTemplate(template int, coding, reference []jbPoint, at []jbPoint) *refTemplate {
+	key := refKey{template: template}
+	if template == 0 && len(at) >= 2 {
+		key.a0, key.a1 = at[0], at[1]
+	}
+	if c.refTmpl != nil && c.refKey == key {
+		return c.refTmpl
+	}
+	t := newRefTemplate(coding, reference)
+	c.refKey, c.refTmpl = key, t
+	return t
+}
+
+// newRefTemplate turns a template into the label each state of the two three
+// by three neighborhoods maps to, and is nil for one that reaches outside
+// them.
+func newRefTemplate(coding, reference []jbPoint) *refTemplate {
+	cod, ok := refLabels(coding)
+	if !ok {
+		return nil
+	}
+	ref, ok := refLabels(reference)
+	if !ok {
+		return nil
+	}
+	return &refTemplate{coding: cod, reference: ref, rbits: uint(len(reference))}
+}
+
+// refLabels is the label a template contributes for every one of the 512
+// states three rows of three bits can be in.
+func refLabels(pts []jbPoint) (*[512]uint32, bool) {
+	var shift [16]uint
+	for k, p := range pts {
+		if p.x < -1 || p.x > 1 || p.y < -1 || p.y > 1 || k >= len(shift) {
+			return nil, false
+		}
+		// Row y sits at (1-y)*3 in the packed window and column x at 1-x
+		// inside it, with the leftmost column highest.
+		shift[k] = uint((1-int(p.y))*3 + 1 - int(p.x))
+	}
+	t := new([512]uint32)
+	for w := range t {
+		var v uint32
+		for k := range pts {
+			v = v<<1 | uint32(w)>>shift[k]&1
+		}
+		t[w] = v
+	}
+	return t, true
+}
+
+// refRows is the three rows of a bitmap a refinement template reaches, and
+// the sliding window of each.
+type refRows struct {
+	rows [3][]uint8
+	win  [3]uint32
+	xoff int
+	w    int
+	// right is the column the low bit of each window holds.
+	right int
+}
+
+func (r *refRows) at(b *jbBitmap, y, x int) {
+	for k := 0; k < 3; k++ {
+		r.rows[k] = nil
+		if v := y + k - 1; v >= 0 && v < b.h {
+			r.rows[k] = b.pix[v*b.stride:]
+		}
+	}
+	r.xoff, r.w, r.right = b.xoff, b.w, x+1
+	for k := 0; k < 3; k++ {
+		r.win[k] = r.bitOf(k, x-1)<<2 | r.bitOf(k, x)<<1 | r.bitOf(k, x+1)
+	}
+}
+
+func (r *refRows) bitOf(k, x int) uint32 {
+	if r.rows[k] == nil || x < 0 || x >= r.w {
+		return 0
+	}
+	i := r.xoff + x
+	return uint32(r.rows[k][i>>3]>>uint(7-i&7)) & 1
+}
+
+func (r *refRows) step() {
+	r.right++
+	var b0, b1, b2 uint32
+	// The column is the same for all three rows, so it is bounded once.
+	if x := r.right; x >= 0 && x < r.w {
+		i := r.xoff + x
+		by, sh := i>>3, uint(7-i&7)
+		if r.rows[0] != nil {
+			b0 = uint32(r.rows[0][by]>>sh) & 1
+		}
+		if r.rows[1] != nil {
+			b1 = uint32(r.rows[1][by]>>sh) & 1
+		}
+		if r.rows[2] != nil {
+			b2 = uint32(r.rows[2][by]>>sh) & 1
+		}
+	}
+	r.win[0] = r.win[0]<<1&7 | b0
+	r.win[1] = r.win[1]<<1&7 | b1
+	r.win[2] = r.win[2]<<1&7 | b2
+}
+
+// packed is the whole neighborhood as one number: the top row highest, and
+// the leftmost column of each row highest inside it.
+func (r *refRows) packed() uint32 { return r.win[0]<<6 | r.win[1]<<3 | r.win[2] }
+
+// uniform reports the value 6.3.5.6 gives a pixel whose whole reference
+// neighborhood is one color.
+func (r *refRows) uniform() (uint8, bool) {
+	switch or := r.win[0] | r.win[1] | r.win[2]; {
+	case or == 0:
+		return 0, true
+	case or == 7 && r.win[0]&r.win[1]&r.win[2] == 7:
+		return 1, true
+	}
+	return 0, false
+}
+
+// refineNear is 6.3 for a template that stays inside the three by three
+// square, which is what every file of the corpus writes.
+func (c *jbCoder) refineNear(bm, ref *jbBitmap, dx, dy int, t *refTemplate,
+	ctx []uint8, pseudo uint32, prediction bool) {
+	var cr, rr refRows
+	ltp := 0
+	for i := 0; i < bm.h; i++ {
+		if prediction {
+			ltp ^= c.mq.ReadBit(ctx, pseudo)
+		}
+		cr.at(bm, i, 0)
+		rr.at(ref, i-dy, -dx)
+		for j := 0; j < bm.w; j++ {
+			v := uint8(0)
+			if ltp != 0 {
+				if u, ok := rr.uniform(); ok {
+					v = u
+					goto place
+				}
+			}
+			v = uint8(c.mq.ReadBit(ctx, t.coding[cr.packed()]<<t.rbits|t.reference[rr.packed()]))
+		place:
+			bm.set(j, i, v)
+			// The window has already read the pixel this decided, so it is
+			// corrected before it slides over to become the one at x-1.
+			cr.win[1] = cr.win[1]&^2 | uint32(v)<<1
+			cr.step()
+			rr.step()
+		}
+	}
 }
 
 // jbReader is the bit reader the Huffman coded parts of a segment use; the
