@@ -29,7 +29,7 @@ that a caller can turn on and off, encryption, and files damaged enough that the
 table has to be rebuilt.
 
 A page also comes back as text with the box every character occupies, as the links it carries,
-and as SVG.
+and as SVG; a document as its outline, its metadata and its page labels.
 
 Out of scope: writing or editing PDF, form field values, JavaScript, XFA, signature validation
 and PDF/A validation.

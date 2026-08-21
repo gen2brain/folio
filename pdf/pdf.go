@@ -33,6 +33,10 @@
 // All four work in page space at 72 dots per inch, with y counting down from
 // the top left.
 //
+// What the document says about itself is Outline, which is the tree a viewer
+// shows as a table of contents, Metadata, and PageLabels, which is what a
+// viewer numbers the pages with when a preface counts in roman numerals.
+//
 // # Devices
 //
 // Everything a page draws goes through Device, which Page.Run takes. The

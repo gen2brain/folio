@@ -223,3 +223,34 @@ func searchNames(f *File, names Array, key string) Object {
 	}
 	return nil
 }
+
+// NumberTreeEach calls fn for every entry of a number tree in order, ISO
+// 32000-1 7.9.7, and stops when fn returns false. A number tree is a name
+// tree with integer keys, which is how page labels are stored.
+func (f *File) NumberTreeEach(root Object, fn func(int64, Object) bool) {
+	f.numberTree(root, fn, 0)
+}
+
+func (f *File) numberTree(root Object, fn func(int64, Object) bool, depth int) bool {
+	if depth > maxNameDepth {
+		return false
+	}
+	node := f.GetDict(root)
+	if node == nil {
+		return true
+	}
+	if nums := f.GetArray(node["Nums"]); nums != nil {
+		for i := 0; 2*i+1 < len(nums); i++ {
+			if !fn(f.GetInt(nums[2*i], 0), nums[2*i+1]) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, kid := range f.GetArray(node["Kids"]) {
+		if !f.numberTree(kid, fn, depth+1) {
+			return false
+		}
+	}
+	return true
+}

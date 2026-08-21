@@ -3,7 +3,10 @@ package pdf
 import (
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gen2brain/pdf/raster"
 	"github.com/gen2brain/pdf/syntax"
@@ -438,4 +441,273 @@ func (d *Document) optionalContentVisible(obj Object) bool {
 		}
 		return false
 	}
+}
+
+// Outline is one entry of the document outline, ISO 32000-1 12.3.3: what a
+// viewer shows as the table of contents.
+type Outline struct {
+	Title string
+	// Page is the page the entry leads to, and -1 for one that leads out of
+	// the document or nowhere; Point is where on that page.
+	Page  int
+	Point raster.Point
+	// URI is where an entry leading out of the document points.
+	URI string
+	// Open is whether the file asks for the entry to start expanded.
+	Open bool
+	// Children are the entries nested under this one.
+	Children []Outline
+}
+
+// maxOutlineDepth bounds an outline that points at itself, which a damaged
+// file is free to do.
+const maxOutlineDepth = 32
+
+// Outline returns the document outline as the tree it is. A caller that wants
+// it flat walks Children and counts the depth.
+func (d *Document) Outline() []Outline {
+	f := d.f
+	root := f.GetDict(f.Lookup(f.Catalog(), "Outlines"))
+	if root == nil {
+		return nil
+	}
+	return d.outlineList(root["First"], 0, map[Ref]bool{})
+}
+
+func (d *Document) outlineList(first Object, depth int, seen map[Ref]bool) []Outline {
+	if depth > maxOutlineDepth {
+		return nil
+	}
+	f := d.f
+	var out []Outline
+	for obj := first; obj != nil; {
+		if r, ok := obj.(Ref); ok {
+			if seen[r] {
+				return out
+			}
+			seen[r] = true
+		}
+		item := f.GetDict(obj)
+		if item == nil {
+			return out
+		}
+		e := Outline{
+			Title: decodeTextString(f.GetBytes(item["Title"])),
+			Page:  -1,
+			Open:  f.GetInt(item["Count"], 0) > 0,
+		}
+		if act := f.GetDict(item["A"]); act != nil {
+			e.URI = d.actionURI(act)
+			if e.URI == "" {
+				e.Page, e.Point = d.destination(f.Lookup(act, "D"))
+			}
+		} else {
+			e.Page, e.Point = d.destination(item["Dest"])
+		}
+		e.Children = d.outlineList(item["First"], depth+1, seen)
+		out = append(out, e)
+		obj = item["Next"]
+	}
+	return out
+}
+
+// Metadata is what the document says about itself, ISO 32000-1 14.3.3. A
+// field the file does not carry is empty.
+type Metadata struct {
+	Title    string
+	Author   string
+	Subject  string
+	Keywords string
+	Creator  string
+	Producer string
+	// Created and Modified are the zero time when the file gives no date, or
+	// one this cannot read.
+	Created  time.Time
+	Modified time.Time
+}
+
+// Metadata returns the document information dictionary.
+func (d *Document) Metadata() Metadata {
+	f := d.f
+	info := f.GetDict(f.Trailer()["Info"])
+	if info == nil {
+		return Metadata{}
+	}
+	str := func(key Name) string { return decodeTextString(f.GetBytes(info[key])) }
+	return Metadata{
+		Title:    str("Title"),
+		Author:   str("Author"),
+		Subject:  str("Subject"),
+		Keywords: str("Keywords"),
+		Creator:  str("Creator"),
+		Producer: str("Producer"),
+		Created:  parseDate(str("CreationDate")),
+		Modified: parseDate(str("ModDate")),
+	}
+}
+
+// parseDate reads a PDF date, ISO 32000-1 7.9.4: D:YYYYMMDDHHmmSSOHH'mm',
+// truncated anywhere after the year. Everything about it is optional in
+// practice, including the prefix and the apostrophes.
+func parseDate(s string) time.Time {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "D:")
+	digits := make([]byte, 0, 14)
+	i := 0
+	for ; i < len(s) && len(digits) < 14; i++ {
+		if s[i] < '0' || s[i] > '9' {
+			break
+		}
+		digits = append(digits, s[i])
+	}
+	if len(digits) < 4 {
+		return time.Time{}
+	}
+	for len(digits) < 14 {
+		// A date that stops early means the first of the month, midnight.
+		switch len(digits) {
+		case 4, 6:
+			digits = append(digits, '0', '1')
+		default:
+			digits = append(digits, '0', '0')
+		}
+	}
+	t, err := time.ParseInLocation("20060102150405", string(digits), dateZone(s[i:]))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// dateZone reads the offset a date ends with, which is a sign, two digits, an
+// apostrophe and two more, with everything after the sign optional.
+func dateZone(s string) *time.Location {
+	if s == "" || s[0] == 'Z' {
+		return time.UTC
+	}
+	sign := 1
+	switch s[0] {
+	case '-':
+		sign = -1
+	case '+':
+	default:
+		return time.UTC
+	}
+	num := func(s string) int {
+		if len(s) < 2 || s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9' {
+			return 0
+		}
+		return int(s[0]-'0')*10 + int(s[1]-'0')
+	}
+	hh := num(s[1:])
+	mm := 0
+	if i := strings.IndexAny(s, "'"); i >= 0 {
+		mm = num(s[i+1:])
+	} else if len(s) >= 5 {
+		mm = num(s[3:])
+	}
+	if hh > 23 || mm > 59 {
+		return time.UTC
+	}
+	return time.FixedZone("", sign*(hh*3600+mm*60))
+}
+
+// PageLabels returns the label of every page, ISO 32000-1 12.4.2: what a
+// viewer shows instead of the page number, so that a preface numbers itself
+// in lower case roman numerals. A document with no labels returns nil.
+func (d *Document) PageLabels() []string {
+	f := d.f
+	root := f.Lookup(f.Catalog(), "PageLabels")
+	if root == nil {
+		return nil
+	}
+	n := f.NumPages()
+	out := make([]string, n)
+
+	type span struct {
+		first int
+		dict  Dict
+	}
+	var spans []span
+	f.NumberTreeEach(root, func(k int64, v Object) bool {
+		if k >= 0 && k < int64(n) {
+			spans = append(spans, span{int(k), f.GetDict(v)})
+		}
+		return true
+	})
+	if len(spans) == 0 {
+		return nil
+	}
+	for i, sp := range spans {
+		end := n
+		if i+1 < len(spans) {
+			end = spans[i+1].first
+		}
+		style := f.GetName(sp.dict["S"])
+		prefix := decodeTextString(f.GetBytes(sp.dict["P"]))
+		start := int(f.GetInt(sp.dict["St"], 1))
+		if start < 1 {
+			start = 1
+		}
+		for p := sp.first; p < end; p++ {
+			out[p] = prefix + pageLabel(style, start+p-sp.first)
+		}
+	}
+	return out
+}
+
+// pageLabel numbers one page in the style a label range asks for.
+func pageLabel(style Name, n int) string {
+	switch style {
+	case "D":
+		return strconv.Itoa(n)
+	case "r":
+		return strings.ToLower(roman(n))
+	case "R":
+		return roman(n)
+	case "a":
+		return strings.ToLower(letters(n))
+	case "A":
+		return letters(n)
+	}
+	return ""
+}
+
+// romanDigits are the values and their spellings, largest first, with the
+// subtractive forms in place so that a single pass writes them.
+var romanDigits = []struct {
+	v int
+	s string
+}{
+	{1000, "M"}, {900, "CM"}, {500, "D"}, {400, "CD"},
+	{100, "C"}, {90, "XC"}, {50, "L"}, {40, "XL"},
+	{10, "X"}, {9, "IX"}, {5, "V"}, {4, "IV"}, {1, "I"},
+}
+
+// maxRoman is where a roman numeral stops being one; a label past it is
+// written in digits, which is what a viewer does with it.
+const maxRoman = 4000
+
+func roman(n int) string {
+	if n <= 0 || n >= maxRoman {
+		return strconv.Itoa(n)
+	}
+	var b strings.Builder
+	for _, d := range romanDigits {
+		for n >= d.v {
+			b.WriteString(d.s)
+			n -= d.v
+		}
+	}
+	return b.String()
+}
+
+// letters numbers a page A, B ... Z, AA, BB, as the specification says rather
+// than as a spreadsheet column does.
+func letters(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	c := byte('A' + (n-1)%26)
+	return strings.Repeat(string(c), (n-1)/26+1)
 }

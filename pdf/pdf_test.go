@@ -6,9 +6,11 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gen2brain/pdf/raster"
 )
@@ -2471,5 +2473,112 @@ func TestCIDUnicode(t *testing.T) {
 func TestCIDUnicodePrefersTheIdeograph(t *testing.T) {
 	if got := uniRuneOf(cidUnicode("Japan1"), 3284); got == '⽇' {
 		t.Fatalf("CID 843 came back as the Kangxi radical")
+	}
+}
+
+func TestOutline(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+		"<< /Type /Outlines /First 6 0 R /Count 2 >>",
+		"<< /Title (One) /Dest [3 0 R /XYZ 10 20 0] /First 7 0 R /Count 1 /Next 8 0 R >>",
+		"<< /Title (Nested) /Dest [4 0 R /Fit] >>",
+		"<< /Title (Two) /A << /S /URI /URI (https://example.com/) >> >>",
+	})
+	o := d.Outline()
+	if len(o) != 2 {
+		t.Fatalf("got %d entries, want 2", len(o))
+	}
+	if o[0].Title != "One" || o[0].Page != 0 || o[0].Point.X != 10 || o[0].Point.Y != 20 {
+		t.Fatalf("first = %+v", o[0])
+	}
+	if !o[0].Open {
+		t.Fatalf("an entry with a positive /Count is open")
+	}
+	if len(o[0].Children) != 1 || o[0].Children[0].Title != "Nested" || o[0].Children[0].Page != 1 {
+		t.Fatalf("children = %+v", o[0].Children)
+	}
+	if o[1].Title != "Two" || o[1].URI != "https://example.com/" || o[1].Page != -1 {
+		t.Fatalf("second = %+v", o[1])
+	}
+}
+
+// TestOutlineCycle checks that an outline pointing back at itself terminates,
+// which a damaged file is free to do.
+func TestOutlineCycle(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+		"<< /Type /Outlines /First 5 0 R >>",
+		"<< /Title (Loop) /Next 5 0 R /First 5 0 R >>",
+	})
+	if o := d.Outline(); len(o) != 1 {
+		t.Fatalf("got %d entries, want 1", len(o))
+	}
+}
+
+func TestMetadata(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+	})
+	// The trailer buildPDF writes has no /Info, so put one in by hand.
+	d.f.Trailer()["Info"] = Dict{
+		"Title":        String("A Title"),
+		"Author":       String("An Author"),
+		"CreationDate": String("D:20240115103000+01'30'"),
+		"ModDate":      String("D:2024"),
+	}
+	m := d.Metadata()
+	if m.Title != "A Title" || m.Author != "An Author" {
+		t.Fatalf("metadata = %+v", m)
+	}
+	if got, want := m.Created.UTC(), time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("created = %v, want %v", got, want)
+	}
+	if got, want := m.Modified.UTC(), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("modified = %v, want %v", got, want)
+	}
+}
+
+func TestPageLabels(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /PageLabels 8 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R] /Count 5 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+		"<< /Nums [0 << /S /r >> 2 << /S /D /St 7 >> 4 << /S /A /P (App ) >>] >>",
+	})
+	got := d.PageLabels()
+	want := []string{"i", "ii", "7", "8", "App A"}
+	if len(got) != len(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRomanAndLetters(t *testing.T) {
+	cases := []struct{ n, style, want string }{
+		{"1", "R", "I"}, {"4", "R", "IV"}, {"9", "R", "IX"},
+		{"14", "r", "xiv"}, {"1990", "R", "MCMXC"}, {"4000", "R", "4000"},
+		{"1", "A", "A"}, {"26", "A", "Z"}, {"27", "a", "aa"}, {"53", "A", "AAA"},
+		{"54", "A", "BBB"},
+	}
+	for _, tc := range cases {
+		n, _ := strconv.Atoi(tc.n)
+		if got := pageLabel(Name(tc.style), n); got != tc.want {
+			t.Fatalf("%s of %d = %q, want %q", tc.style, n, got, tc.want)
+		}
 	}
 }
