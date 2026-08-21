@@ -518,3 +518,518 @@ func TestOutlineFromHeadings(t *testing.T) {
 		t.Fatalf("third = %+v", o[2])
 	}
 }
+
+func TestCSSTokens(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []cssToken
+	}{
+		{`p`, []cssToken{{kind: cssIdent, value: "p"}}},
+		{`/* c */p`, []cssToken{{kind: cssIdent, value: "p"}}},
+		{`#a1`, []cssToken{{kind: cssHash, value: "a1", id: true}}},
+		{`#123`, []cssToken{{kind: cssHash, value: "123"}}},
+		{`@media`, []cssToken{{kind: cssAtKeyword, value: "media"}}},
+		{`12px`, []cssToken{{kind: cssDimension, num: 12, unit: "px", integer: true}}},
+		{`-1.5E2%`, []cssToken{{kind: cssPercentage, num: -150, signed: true}}},
+		{`+3`, []cssToken{{kind: cssNumber, num: 3, integer: true, signed: true}}},
+		{`"a\"b"`, []cssToken{{kind: cssString, value: `a"b`}}},
+		{"'a\nb'", []cssToken{{kind: cssBadString}, {kind: cssSpace}, {kind: cssIdent, value: "b"}, {kind: cssString}}},
+		{`url( a.css )`, []cssToken{{kind: cssURL, value: "a.css"}}},
+		{`url("a.css")`, []cssToken{{kind: cssFunction, value: "url"}, {kind: cssString, value: "a.css"}, {kind: cssCloseParen}}},
+		{`url(a"b)`, []cssToken{{kind: cssBadURL}}},
+		{`\41 b`, []cssToken{{kind: cssIdent, value: "Ab"}}},
+		{`--x`, []cssToken{{kind: cssIdent, value: "--x"}}},
+		{`<!--a -->`, []cssToken{{kind: cssCDO}, {kind: cssIdent, value: "a"}, {kind: cssSpace}, {kind: cssCDC}}},
+		{`a-->`, []cssToken{{kind: cssIdent, value: "a--"}, {kind: cssDelim, delim: '>'}}},
+		{"\r\n\tp", []cssToken{{kind: cssSpace}, {kind: cssIdent, value: "p"}}},
+	}
+	for _, tc := range cases {
+		l := newCSSLexer(tc.in)
+		var got []cssToken
+		for {
+			tok := l.next()
+			if tok.kind == cssEOF {
+				break
+			}
+			got = append(got, tok)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("%q gave %d tokens %+v, want %d", tc.in, len(got), got, len(tc.want))
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("%q token %d = %+v, want %+v", tc.in, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+const selDoc = `<html><body>
+<div id="d1" class="box wide" lang="en-GB">
+  <p id="p1" class="first">One</p>
+  <p id="p2">Two <em id="e1">stress</em></p>
+  <span id="s1">Three</span>
+</div>
+<div id="d2"><a id="a1" href="x.html" title="t">Link</a></div>
+</body></html>`
+
+// matchIDs returns the identifiers of every element a selector matches, in
+// document order, which is what a selector table is checked against.
+func matchIDs(t *testing.T, sel string) []string {
+	t.Helper()
+	root, err := Parse([]byte(selDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sels, ok := parseSelectors(skipSpace(tokensOf(sel)))
+	if !ok {
+		t.Fatalf("%q did not parse", sel)
+	}
+	var got []string
+	Walk(root, func(n *Node) bool {
+		for _, s := range sels {
+			if s.Match(n) {
+				got = append(got, Attr(n, "id"))
+				break
+			}
+		}
+		return true
+	})
+	return got
+}
+
+func TestCSSSelectors(t *testing.T) {
+	cases := []struct {
+		sel  string
+		want string
+	}{
+		{`p`, "p1 p2"},
+		{`*`, "   d1 p1 p2 e1 s1 d2 a1"},
+		{`.first`, "p1"},
+		{`#p2`, "p2"},
+		{`div p`, "p1 p2"},
+		{`div > p`, "p1 p2"},
+		{`body > p`, ""},
+		{`p + p`, "p2"},
+		{`p ~ span`, "s1"},
+		{`p + span`, "s1"},
+		{`div.box p`, "p1 p2"},
+		{`div.box.wide`, "d1"},
+		{`div.box.narrow`, ""},
+		{`p:first-child`, "p1"},
+		{`p:last-child`, ""},
+		{`span:last-child`, "s1"},
+		{`p:not(.first)`, "p2"},
+		{`div:not(#d1)`, "d2"},
+		{`div :nth-child(2)`, "p2"},
+		{`div :nth-child(odd)`, "p1 e1 s1 a1"},
+		{`div :nth-last-child(1)`, "e1 s1 a1"},
+		{`p:nth-of-type(2)`, "p2"},
+		{`em:only-of-type`, "e1"},
+		{`[href]`, "a1"},
+		{`[href="x.html"]`, "a1"},
+		{`[href^="x."]`, "a1"},
+		{`[href$=".html"]`, "a1"},
+		{`[href*="."]`, "a1"},
+		{`[class~="wide"]`, "d1"},
+		{`[lang|="en"]`, "d1"},
+		{`[title="T" i]`, "a1"},
+		{`[title="T"]`, ""},
+		{`a:hover`, ""},
+		{`a:link`, ""},
+		{`p::before`, ""},
+		{`p, span`, "p1 p2 s1"},
+		{`html|p`, "p1 p2"},
+		{`*|p`, "p1 p2"},
+	}
+	for _, tc := range cases {
+		got := strings.Join(matchIDs(t, tc.sel), " ")
+		if got != tc.want {
+			t.Errorf("%q matched %q, want %q", tc.sel, got, tc.want)
+		}
+	}
+}
+
+func TestCSSSelectorErrors(t *testing.T) {
+	for _, sel := range []string{``, `p >`, `> p`, `p ,`, `.`, `#`, `p..`, `[`, `[a=]`, `[a~]`, `p:not()`, `p:nth-child()`, `p q!`} {
+		if _, ok := parseSelectors(skipSpace(tokensOf(sel))); ok {
+			t.Errorf("%q parsed and should not have", sel)
+		}
+	}
+}
+
+func TestCSSSpecificity(t *testing.T) {
+	cases := []struct {
+		sel     string
+		a, b, c int
+	}{
+		{`*`, 0, 0, 0},
+		{`p`, 0, 0, 1},
+		{`.x`, 0, 1, 0},
+		{`#x`, 1, 0, 0},
+		{`div p`, 0, 0, 2},
+		{`div.x > p#y`, 1, 1, 2},
+		{`[href]`, 0, 1, 0},
+		{`p:first-child`, 0, 1, 1},
+		{`p:not(.x)`, 0, 1, 1},
+		{`p::before`, 0, 0, 2},
+		{`a:hover`, 0, 1, 1},
+	}
+	for _, tc := range cases {
+		s, ok := parseSelectors(skipSpace(tokensOf(tc.sel)))
+		if !ok {
+			t.Fatalf("%q did not parse", tc.sel)
+		}
+		if want := specificity(tc.a, tc.b, tc.c); s[0].Spec() != want {
+			t.Errorf("%q specificity = %d, want %d", tc.sel, s[0].Spec(), want)
+		}
+	}
+}
+
+// styleOf computes the style of the one element of a fragment that carries an
+// identifier.
+func styleOf(t *testing.T, sheet, body, id string) *Style {
+	t.Helper()
+	root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := ParseCSS([]byte(sheet), OriginAuthor)
+	if len(s.Errors) > 0 {
+		t.Fatalf("sheet %q: %v", sheet, s.Errors)
+	}
+	st := Cascade(root, Media{Width: 600, Height: 800, FontSize: 16}, UserAgent(), s)
+	var out *Style
+	Walk(root, func(n *Node) bool {
+		if Attr(n, "id") == id {
+			out = st.Of(n)
+		}
+		return true
+	})
+	if out == nil {
+		t.Fatalf("no element with id %q", id)
+	}
+	return out
+}
+
+func TestCSSCascade(t *testing.T) {
+	s := styleOf(t, `p { color: red } .x { color: green } #i { color: blue }`,
+		`<p id="i" class="x">t</p>`, "i")
+	if s.Color != (Color{0, 0, 255, 255}) {
+		t.Errorf("identifier lost to a class: %v", s.Color)
+	}
+
+	s = styleOf(t, `#i { color: blue } .x { color: green !important }`,
+		`<p id="i" class="x">t</p>`, "i")
+	if s.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("important lost to specificity: %v", s.Color)
+	}
+
+	s = styleOf(t, `p { color: red } p { color: green }`, `<p id="i">t</p>`, "i")
+	if s.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("the later of two equal rules lost: %v", s.Color)
+	}
+
+	s = styleOf(t, `p { color: red }`, `<p id="i" style="color: green">t</p>`, "i")
+	if s.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("the style attribute lost to a sheet: %v", s.Color)
+	}
+
+	s = styleOf(t, `p { color: red !important }`, `<p id="i" style="color: green">t</p>`, "i")
+	if s.Color != (Color{255, 0, 0, 255}) {
+		t.Errorf("an important rule lost to the style attribute: %v", s.Color)
+	}
+	s = styleOf(t, `p { color: red !important }`, `<p id="i" style="color: green !important">t</p>`, "i")
+	if s.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("an important style attribute lost to an important rule: %v", s.Color)
+	}
+
+	// The user agent sheet is what an unstyled book looks like, and it loses
+	// to anything the author writes.
+	s = styleOf(t, ``, `<h1 id="i">t</h1>`, "i")
+	if s.FontSize != 32 || s.FontWeight != 700 || s.Display != DisplayBlock {
+		t.Errorf("h1 = %+v", *s)
+	}
+	s = styleOf(t, `h1 { font-weight: normal }`, `<h1 id="i">t</h1>`, "i")
+	if s.FontWeight != 400 {
+		t.Errorf("the author lost to the user agent: %d", s.FontWeight)
+	}
+}
+
+func TestCSSInheritance(t *testing.T) {
+	s := styleOf(t, `div { color: red; margin-left: 10px; font-size: 20px }`,
+		`<div><p id="i">t</p></div>`, "i")
+	if s.Color != (Color{255, 0, 0, 255}) {
+		t.Errorf("color did not inherit: %v", s.Color)
+	}
+	if s.FontSize != 20 {
+		t.Errorf("font size did not inherit: %v", s.FontSize)
+	}
+	if !s.MarginLeft.Auto() && s.MarginLeft.Value != 0 {
+		t.Errorf("margin inherited and should not have: %+v", s.MarginLeft)
+	}
+
+	s = styleOf(t, `div { color: red } p { color: inherit }`, `<div><p id="i">t</p></div>`, "i")
+	if s.Color != (Color{255, 0, 0, 255}) {
+		t.Errorf("inherit did not take the parent's: %v", s.Color)
+	}
+	s = styleOf(t, `div { color: red } p { color: initial }`, `<div><p id="i">t</p></div>`, "i")
+	if s.Color != (Color{0, 0, 0, 255}) {
+		t.Errorf("initial did not reset: %v", s.Color)
+	}
+}
+
+// TestCSSMediumFontSize checks that the size a reader is set to is what the
+// keywords and the root em are multiples of.
+func TestCSSMediumFontSize(t *testing.T) {
+	root, err := Parse([]byte(`<html><body><p id="i" style="font-size: large">t</p></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []float32{16, 24} {
+		st := Cascade(root, Media{Width: 600, Height: 800, FontSize: base}, UserAgent())
+		var s *Style
+		Walk(root, func(n *Node) bool {
+			if Attr(n, "id") == "i" {
+				s = st.Of(n)
+			}
+			return true
+		})
+		if want := base * 6 / 5; s.FontSize < want-0.01 || s.FontSize > want+0.01 {
+			t.Errorf("large at %v = %v, want %v", base, s.FontSize, want)
+		}
+	}
+}
+
+func TestCSSLengths(t *testing.T) {
+	s := styleOf(t, `body { font-size: 10px }
+		#i { font-size: 2em; text-indent: 2em; margin-left: 50%; padding-top: 1in;
+		     width: 12pt; height: 2rem; line-height: 1.5 }`,
+		`<p id="i">t</p>`, "i")
+	if s.FontSize != 20 {
+		t.Errorf("font size = %v, want 20 from the parent's em", s.FontSize)
+	}
+	if s.TextIndent != Px(40) {
+		t.Errorf("text indent = %+v, want 40 from the element's own em", s.TextIndent)
+	}
+	if s.MarginLeft != (Length{Value: 50, Unit: UnitPercent}) {
+		t.Errorf("margin = %+v, want a percentage left standing", s.MarginLeft)
+	}
+	if s.PaddingTop != Px(96) {
+		t.Errorf("padding = %+v, want 96", s.PaddingTop)
+	}
+	if s.Width != Px(16) {
+		t.Errorf("width = %+v, want 16", s.Width)
+	}
+	if s.Height != Px(32) {
+		t.Errorf("height = %+v, want 32 from the root's em", s.Height)
+	}
+	if s.LineHeight != (Length{Value: 1.5, Unit: UnitScale}) {
+		t.Errorf("line height = %+v, want a bare number left standing", s.LineHeight)
+	}
+}
+
+func TestCSSShorthands(t *testing.T) {
+	s := styleOf(t, `#i { margin: 1px 2px 3px 4px; padding: 5px 6px }`, `<p id="i">t</p>`, "i")
+	if s.MarginTop != Px(1) || s.MarginRight != Px(2) || s.MarginBottom != Px(3) || s.MarginLeft != Px(4) {
+		t.Errorf("margin = %+v %+v %+v %+v", s.MarginTop, s.MarginRight, s.MarginBottom, s.MarginLeft)
+	}
+	if s.PaddingTop != Px(5) || s.PaddingRight != Px(6) || s.PaddingBottom != Px(5) || s.PaddingLeft != Px(6) {
+		t.Errorf("padding = %+v %+v %+v %+v", s.PaddingTop, s.PaddingRight, s.PaddingBottom, s.PaddingLeft)
+	}
+
+	// A longhand after a shorthand wins whatever order the two are applied
+	// in, which is why the shorthand is split before the cascade and not
+	// after it.
+	s = styleOf(t, `#i { margin: 1px; margin-top: 9px }`, `<p id="i">t</p>`, "i")
+	if s.MarginTop != Px(9) || s.MarginLeft != Px(1) {
+		t.Errorf("margin = %+v %+v", s.MarginTop, s.MarginLeft)
+	}
+	s = styleOf(t, `#i { margin-top: 9px; margin: 1px }`, `<p id="i">t</p>`, "i")
+	if s.MarginTop != Px(1) {
+		t.Errorf("the shorthand lost to the longhand before it: %+v", s.MarginTop)
+	}
+
+	s = styleOf(t, `#i { font: italic bold 20px/2 "Times New Roman", serif }`, `<p id="i">t</p>`, "i")
+	if s.FontStyle != StyleItalic || s.FontWeight != 700 || s.FontSize != 20 {
+		t.Errorf("font = %+v", *s)
+	}
+	if s.LineHeight != (Length{Value: 2, Unit: UnitScale}) {
+		t.Errorf("line height = %+v", s.LineHeight)
+	}
+	if len(s.FontFamily) != 2 || s.FontFamily[0] != "Times New Roman" || s.FontFamily[1] != "serif" {
+		t.Errorf("family = %q", s.FontFamily)
+	}
+
+	// The slash may sit against either side or neither.
+	for _, sh := range []string{"20px/2 serif", "20px / 2 serif", "20px /2 serif", "20px/ 2 serif"} {
+		s = styleOf(t, `#i { font: `+sh+` }`, `<p id="i">t</p>`, "i")
+		if s.FontSize != 20 || s.LineHeight != (Length{Value: 2, Unit: UnitScale}) ||
+			len(s.FontFamily) != 1 || s.FontFamily[0] != "serif" {
+			t.Errorf("font: %s gave size %v line %+v family %q", sh, s.FontSize, s.LineHeight, s.FontFamily)
+		}
+	}
+	s = styleOf(t, `#i { font: 20px serif }`, `<p id="i">t</p>`, "i")
+	if s.FontSize != 20 || s.LineHeight != (Length{Value: 1.2, Unit: UnitScale}) {
+		t.Errorf("font with no line height = %v %+v", s.FontSize, s.LineHeight)
+	}
+	s = styleOf(t, `#i { font: caption }`, `<p id="i">t</p>`, "i")
+	if s.FontSize != 16 {
+		t.Errorf("a system font keyword set a size: %v", s.FontSize)
+	}
+}
+
+func TestCSSColors(t *testing.T) {
+	cases := []struct {
+		in   string
+		want Color
+	}{
+		{"#f00", Color{255, 0, 0, 255}},
+		{"#ff0000", Color{255, 0, 0, 255}},
+		{"#f00f", Color{255, 0, 0, 255}},
+		{"#ff000080", Color{255, 0, 0, 128}},
+		{"red", Color{255, 0, 0, 255}},
+		{"REBECCAPURPLE", Color{102, 51, 153, 255}},
+		{"transparent", Color{}},
+		{"rgb(255, 0, 0)", Color{255, 0, 0, 255}},
+		{"rgb(100%, 0%, 0%)", Color{255, 0, 0, 255}},
+		{"rgba(255, 0, 0, 0.5)", Color{255, 0, 0, 128}},
+		{"rgb(255 0 0 / 50%)", Color{255, 0, 0, 128}},
+		{"hsl(0, 100%, 50%)", Color{255, 0, 0, 255}},
+		{"hsl(120, 100%, 50%)", Color{0, 255, 0, 255}},
+	}
+	for _, tc := range cases {
+		v := value{toks: skipSpace(tokensOf(tc.in))}
+		got, ok := v.color()
+		if !ok || got != tc.want {
+			t.Errorf("%q = %v %v, want %v", tc.in, got, ok, tc.want)
+		}
+	}
+	for _, bad := range []string{"#ff00f", "#gg0000", "notacolor", "rgb(1,2)", "rgb(1,2,3,4,5)"} {
+		if _, ok := (value{toks: skipSpace(tokensOf(bad))}).color(); ok {
+			t.Errorf("%q parsed as a color", bad)
+		}
+	}
+}
+
+func TestCSSMedia(t *testing.T) {
+	sheet := `p { color: red }
+		@media (max-width: 400px) { p { color: green } }
+		@media print { p { color: blue } }
+		@media screen and (min-width: 500px) { p { color: black } }`
+	s := ParseCSS([]byte(sheet), OriginAuthor)
+	if len(s.Rules) != 4 || len(s.Errors) > 0 {
+		t.Fatalf("rules %d errors %v", len(s.Rules), s.Errors)
+	}
+	root, err := Parse([]byte(`<html><body><p id="i">t</p></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(w float32) Color {
+		st := Cascade(root, Media{Width: w, Height: 800, FontSize: 16}, UserAgent(), s)
+		var c Color
+		Walk(root, func(n *Node) bool {
+			if Attr(n, "id") == "i" {
+				c = st.Of(n).Color
+			}
+			return true
+		})
+		return c
+	}
+	if got := at(300); got != (Color{0, 128, 0, 255}) {
+		t.Errorf("at 300 = %v, want the max-width rule", got)
+	}
+	if got := at(600); got != (Color{0, 0, 0, 255}) {
+		t.Errorf("at 600 = %v, want the min-width rule", got)
+	}
+}
+
+func TestCSSRecovery(t *testing.T) {
+	s := ParseCSS([]byte(`
+		@charset "utf-8";
+		@namespace epub "http://www.idpf.org/2007/ops";
+		@font-face { font-family: x; src: url(x.otf) }
+		p { color: red; ; bogus; color red; color: green }
+		!! { color: blue }
+		q { color: red
+	`), OriginAuthor)
+	if len(s.Rules) != 2 {
+		t.Fatalf("rules = %d, want the p and the unterminated q", len(s.Rules))
+	}
+	if len(s.Rules[0].Decls) != 2 {
+		t.Fatalf("declarations = %+v", s.Rules[0].Decls)
+	}
+	if len(s.Errors) == 0 {
+		t.Fatal("nothing was recorded as dropped")
+	}
+}
+
+func TestCSSImport(t *testing.T) {
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml": `<html><head>` +
+			`<link rel="stylesheet" href="../css/a.css"/>` +
+			`<style>p { color: green }</style></head>` +
+			`<body><p id="i">t</p></body></html>`,
+		"EPUB/css/a.css": `@import "b.css"; p { color: blue }`,
+		"EPUB/css/b.css": `p { color: red; font-size: 30px }`,
+	})
+	root, st, err := d.StylePart("EPUB/text/one.xhtml", Media{Width: 600, Height: 800, FontSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s *Style
+	Walk(root, func(n *Node) bool {
+		if Attr(n, "id") == "i" {
+			s = st.Of(n)
+		}
+		return true
+	})
+	if s == nil {
+		t.Fatal("no styled paragraph")
+	}
+	if s.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("color = %v, want the style element to win", s.Color)
+	}
+	if s.FontSize != 30 {
+		t.Errorf("font size = %v, want the imported sheet's", s.FontSize)
+	}
+}
+
+// TestCSSImportCycle checks that a sheet importing itself is read once.
+func TestCSSImportCycle(t *testing.T) {
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml":    `<html><head><link rel="stylesheet" href="../css/a.css"/></head><body><p>t</p></body></html>`,
+		"EPUB/css/a.css":         `@import "a.css"; p { color: red }`,
+	})
+	root, err := d.ParsePart("EPUB/text/one.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(d.Stylesheets("EPUB/text/one.xhtml", root)); got != 2 {
+		t.Fatalf("sheets = %d, want the user agent sheet and one more", got)
+	}
+}
+
+// FuzzCSS reads arbitrary bytes as a stylesheet and applies them to a tree. A
+// stylesheet is untrusted input like everything else here.
+func FuzzCSS(fu *testing.F) {
+	fu.Add(uaCSS)
+	fu.Add(`p{color:red}`)
+	fu.Add(`@media (max-width:1px){a>b .c:not(#d)[e~="f"]{margin:1px 2px}}`)
+	fu.Add(`@import url("x.css") print;`)
+	fu.Add(`p{font:italic bold 2em/1.4 "x",serif}`)
+	fu.Fuzz(func(t *testing.T, s string) {
+		sheet := ParseCSS([]byte(s), OriginAuthor)
+		root, err := Parse([]byte(selDoc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		Cascade(root, Media{Width: 600, Height: 800, FontSize: 16}, UserAgent(), sheet)
+	})
+}

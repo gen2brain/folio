@@ -43,7 +43,7 @@ and PDF/A validation.
 | [raster](https://pkg.go.dev/github.com/gen2brain/pdf/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes |
 | [font](https://pkg.go.dev/github.com/gen2brain/pdf/font) | font programs in, outlines and metrics out |
 | [syntax](https://pkg.go.dev/github.com/gen2brain/pdf/syntax) | the file format: objects, filters, encryption, repair |
-| [html](https://pkg.go.dev/github.com/gen2brain/pdf/html) | reflowable books: EPUB, MOBI and plain text |
+| [html](https://pkg.go.dev/github.com/gen2brain/pdf/html) | reflowable books: EPUB, MOBI and plain text, and the HTML and CSS over them |
 
 `raster` and `font` know nothing about PDF, `gfx` knows no file format, and `syntax` has no
 graphics in it. Rendering a PDF pulls in nothing outside the standard library; `html` is the one

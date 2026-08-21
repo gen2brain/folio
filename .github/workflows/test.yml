@@ -63,6 +63,8 @@ jobs:
             target: FuzzDocument
           - package: ./html
             target: FuzzBook
+          - package: ./html
+            target: FuzzCSS
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4

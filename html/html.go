@@ -12,6 +12,23 @@
 //
 // Read takes the path a spine or manifest item carries, and Resolve turns a
 // link inside one part into the path of another.
+//
+// # Style
+//
+// A part is parsed into a DOM by Parse, and StylePart does that and computes
+// the style of every element in it:
+//
+//	root, styles, err := doc.StylePart(item.Path, html.Media{Width: 800, Height: 1200})
+//	s := styles.Of(node)
+//
+// Media is the viewport a media query is answered against and the font size
+// the reader is set to. Stylesheets returns the sheets that apply to a part,
+// the user agent sheet first, and Cascade runs them over a tree. ParseCSS
+// reads one sheet on its own; it never fails, and what it could not read is
+// in Stylesheet.Errors.
+//
+// A computed Style holds lengths in CSS pixels, except that a percentage is
+// left standing for the layout that knows what it resolves against.
 package html
 
 import (
@@ -73,6 +90,10 @@ type Item struct {
 	// a reader may leave out of the main flow.
 	Linear bool
 }
+
+// IsChapter reports whether the item is a part with text in it rather than a
+// picture, which a spine may carry as well.
+func (i Item) IsChapter() bool { return i.Type == "" || isChapter(i.Type) }
 
 // Metadata is what a book says about itself.
 type Metadata struct {

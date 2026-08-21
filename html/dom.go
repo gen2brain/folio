@@ -33,7 +33,7 @@ func (d *Document) Text() (string, error) {
 	var b strings.Builder
 	var first error
 	for _, item := range d.Spine() {
-		if item.Type != "" && !isChapter(item.Type) {
+		if !item.IsChapter() {
 			continue
 		}
 		root, err := d.ParsePart(item.Path)
@@ -221,7 +221,7 @@ func (d *Document) fromHeadings() []Outline {
 	var flat []Outline
 	var level []int
 	for _, item := range d.spine {
-		if item.Type != "" && !isChapter(item.Type) {
+		if !item.IsChapter() {
 			continue
 		}
 		root, err := d.ParsePart(item.Path)

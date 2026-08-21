@@ -1,0 +1,336 @@
+package html
+
+import (
+	"strings"
+
+	xhtml "golang.org/x/net/html"
+)
+
+// Styles is the computed style of every element of a tree.
+type Styles map[*Node]*Style
+
+// Of returns the style of an element, and of the nearest element above a
+// text node.
+func (s Styles) Of(n *Node) *Style {
+	for ; n != nil; n = n.Parent {
+		if st, ok := s[n]; ok {
+			return st
+		}
+	}
+	st := initialStyle()
+	return &st
+}
+
+// Cascade computes the style of every element of a tree. The sheets are given
+// in the order they are read, the user agent sheet first.
+func Cascade(root *Node, media Media, sheets ...*Stylesheet) Styles {
+	c := cascader{media: media, out: Styles{}, medium: orDefault(media.FontSize, DefaultFontSize)}
+	c.rem = c.medium
+	for _, s := range sheets {
+		if s == nil {
+			continue
+		}
+		for i := range s.Rules {
+			if matchMedia(s.Rules[i].Media, media) {
+				c.rules = append(c.rules, ruleRef{origin: s.Origin, rule: &s.Rules[i], order: len(c.rules)})
+			}
+		}
+	}
+	init := initialStyle()
+	init.FontSize = c.medium
+	c.walk(root, &init)
+	return c.out
+}
+
+type ruleRef struct {
+	origin Origin
+	rule   *Rule
+	order  int
+}
+
+type cascader struct {
+	rules []ruleRef
+	media Media
+	out   Styles
+	// medium is the size a font size keyword is a multiple of, and rem the
+	// computed size of the root element.
+	medium, rem float32
+}
+
+func (c *cascader) walk(n *Node, parent *Style) {
+	if n.Type == xhtml.ElementNode {
+		s := c.compute(n, parent)
+		c.out[n] = s
+		if parentElement(n) == nil {
+			c.rem = s.FontSize
+		}
+		parent = s
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		c.walk(ch, parent)
+	}
+}
+
+// cand is the declaration that has won a property so far, and how strongly.
+type cand struct {
+	toks   []cssToken
+	weight uint64
+}
+
+// weightOf packs what the cascade sorts on into one number: the origin and
+// the importance in three bits, the specificity in thirty, the position in
+// the sheets in the thirty one that are left.
+func weightOf(o Origin, important bool, spec Specificity, order int) uint64 {
+	rank := uint64(0)
+	switch {
+	case important && o == OriginUA:
+		rank = 5
+	case important && o == OriginUser:
+		rank = 4
+	case important:
+		rank = 3
+	case o == OriginAuthor:
+		rank = 2
+	case o == OriginUser:
+		rank = 1
+	}
+	return rank<<61 | uint64(spec&maxSpecificity)<<31 | uint64(min(order, 1<<31-1))
+}
+
+func (c *cascader) compute(n *Node, parent *Style) *Style {
+	win := make(map[string]cand)
+	for _, r := range c.rules {
+		spec, ok := matchRule(r.rule, n)
+		if !ok {
+			continue
+		}
+		for i := range r.rule.Decls {
+			d := &r.rule.Decls[i]
+			add(win, d, weightOf(r.origin, d.Important, spec, r.order))
+		}
+	}
+	if attr := Attr(n, "style"); attr != "" {
+		for _, d := range parseInline(attr) {
+			add(win, &d, weightOf(OriginAuthor, d.Important, maxSpecificity, 1<<31-1))
+		}
+	}
+
+	s := parent.inherit()
+	v := value{em: parent.FontSize, rm: c.rem, medium: c.medium, parent: parent}
+	if w, ok := win["font-size"]; ok {
+		v.toks = w.toks
+		applyProp(&s, "font-size", v)
+	}
+	v.em = s.FontSize
+	for name, w := range win {
+		if name == "font-size" {
+			continue
+		}
+		v.toks = w.toks
+		applyProp(&s, name, v)
+	}
+	return &s
+}
+
+func add(win map[string]cand, d *Declaration, w uint64) {
+	for _, part := range expand(d) {
+		if old, ok := win[part.name]; ok && old.weight > w {
+			continue
+		}
+		win[part.name] = cand{toks: part.toks, weight: w}
+	}
+}
+
+// matchRule returns the specificity of the strongest selector of a rule that
+// the element matches.
+func matchRule(r *Rule, n *Node) (Specificity, bool) {
+	best, ok := Specificity(0), false
+	for _, sel := range r.Selectors {
+		if sel.spec >= best && sel.Match(n) {
+			best, ok = sel.spec, true
+		}
+	}
+	return best, ok
+}
+
+// parseInline reads the declarations of a style attribute.
+func parseInline(s string) []Declaration {
+	p := &cssParser{l: newCSSLexer(s), sheet: &Stylesheet{}}
+	return p.declarations()
+}
+
+// longhand is one property a declaration sets, after a shorthand has been
+// split into the properties it stands for.
+type longhand struct {
+	name string
+	toks []cssToken
+}
+
+// The sides a box property is written in, in the order one to four values
+// fill them.
+var boxSides = [4]string{"-top", "-right", "-bottom", "-left"}
+
+// expand splits a shorthand into the longhands it sets.
+func expand(d *Declaration) []longhand {
+	switch d.Name {
+	case "margin", "padding":
+		parts := splitSpace(d.value)
+		if len(parts) == 0 || len(parts) > 4 {
+			return nil
+		}
+		out := make([]longhand, 4)
+		for i := range out {
+			out[i] = longhand{name: d.Name + boxSides[i], toks: parts[boxIndex(i, len(parts))]}
+		}
+		return out
+	case "background":
+		return []longhand{{name: "background-color", toks: d.value}}
+	case "list-style":
+		return []longhand{{name: "list-style-type", toks: d.value}}
+	case "font":
+		return expandFont(d.value)
+	case "text-decoration":
+		return []longhand{{name: "text-decoration-line", toks: d.value}}
+	}
+	return []longhand{{name: d.Name, toks: d.value}}
+}
+
+// boxIndex is which of one, two, three or four values fills a side.
+func boxIndex(side, n int) int {
+	switch n {
+	case 1:
+		return 0
+	case 2:
+		return side & 1
+	case 3:
+		if side == 3 {
+			return 1
+		}
+		return side
+	}
+	return side
+}
+
+// expandFont splits the font shorthand, which is an optional style, variant
+// and weight, then a size with an optional line height, then the family.
+func expandFont(toks []cssToken) []longhand {
+	parts := splitSpace(toks)
+	size := -1
+	for i, p := range parts {
+		if isFontSize(p) {
+			size = i
+			break
+		}
+	}
+	if size < 0 {
+		return nil
+	}
+	var out []longhand
+	for _, p := range parts[:size] {
+		if len(p) != 1 {
+			continue
+		}
+		switch t := p[0]; t.kind {
+		case cssIdent:
+			switch strings.ToLower(t.value) {
+			case "italic", "oblique":
+				out = append(out, longhand{name: "font-style", toks: p})
+			case "bold", "bolder", "lighter":
+				out = append(out, longhand{name: "font-weight", toks: p})
+			}
+		case cssNumber:
+			out = append(out, longhand{name: "font-weight", toks: p})
+		}
+	}
+	head, tail, slash := splitSlash(parts[size])
+	next := size + 1
+	switch {
+	case slash && len(tail) == 0 && next < len(parts):
+		tail, next = parts[next], next+1
+	case !slash && next < len(parts) && isSlash(parts[next][0]):
+		if tail = parts[next][1:]; len(tail) == 0 && next+1 < len(parts) {
+			tail, next = parts[next+1], next+2
+		} else {
+			next++
+		}
+	}
+	if next >= len(parts) {
+		return nil
+	}
+	out = append(out, longhand{name: "font-size", toks: head})
+	if len(tail) > 0 {
+		out = append(out, longhand{name: "line-height", toks: tail})
+	}
+	return append(out, longhand{name: "font-family", toks: toks[tokenIndex(toks, parts[next]):]})
+}
+
+func isFontSize(p []cssToken) bool {
+	head, _, _ := splitSlash(p)
+	if len(head) != 1 {
+		return false
+	}
+	switch t := head[0]; t.kind {
+	case cssDimension, cssPercentage:
+		return true
+	case cssIdent:
+		k := strings.ToLower(t.value)
+		if k == "smaller" || k == "larger" {
+			return true
+		}
+		_, ok := fontSizeKeywords[k]
+		return ok
+	}
+	return false
+}
+
+// splitSlash cuts the size and the line height a font shorthand joins, and
+// reports whether there was a slash to cut at.
+func splitSlash(p []cssToken) ([]cssToken, []cssToken, bool) {
+	for i, t := range p {
+		if isSlash(t) {
+			return p[:i], p[i+1:], true
+		}
+	}
+	return p, nil, false
+}
+
+func isSlash(t cssToken) bool { return t.kind == cssDelim && t.delim == '/' }
+
+// splitSpace cuts a value into the parts whitespace separates at the top
+// level.
+func splitSpace(toks []cssToken) [][]cssToken {
+	var out [][]cssToken
+	start, depth := 0, 0
+	for i, t := range toks {
+		switch t.kind {
+		case cssOpenParen, cssOpenSquare, cssFunction:
+			depth++
+		case cssCloseParen, cssCloseSquare:
+			depth = max(0, depth-1)
+		case cssSpace:
+			if depth == 0 {
+				if i > start {
+					out = append(out, toks[start:i])
+				}
+				start = i + 1
+			}
+		}
+	}
+	if start < len(toks) {
+		out = append(out, toks[start:])
+	}
+	return out
+}
+
+// tokenIndex is where a part starts in the run it was cut from.
+func tokenIndex(all, part []cssToken) int {
+	if len(part) == 0 {
+		return len(all)
+	}
+	for i := range all {
+		if &all[i] == &part[0] {
+			return i
+		}
+	}
+	return len(all)
+}
