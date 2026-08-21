@@ -129,8 +129,7 @@ func parseSFNT(data []byte) (*Font, error) {
 	return f, nil
 }
 
-// readVertical reads the em box out of hhea, and falls back to the OS/2 typo
-// metrics when hhea has none, which some fonts leave at zero.
+// readVertical reads the em box out of hhea, or the OS/2 typo metrics.
 func (f *Font) readVertical(s *sfnt) {
 	upem := float32(s.upem)
 	if upem <= 0 {

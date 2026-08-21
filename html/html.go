@@ -1,8 +1,7 @@
 // Package html reads reflowable documents: EPUB, MOBI and plain text.
 //
-// A reflowable document has no pages until it is laid out, so what a
-// container hands over is the parts a book is made of and the order to read
-// them in:
+// A reflowable document has no pages until it is laid out, so a container
+// hands over the parts a book is made of and the order to read them in:
 //
 //	doc, err := html.Open("book.epub")
 //	defer doc.Close()
@@ -11,9 +10,8 @@
 //		b, err := doc.Read(item.Path)
 //	}
 //
-// Metadata and Outline are what the book says about itself. Read takes the
-// path a spine item or a manifest item carries; Resolve turns a link inside
-// one part into the path of another.
+// Read takes the path a spine or manifest item carries, and Resolve turns a
+// link inside one part into the path of another.
 package html
 
 import (
@@ -62,17 +60,13 @@ func (k Kind) String() string {
 
 // Item is one part of a book: a chapter, a stylesheet, an image.
 type Item struct {
-	// Path is what the container calls it, and what a link in another part
-	// resolves against.
+	// Path is what the container calls it, and what a link resolves against.
 	Path string
-	// Type is the media type the container declares, and empty when it
-	// declares none.
+	// Type is the media type the container declares.
 	Type string
-	// ID is the manifest identifier, and empty for a container with no
-	// manifest.
+	// ID is the manifest identifier.
 	ID string
-	// Properties are the manifest properties of an EPUB item, which is where
-	// the navigation document and the cover say what they are.
+	// Properties are the manifest properties of an EPUB item.
 	Properties []string
 }
 
@@ -85,8 +79,7 @@ type Metadata struct {
 	Publisher   string
 	Description string
 	Subjects    []string
-	// Created and Modified are the zero time when the book gives no date, or
-	// one this cannot read.
+	// Created and Modified are zero when the book gives no date.
 	Created  time.Time
 	Modified time.Time
 }
@@ -109,14 +102,10 @@ type Document struct {
 	spine    []Item
 	manifest []Item
 	outline  []Outline
-	// read returns the bytes of a part, and is what every container comes
-	// down to.
-	read func(path string) ([]byte, error)
-	// base is the directory the paths are relative to, which for an EPUB is
-	// where the package document lives.
+	read     func(path string) ([]byte, error)
+	// base is the directory the paths are relative to.
 	base string
-	// tocID is the manifest identifier the spine gives the EPUB 2 table of
-	// contents.
+	// tocID is what the spine calls the EPUB 2 table of contents.
 	tocID string
 }
 
@@ -147,7 +136,7 @@ func NewReader(r io.ReaderAt, size int64) (*Document, error) {
 	switch {
 	case n >= 4 && string(head[:4]) == "PK\x03\x04":
 		return openEPUB(r, size)
-	case n >= 68 && string(head[60:68]) == "BOOKMOBI":
+	case n >= 68 && (string(head[60:68]) == "BOOKMOBI" || string(head[60:68]) == "TEXtREAd"):
 		return openMOBI(r, size)
 	}
 	return openText(r, size)
@@ -190,9 +179,9 @@ func (d *Document) Read(p string) ([]byte, error) {
 	return d.read(p)
 }
 
-// Resolve turns a link inside one part into the path of another, the way a
-// browser does: an absolute path stands on its own, a relative one is read
-// against the part it appeared in, and a fragment is dropped.
+// Resolve turns a link inside one part into the path of another. An absolute
+// path stands on its own, a relative one is read against base, and a fragment
+// is dropped.
 func Resolve(base, ref string) string {
 	if i := strings.IndexAny(ref, "#?"); i >= 0 {
 		ref = ref[:i]

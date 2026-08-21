@@ -14,19 +14,17 @@ import (
 )
 
 // SVGDevice writes what a page draws as SVG. Paths, text and images come out
-// as themselves; a shading and a soft mask are rasterized, because SVG has no
-// equivalent of either that survives the round trip.
+// as themselves; a shading and a soft mask are rasterized.
 type SVGDevice struct {
 	BaseDevice
 	w   io.Writer
 	box raster.Rect
 
-	// defs holds the glyph outlines and clip paths, which have to be written
-	// before what refers to them, so the body is buffered until Close.
+	// defs holds the glyph outlines and clip paths, which are written before
+	// the body that refers to them.
 	defs, body bytes.Buffer
 	glyphs     map[glyphRef]string
-	// open counts the groups a clip, a layer or a transparency group has
-	// opened, so that Close balances what a damaged page left open.
+	// open counts the groups still to close.
 	open int
 	ids  int
 	err  error
@@ -94,8 +92,7 @@ func (d *SVGDevice) ClipPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, sc
 	d.clipGroup(`<path d="` + pathData(p, ctm) + `"` + rule + `/>`)
 }
 
-// ClipStrokePath implements Device. A stroke is not a clip shape in SVG, so
-// what it bounds is used instead.
+// ClipStrokePath implements Device, clipping to what the stroke bounds.
 func (d *SVGDevice) ClipStrokePath(p *raster.Path, s *raster.Stroke, ctm raster.Matrix, scissor raster.Rect) {
 	d.clipRect(p.StrokeBounds(s, ctm))
 }
@@ -142,8 +139,8 @@ func (d *SVGDevice) FillImage(img Image, ctm raster.Matrix, alpha float32, cp Co
 	d.image(px, ctm, alpha)
 }
 
-// FillImageMask implements Device. A stencil paints one color through its
-// samples, which SVG has no form of, so it is filled here.
+// FillImageMask implements Device, filling the stencil here because SVG has
+// no form of one.
 func (d *SVGDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams) {
 	px, err := img.Pixels(nil, 0)
 	if err != nil || px == nil {
@@ -168,14 +165,12 @@ func (d *SVGDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace, 
 	d.image(out, ctm, alpha)
 }
 
-// ClipImageMask implements Device. What the stencil covers is used instead of
-// the stencil, which SVG cannot clip to.
+// ClipImageMask implements Device, clipping to what the stencil covers.
 func (d *SVGDevice) ClipImageMask(img Image, ctm raster.Matrix, scissor raster.Rect) {
 	d.clipRect(ctm.ApplyRect(raster.Rect{X1: 1, Y1: 1}))
 }
 
-// FillShade implements Device. SVG has two of the seven kinds of shading and
-// neither of the two under an arbitrary transform, so it is rasterized.
+// FillShade implements Device, rasterizing the shading.
 func (d *SVGDevice) FillShade(sh Shade, ctm raster.Matrix, alpha float32, cp ColorParams) {
 	m := raster.Concat(sh.Transform(), ctm)
 	box := d.box
@@ -217,9 +212,8 @@ func (d *SVGDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knock
 // EndGroup implements Device.
 func (d *SVGDevice) EndGroup() { d.closeGroup() }
 
-// BeginMask implements Device. What a soft mask group draws is the mask and
-// not the page, so nothing of it is written; the group it opens is kept so
-// that the clip it becomes still pops.
+// BeginMask implements Device. The mask itself is not written; the group it
+// opens is, so that the clip it becomes still pops.
 func (d *SVGDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams) {
 	d.clipRect(area)
 }
@@ -227,8 +221,7 @@ func (d *SVGDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace,
 // EndMask implements Device.
 func (d *SVGDevice) EndMask(transfer *[256]uint8) {}
 
-// BeginTile implements Device. Returning zero asks for every repetition to be
-// drawn, which is what a file with no pattern element in it needs.
+// BeginTile implements Device. Returning zero asks for every repetition.
 func (d *SVGDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int {
 	d.clipRect(area)
 	return 0
@@ -258,8 +251,7 @@ func (d *SVGDevice) closeGroup() {
 
 func (d *SVGDevice) nextID() int { d.ids++; return d.ids }
 
-// clipGroup opens a group clipped to the shape, which the caller has already
-// written as SVG elements.
+// clipGroup opens a group clipped to shape, which is already SVG.
 func (d *SVGDevice) clipGroup(shape string) {
 	id := "clip_" + strconv.Itoa(d.nextID())
 	d.defs.WriteString(`<clipPath id="` + id + `">` + shape + "</clipPath>\n")
@@ -315,9 +307,8 @@ func (d *SVGDevice) strokeAttrs(s *raster.Stroke, scale float32) {
 	}
 }
 
-// eachGlyph writes every glyph of a text object through fn, defining the
-// outline the first time it is used. A font that has no program draws its own
-// glyphs, which for SVG means running them into this device.
+// eachGlyph writes every glyph through fn, defining the outline the first
+// time it is used.
 func (d *SVGDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(id string, m raster.Matrix), cs *ColorSpace, color []float32, alpha float32) {
 	for i := range t.Spans {
 		sp := &t.Spans[i]
@@ -363,8 +354,7 @@ func (d *SVGDevice) glyph(prog *font.Font, gid int) (string, bool) {
 	return id, true
 }
 
-// image writes a pixmap as a PNG under the transform that maps the unit
-// square onto the page.
+// image writes a pixmap as a PNG under ctm.
 func (d *SVGDevice) image(px *raster.Pixmap, ctm raster.Matrix, alpha float32) {
 	img := toNRGBA(px)
 	if img == nil {
@@ -383,8 +373,7 @@ func (d *SVGDevice) image(px *raster.Pixmap, ctm raster.Matrix, alpha float32) {
 		base64.StdEncoding.EncodeToString(buf.Bytes()) + `"/>` + "\n")
 }
 
-// toNRGBA converts a pixmap to what the PNG encoder takes, undoing the
-// premultiplication a pixmap with alpha stores its colors in.
+// toNRGBA converts a pixmap to what the PNG encoder takes.
 func toNRGBA(px *raster.Pixmap) *image.NRGBA {
 	if px.N != 3 {
 		return nil
@@ -422,7 +411,7 @@ func unmul(v, a uint8) uint8 {
 	return 255
 }
 
-// pathWriter turns a path into the d attribute of an SVG path element.
+// pathWriter turns a path into the d attribute of a path element.
 type pathWriter struct{ b bytes.Buffer }
 
 func (w *pathWriter) MoveTo(x, y float32) { w.b.WriteString("M" + num(x) + " " + num(y)) }

@@ -5,9 +5,8 @@ import (
 	"github.com/gen2brain/pdf/raster"
 )
 
-// The graphics model comes from the gfx package, which knows nothing about
-// PDF. It is aliased here so that a caller rendering a page need only one
-// import.
+// The graphics model comes from the gfx package, aliased here so that a
+// caller needs one import.
 type (
 	// Device receives the drawing operations an interpreted content stream
 	// produces. Embed BaseDevice to pick up no-op implementations.
@@ -160,8 +159,8 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// transferTable evaluates a soft mask's /TR into the 256 values a mask sample
-// can take, nil when there is no function.
+// transferTable evaluates a soft mask's /TR into the 256 values a sample can
+// take.
 func transferTable(fn *Function) *[256]uint8 {
 	if fn == nil {
 		return nil

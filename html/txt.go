@@ -9,9 +9,7 @@ import (
 // textPath is what a plain text document calls its one part.
 const textPath = "index.txt"
 
-// openText reads a document that is not a container at all: the bytes are the
-// book. What decides is that nothing else recognized it, so the only thing
-// left to check is whether it reads as text.
+// openText reads a file that is not a container: the bytes are the book.
 func openText(r io.ReaderAt, size int64) (*Document, error) {
 	if size <= 0 || size > maxPartBytes {
 		return nil, fmt.Errorf("%w: %d bytes", ErrInvalid, size)
@@ -37,9 +35,7 @@ func openText(r io.ReaderAt, size int64) (*Document, error) {
 	}, nil
 }
 
-// readsAsText reports whether the start of a file is text: valid UTF-8 with
-// no control characters a document would not carry. A file with a byte order
-// mark is text whatever follows it.
+// readsAsText reports valid UTF-8 with no control characters in it.
 func readsAsText(b []byte) bool {
 	if len(b) >= 3 && b[0] == 0xef && b[1] == 0xbb && b[2] == 0xbf {
 		return true

@@ -8,25 +8,23 @@ import (
 	"github.com/gen2brain/pdf/raster"
 )
 
-// How wide a gap between two characters has to be, as a fraction of the font
-// size, before it stands for a word break, and how far a character may drift
-// off the baseline before it is a line of its own.
+// The gaps that end a word and a line, and the drift that ends a line, as
+// fractions of the font size.
 const (
 	spaceGap  = 0.15
 	lineGap   = 0.8
 	lineDrift = 0.8
 )
 
-// dupTol is how far apart, as a fraction of the narrower advance, two of the
-// same character may be and still be one character drawn twice.
+// dupTol is how far apart two of the same character may be, as a fraction of
+// the narrower advance, and still be one character drawn twice.
 const dupTol = 0.5
 
-// How far apart two baselines may be, as a fraction of the larger font size,
-// and still belong to the same paragraph.
+// blockGap is how far two baselines may be apart and still be one paragraph.
 const blockGap = 1.6
 
-// TextPage is a page's text: blocks of lines of characters, each with the box
-// it occupies, in the order the page drew them.
+// TextPage is a page's text: blocks of lines of characters, each with its
+// box, in the order the page drew them.
 type TextPage struct {
 	Bounds raster.Rect
 	Blocks []TextBlock
@@ -37,8 +35,8 @@ type TextBlock struct {
 	Bounds raster.Rect
 	// Lines are the block's lines, and nil for an image block.
 	Lines []TextLine
-	// Image is what an image block holds, and nil for a text block. Matrix
-	// is what maps the unit square onto the page.
+	// Image is what an image block holds, and nil for a text block; Matrix
+	// maps the unit square onto the page.
 	Image  Image
 	Matrix raster.Matrix
 }
@@ -55,8 +53,7 @@ type TextLine struct {
 // TextChar is one character where it was drawn.
 type TextChar struct {
 	Rune rune
-	// Origin is where the pen was, and Quad the em box of the font over the
-	// character's advance, which is what a selection covers.
+	// Origin is where the pen was, and Quad the em box over the advance.
 	Origin raster.Point
 	Quad   Quad
 	Size   float32
@@ -66,23 +63,18 @@ type TextChar struct {
 
 // TextOptions configure a TextDevice.
 type TextOptions struct {
-	// Images records a block for every image drawn, which is what finding
-	// the natural resolution of a scanned page needs.
+	// Images records a block for every image drawn.
 	Images bool
-	// SkipHidden drops text drawn in a rendering mode that paints nothing,
-	// which is the layer an OCR program leaves over a scan.
+	// SkipHidden drops text drawn in a rendering mode that paints nothing.
 	SkipHidden bool
 }
 
-// TextDevice collects what a page draws into a TextPage. It is what text
-// extraction, the link and search API and a page's natural resolution are
-// all read off.
+// TextDevice collects what a page draws into a TextPage.
 type TextDevice struct {
 	BaseDevice
 	opt  TextOptions
 	page *TextPage
-	// line is the line being built, held back until a character arrives that
-	// does not belong to it.
+	// line is held back until a character arrives that does not join it.
 	line TextLine
 	col  [3]uint8
 }
@@ -116,8 +108,7 @@ func (d *TextDevice) ClipStrokeText(t *Text, stroke *raster.Stroke, ctm raster.M
 	d.addText(t, ctm, nil, nil)
 }
 
-// IgnoreText implements Device. Text that paints nothing is still text: it is
-// how a scanned page carries what an OCR program made of it.
+// IgnoreText implements Device. Text that paints nothing is still text.
 func (d *TextDevice) IgnoreText(t *Text, ctm raster.Matrix) {
 	if !d.opt.SkipHidden {
 		d.addText(t, ctm, nil, nil)
@@ -172,8 +163,6 @@ func (d *TextDevice) addText(t *Text, ctm raster.Matrix, cs *ColorSpace, color [
 			if it.Rune <= 0 {
 				continue
 			}
-			// Every kind of space a font may draw reads back as one, which
-			// is what a reader wants and what the width of it says anyway.
 			if unicode.IsSpace(it.Rune) {
 				it.Rune = ' '
 			}
@@ -186,8 +175,8 @@ func (d *TextDevice) addText(t *Text, ctm raster.Matrix, cs *ColorSpace, color [
 	}
 }
 
-// addChar places one character, opening a line when the character does not
-// continue the one being built.
+// addChar places one character, opening a line when it does not join the one
+// being built.
 func (d *TextDevice) addChar(sp *TextSpan, m raster.Matrix, it TextItem, asc, desc float32) {
 	size := float32(math.Sqrt(math.Abs(float64(m.A*m.D - m.B*m.C))))
 	if size <= 0 {
@@ -203,8 +192,6 @@ func (d *TextDevice) addChar(sp *TextSpan, m raster.Matrix, it TextItem, asc, de
 	if adv <= 0 {
 		adv = float32(asc-desc) / 2
 	}
-	// A ligature is one glyph standing for several characters, and what a
-	// reader wants back is the characters, each over its share of the box.
 	parts := ligature(it.Rune)
 	n := float32(len(parts))
 	c := TextChar{
@@ -242,15 +229,13 @@ func (d *TextDevice) addChar(sp *TextSpan, m raster.Matrix, it TextItem, asc, de
 	}
 }
 
-// ligatures are the Latin ones of the Alphabetic Presentation Forms block,
-// which a font uses as one glyph and a reader wants back as letters.
+// ligatures are the Latin ones of the Alphabetic Presentation Forms block.
 var ligatures = map[rune]string{
 	'\ufb00': "ff", '\ufb01': "fi", '\ufb02': "fl", '\ufb03': "ffi",
 	'\ufb04': "ffl", '\ufb05': "st", '\ufb06': "st",
 }
 
-// ligature splits a character into what it stands for, which for all but a
-// ligature is itself.
+// ligature splits a character into what it stands for.
 func ligature(r rune) []rune {
 	if s, ok := ligatures[r]; ok {
 		return []rune(s)
@@ -275,18 +260,10 @@ func (d *TextDevice) joins(c TextChar, dir raster.Point, wmode int, size float32
 		return joinBreak
 	}
 	prev := d.line.Chars[n-1]
-	// A page that draws the same character twice in nearly the same place is
-	// emboldening it, or drawing it in a second font over the first, not
-	// saying it twice. The tolerance is a fraction of the narrower of the two
-	// advances, because what separates a double from a real repetition is
-	// that a repetition is a whole advance away.
+	// The same character twice in the same place is one emboldened.
 	if prev.Rune == c.Rune && near(prev.Origin, c.Origin, dupTol*minAdv(prev, c, size)) {
 		return joinDrop
 	}
-	// The gap is measured along the baseline from where the previous
-	// character's advance ended, and the drift across it from the baseline
-	// itself. The advance is the width of the quad, which is why the corners
-	// rather than the origins are subtracted.
 	end := prev.end()
 	dx := c.Origin.X - end.X
 	dy := c.Origin.Y - end.Y
@@ -304,7 +281,7 @@ func (d *TextDevice) joins(c TextChar, dir raster.Point, wmode int, size float32
 	return joinRun
 }
 
-// end is where a character's advance leaves the pen, on the baseline.
+// end is where a character's advance leaves the pen.
 func (c TextChar) end() raster.Point {
 	return raster.Point{
 		X: c.Origin.X + c.Quad.LR.X - c.Quad.LL.X,
@@ -312,7 +289,7 @@ func (c TextChar) end() raster.Point {
 	}
 }
 
-// space appends the word break a gap stands for, unless one is already there.
+// space appends the word break a gap stands for.
 func (d *TextDevice) space() {
 	n := len(d.line.Chars)
 	if n == 0 || d.line.Chars[n-1].Rune == ' ' {
@@ -326,8 +303,8 @@ func (d *TextDevice) space() {
 	d.line.Chars = append(d.line.Chars, sp)
 }
 
-// flushLine adds the line being built to the page, joining it to the last
-// block when the two are one paragraph.
+// flushLine adds the line to the page, joining it to the block above when
+// the two are one paragraph.
 func (d *TextDevice) flushLine() {
 	line := d.line
 	d.line = TextLine{}
@@ -345,8 +322,7 @@ func (d *TextDevice) flushLine() {
 	})
 }
 
-// blank reports a run of characters with nothing to read in it, which is a
-// line of spaces a page drew and meant nothing by.
+// blank reports a run of characters with nothing to read in it.
 func blank(chars []TextChar) bool {
 	for _, c := range chars {
 		if !unicode.IsSpace(c.Rune) {
@@ -364,9 +340,8 @@ func (d *TextDevice) lastBlock() *TextBlock {
 	return &d.page.Blocks[n-1]
 }
 
-// sameParagraph reports whether a line continues the block above it: the same
-// direction, a step no larger than one blank line, and an overlap across the
-// baseline so that two columns stay apart.
+// sameParagraph reports whether a line continues the block above it: same
+// direction, a step no larger than one blank line, and an overlap across it.
 func sameParagraph(b *TextBlock, line *TextLine) bool {
 	last := &b.Lines[len(b.Lines)-1]
 	if last.WMode != line.WMode || dot(last.Dir, line.Dir) < 0.999 {
@@ -386,8 +361,7 @@ func sameParagraph(b *TextBlock, line *TextLine) bool {
 	return overlaps(last.Bounds, line.Bounds, line.Dir)
 }
 
-// overlaps reports whether two boxes share any extent along dir, which for an
-// upright line is the horizontal one.
+// overlaps reports whether two boxes share any extent along dir.
 func overlaps(a, b raster.Rect, dir raster.Point) bool {
 	if abs32(dir.X) >= abs32(dir.Y) {
 		return a.X0 < b.X1 && b.X0 < a.X1
@@ -403,8 +377,8 @@ func lineSize(l *TextLine) float32 {
 	return s
 }
 
-// Text returns the page's text, a newline after every line and a blank line
-// after every block, which is what mutool draw -F txt writes.
+// Text returns the page's text: a newline after every line and a blank line
+// after every block.
 func (p *TextPage) Text() string {
 	var b strings.Builder
 	for i := range p.Blocks {
@@ -437,8 +411,7 @@ func normalize(p raster.Point) raster.Point {
 
 func dot(a, b raster.Point) float32 { return a.X*b.X + a.Y*b.Y }
 
-// minAdv is the narrower of two characters' advances, falling back to the
-// font size for a character that has none.
+// minAdv is the narrower of two advances, or the size when either is zero.
 func minAdv(a, b TextChar, size float32) float32 {
 	wa, wb := advOf(a), advOf(b)
 	if wa <= 0 || wb <= 0 {

@@ -107,7 +107,7 @@ func (i *Image) Stencil() bool { return i.Mask }
 func (i *Image) Smooth() bool { return i.Interpolate }
 
 // Pixels decodes the image into cs, halved shrink times, through the
-// document's cache. A nil cs asks for the coverage of a stencil mask.
+// document's cache. A nil cs asks for the coverage of a stencil.
 func (i *Image) Pixels(cs *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if i.doc == nil {
 		return i.decode(cs, shrink)

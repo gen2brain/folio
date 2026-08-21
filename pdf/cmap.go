@@ -454,10 +454,8 @@ var (
 	uniTables   = map[string][]uniRun{}
 )
 
-// cidUnicode returns what every CID of a character collection stands for. A
-// document that names a collection and embeds neither a font nor a
-// /ToUnicode says nothing else about what its text is. Nothing is decoded
-// until a document uses the collection.
+// cidUnicode returns what every CID of a character collection stands for,
+// decoding the table the first time the collection is used.
 func cidUnicode(ordering string) []uniRun {
 	uniTablesMu.Lock()
 	defer uniTablesMu.Unlock()
@@ -469,9 +467,8 @@ func cidUnicode(ordering string) []uniRun {
 	return t
 }
 
-// decodeCIDUnicode reads the runs back: three varints each, the first CID
-// past the end of the run before, the length, and the signed step from the
-// character the run before ended on.
+// decodeCIDUnicode reads the runs back: three varints each, the gap, the
+// length, and the signed step from the character before.
 func decodeCIDUnicode(enc string) []uniRun {
 	if enc == "" {
 		return nil
@@ -510,8 +507,8 @@ func decodeCIDUnicode(enc string) []uniRun {
 	return out
 }
 
-// uvarint reads one varint and returns where it ended, or zero for a value
-// that runs off the end or does not fit.
+// uvarint reads one varint and returns where it ended, or zero for one that
+// runs off the end.
 func uvarint(b []byte, i int) (int, int) {
 	v, shift := 0, 0
 	for ; i < len(b); i++ {
@@ -534,8 +531,8 @@ func unzigzag(v int) int {
 	return -(v >> 1) - 1
 }
 
-// rune returns the character a CID stands for, and zero when the collection
-// does not say.
+// uniRuneOf returns the character a CID stands for, and zero when the
+// collection does not say.
 func uniRuneOf(t []uniRun, cid uint32) rune {
 	if cid > 0xffff {
 		return 0

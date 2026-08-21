@@ -142,8 +142,7 @@ func (f *File) scanForPages() []Ref {
 	return out
 }
 
-// PageIndex returns which page a reference names, and -1 for one that names
-// no page.
+// PageIndex returns which page a reference names, and -1 for none.
 func (f *File) PageIndex(r Ref) int {
 	f.pageMu.Lock()
 	defer f.pageMu.Unlock()
@@ -159,9 +158,8 @@ func (f *File) PageIndex(r Ref) int {
 	return -1
 }
 
-// NameTreeLookup finds a key in a name tree, ISO 32000-1 7.9.6: a root whose
-// nodes carry either /Kids and /Limits, or /Names, which is the leaf and is
-// sorted. It returns nil for a key that is not there.
+// NameTreeLookup finds a key in a name tree, ISO 32000-1 7.9.6, and returns
+// nil for one that is not there.
 func (f *File) NameTreeLookup(root Object, key string) Object {
 	for depth := 0; depth < maxNameDepth; depth++ {
 		node := f.GetDict(root)
@@ -201,8 +199,8 @@ func (f *File) NameTreeLookup(root Object, key string) Object {
 // maxNameDepth bounds a name tree that points at itself.
 const maxNameDepth = 32
 
-// searchNames finds a key in a leaf's alternating key and value array, which
-// the specification requires to be sorted and files often are not.
+// searchNames finds a key in a leaf's alternating array, which the
+// specification requires sorted and files often are not.
 func searchNames(f *File, names Array, key string) Object {
 	lo, hi := 0, len(names)/2
 	for lo < hi {
@@ -225,8 +223,7 @@ func searchNames(f *File, names Array, key string) Object {
 }
 
 // NumberTreeEach calls fn for every entry of a number tree in order, ISO
-// 32000-1 7.9.7, and stops when fn returns false. A number tree is a name
-// tree with integer keys, which is how page labels are stored.
+// 32000-1 7.9.7, and stops when fn returns false.
 func (f *File) NumberTreeEach(root Object, fn func(int64, Object) bool) {
 	f.numberTree(root, fn, 0)
 }

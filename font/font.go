@@ -40,8 +40,7 @@ type Font struct {
 	// Matrix maps glyph space to text space, where one unit is the font size.
 	Matrix raster.Matrix
 	// Ascent and Descent are how far the em box reaches above and below the
-	// baseline, in text space. A program that declares neither keeps the
-	// defaults, which are what a font with no vertical metrics is set as.
+	// baseline, in text space, and default when the program declares neither.
 	Ascent, Descent float32
 	// CID is true for a CFF font keyed by CID rather than by name.
 	CID bool
@@ -105,9 +104,7 @@ const (
 	defaultDescent = -0.2
 )
 
-// emBox takes the em box from a font bounding box in glyph space, which is
-// what a program with no vertical metrics of its own carries. A box that
-// straddles the baseline the wrong way is left alone.
+// emBox takes the em box from a font bounding box in glyph space.
 func (f *Font) emBox(bbox []float32, scale float32) {
 	if len(bbox) != 4 || scale == 0 {
 		return

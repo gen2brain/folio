@@ -5,17 +5,13 @@ import "github.com/gen2brain/pdf/raster"
 // Link is a link annotation: the area of the page it covers, and where
 // following it goes.
 type Link struct {
-	// Rect is the area the link covers, in the space StructuredText is in:
-	// page space at 72 dots per inch, y down from the top left.
+	// Rect is the area the link covers, in page space at 72 dots per inch.
 	Rect raster.Rect
-	// URI is where a link out of the document points, and is empty for one
-	// that stays inside it.
+	// URI is where a link out of the document points.
 	URI string
-	// Page is the page a link inside the document goes to, and -1 for one
-	// that goes out of it or names a destination that is not there.
+	// Page is the page a link inside the document goes to, and -1 otherwise.
 	Page int
-	// Point is where on that page it goes, in page space. A destination that
-	// says only which page leaves it at the page's top left.
+	// Point is where on that page it goes, in page space.
 	Point raster.Point
 }
 
@@ -55,8 +51,7 @@ func (p *Page) annotRect(dict Dict) raster.Rect {
 	}.Normalized()
 }
 
-// actionURI reads where an action leads out of the document, and returns
-// empty for one that does not.
+// actionURI reads where an action leads out of the document.
 func (d *Document) actionURI(act Dict) string {
 	f := d.f
 	switch f.GetName(act["S"]) {
@@ -71,9 +66,8 @@ func (d *Document) actionURI(act Dict) string {
 	return ""
 }
 
-// destination resolves a destination, which is an array beginning with a page
-// reference, or a name that stands for one. It returns the page index and
-// where on it, and -1 for a destination that does not resolve.
+// destination resolves a destination to a page index and a point, and -1 for
+// one that does not resolve.
 func (d *Document) destination(obj Object) (int, raster.Point) {
 	f := d.f
 	switch v := f.Resolve(obj).(type) {
@@ -89,8 +83,7 @@ func (d *Document) destination(obj Object) (int, raster.Point) {
 	return -1, raster.Point{}
 }
 
-// destArray reads the explicit form, ISO 32000-1 12.3.2.2: the page, a name
-// saying how it is to be fitted, and the coordinates that go with the name.
+// destArray reads the explicit form, ISO 32000-1 12.3.2.2.
 func (d *Document) destArray(a Array) (int, raster.Point) {
 	if len(a) == 0 {
 		return -1, raster.Point{}
@@ -119,8 +112,7 @@ func (d *Document) destArray(a Array) (int, raster.Point) {
 	return page, pt
 }
 
-// namedDest looks a name up in /Dests, both the name tree of the catalog and
-// the dictionary a file written for PDF 1.1 carries instead.
+// namedDest looks a name up in /Dests, the name tree and the 1.1 dictionary.
 func (d *Document) namedDest(name string) Object {
 	f := d.f
 	names := f.GetDict(f.Lookup(f.Catalog(), "Names"))

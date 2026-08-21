@@ -65,8 +65,7 @@ type Font struct {
 	toUnicode *CMap
 	// base is the base-14 name a substituted font resolved to.
 	base string
-	// ordering is the character collection a composite font's CIDs belong
-	// to, from /CIDSystemInfo.
+	// ordering is the character collection the CIDs belong to.
 	ordering string
 
 	doc *Document
@@ -393,9 +392,8 @@ func (d *Document) readType3(ft *Font, dict Dict, res Dict) {
 	}
 }
 
-// cp936Fonts are the five Chinese fonts one generator writes as simple fonts
-// with /WinAnsiEncoding and then draws two byte GBK text through. The names
-// are the GBK bytes of what the fonts call themselves.
+// cp936Fonts are the GBK names of the five Chinese fonts one generator writes
+// as simple fonts and draws two byte codes through.
 var cp936Fonts = []Name{
 	"\xCB\xCE\xCC\xE5",        // SimSun
 	"\xBA\xDA\xCC\xE5",        // SimHei
@@ -404,11 +402,8 @@ var cp936Fonts = []Name{
 	"\xC1\xA5\xCA\xE9",        // SimLi
 }
 
-// cp936Disguised reports a simple font that is really a composite one: the
-// generator wrote /WinAnsiEncoding meaning code page 936, and the content
-// stream holds two bytes per character. Everything about the test is narrow
-// on purpose, because a font that is what it says it is must not be caught by
-// it.
+// cp936Disguised reports a simple font that is really a composite one. The
+// test is narrow on purpose.
 func cp936Disguised(f *syntax.File, dict Dict) bool {
 	desc := f.GetDict(dict["FontDescriptor"])
 	if desc == nil || f.GetInt(desc["Flags"], 0) != 4 {
@@ -426,9 +421,8 @@ func cp936Disguised(f *syntax.File, dict Dict) bool {
 	return false
 }
 
-// readCP936 turns such a font into the composite font it is: GBK codes, CIDs
-// of Adobe-GB1, and the collection's own Unicode mapping behind them. The
-// /Widths array is one width per byte and means nothing here.
+// readCP936 turns such a font into the composite one it is: GBK codes, CIDs
+// of Adobe-GB1, and the collection's Unicode mapping behind them.
 func (d *Document) readCP936(ft *Font) {
 	ft.Type0 = true
 	ft.cmap = d.predefinedCMap("GBK-EUC-H", 0)
@@ -523,9 +517,8 @@ func (ft *Font) Program() *font.Font { return ft.prog }
 // font, /Name.
 func (ft *Font) FontName() string { return string(ft.Name) }
 
-// EmBox is how far the font's em box reaches above and below the baseline, in
-// text space. The descriptor is preferred over the program, because a
-// substituted program is not the font the file asked for.
+// EmBox is how far the font's em box reaches above and below the baseline,
+// in text space. The descriptor is preferred over the program.
 func (ft *Font) EmBox() (ascent, descent float32) {
 	if ft.ascent > 0 && ft.descent < 0 {
 		return ft.ascent, ft.descent
@@ -536,9 +529,8 @@ func (ft *Font) EmBox() (ascent, descent float32) {
 	return 0.8, -0.2
 }
 
-// RunGlyph draws one glyph of a Type3 font into dev. Such a glyph is a
-// content stream, so the only thing that can draw it is the interpreter, and
-// it has to run where the glyph goes rather than into a cached mask.
+// RunGlyph draws one glyph of a Type3 font into dev, by interpreting the
+// content stream the glyph is.
 func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32, depth int) {
 	if !ft.Type3 || ft.doc == nil || depth >= maxNesting || code < 0 || code > 255 {
 		return
@@ -648,9 +640,8 @@ func (ft *Font) Rune(c Char) rune {
 	if r == 0 && !ft.Type0 && c.Code < 256 {
 		r = font.RuneForName(ft.names[c.Code])
 	}
-	// The character collection comes before the font program, because a
-	// composite font that names one and does not embed a program is drawn
-	// with a substitute whose glyph names say nothing about the text.
+	// The collection comes before the program, which for such a font is a
+	// substitute whose glyph names say nothing about the text.
 	if r == 0 && ft.Type0 && ft.ordering != "" {
 		r = uniRuneOf(cidUnicode(ft.ordering), c.CID)
 	}

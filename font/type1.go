@@ -165,8 +165,7 @@ func (t *type1Font) readMatrix(b []byte) {
 	}
 }
 
-// numbersAfter reads the bracketed or braced list of numbers a key
-// introduces, and returns nil for anything it cannot read whole.
+// numbersAfter reads the bracketed list of numbers a key introduces.
 func numbersAfter(b []byte, key string) []float32 {
 	i := indexOf(b, key)
 	if i < 0 {

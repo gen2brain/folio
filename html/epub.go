@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-// openEPUB reads the container, the package document it points at, and the
-// navigation the package names.
+// openEPUB reads the container and the package document it points at.
 func openEPUB(r io.ReaderAt, size int64) (*Document, error) {
 	z, err := zip.NewReader(r, size)
 	if err != nil {
@@ -55,9 +54,7 @@ func openEPUB(r io.ReaderAt, size int64) (*Document, error) {
 	return d, nil
 }
 
-// maxPartBytes bounds what one part of a book may decompress to, which a
-// crafted archive is free to say is a terabyte. No chapter, stylesheet, font
-// or picture in a book comes near it.
+// maxPartBytes bounds what one part of a book may decompress to.
 const maxPartBytes = 1 << 26
 
 // epubRoot reads META-INF/container.xml for the package document.
@@ -83,8 +80,7 @@ func (d *Document) epubRoot() (string, error) {
 	return "", fmt.Errorf("%w: container.xml names no package document", ErrInvalid)
 }
 
-// opf is the package document, ISO/IEC 23736 and the EPUB specification
-// before it: what the book is, what it holds, and what order to read it in.
+// opf is the package document, ISO/IEC 23736 4.3.
 type opf struct {
 	UniqueID string `xml:"unique-identifier,attr"`
 	Metadata struct {
@@ -162,9 +158,6 @@ func (d *Document) readPackage(root string) error {
 			d.spine = append(d.spine, item)
 		}
 	}
-	// A book with no spine is still worth reading: every chapter it holds is
-	// in the manifest and the order they are listed in is the only one there
-	// is.
 	if len(d.spine) == 0 {
 		for _, item := range d.manifest {
 			if isChapter(item.Type) {
@@ -177,7 +170,7 @@ func (d *Document) readPackage(root string) error {
 	return nil
 }
 
-// isChapter reports a media type a reader lays out as a chapter.
+// isChapter reports a media type laid out as a chapter.
 func isChapter(t string) bool {
 	switch t {
 	case "application/xhtml+xml", "text/html", "application/x-dtbook+xml":
@@ -186,8 +179,7 @@ func isChapter(t string) bool {
 	return false
 }
 
-// rel puts a manifest href into the path the archive knows it by, which is
-// relative to the package document rather than to the archive.
+// rel puts a manifest href into the path the archive knows it by.
 func (d *Document) rel(href string) string {
 	href, _ = splitFragment(href)
 	if d.base == "" {
@@ -196,8 +188,7 @@ func (d *Document) rel(href string) string {
 	return path.Join(d.base, href)
 }
 
-// metadata reads the Dublin Core elements, preferring the title and the
-// identifier the package says are the main ones.
+// metadata reads the Dublin Core elements.
 func (p *opf) metadata() Metadata {
 	m := Metadata{
 		Title:       first(p.Metadata.Title),
@@ -224,8 +215,7 @@ func (p *opf) metadata() Metadata {
 	return m
 }
 
-// parseDate reads the subset of ISO 8601 a book carries, which is a date and
-// optionally a time, and nothing else.
+// parseDate reads the subset of ISO 8601 a book dates itself with.
 func parseDate(s string) time.Time {
 	s = strings.TrimSpace(s)
 	for _, layout := range []string{
@@ -257,14 +247,9 @@ func nonEmpty(s []string) []string {
 	return out
 }
 
-// unmarshal reads XML that names its elements in namespaces this does not
-// want to spell out, which every book does, and that names an encoding the
-// standard library will not decode. The decoder is told to accept what it
-// finds rather than what a schema says: books are hand written and half of
-// them have an undeclared entity in them somewhere.
 func unmarshal(b []byte, v any) error { return lenient(b).Decode(v) }
 
-// lenient is the decoder every one of them uses.
+// lenient decodes the XML a hand written book carries.
 func lenient(b []byte) *xml.Decoder {
 	dec := xml.NewDecoder(bytes.NewReader(b))
 	dec.Strict = false

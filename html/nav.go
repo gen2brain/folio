@@ -6,13 +6,11 @@ import (
 	"strings"
 )
 
-// maxNavDepth bounds a table of contents that nests forever, which a damaged
-// book is free to carry.
+// maxNavDepth bounds a table of contents that nests forever.
 const maxNavDepth = 32
 
-// readNav reads the table of contents, from the EPUB 3 navigation document
-// when the manifest declares one and from the EPUB 2 NCX otherwise. A book
-// may carry both, and the navigation document is the one it means.
+// readNav reads the table of contents, preferring the EPUB 3 navigation
+// document to the EPUB 2 NCX.
 func (d *Document) readNav() {
 	for _, item := range d.manifest {
 		if hasProperty(item, "nav") {
@@ -57,9 +55,7 @@ type navItem struct {
 	List navList `xml:"ol"`
 }
 
-// inner is the text of an element and of everything nested in it, which a
-// table of contents needs because a title is as likely to be wrapped in a
-// span as to stand on its own.
+// inner is the text of an element and of everything nested in it.
 type inner struct {
 	Own      string  `xml:",chardata"`
 	Children []inner `xml:",any"`
@@ -73,10 +69,8 @@ func (t inner) String() string {
 	return s
 }
 
-// readNavDoc reads the EPUB 3 navigation document, which is XHTML holding a
-// nav element of nested ordered lists. The nav may be anywhere in the body,
-// wrapped in whatever sections a designer felt like, so the document is
-// scanned for it rather than matched against a shape.
+// readNavDoc reads the EPUB 3 navigation document. The nav element may be
+// anywhere in the body, so the token stream is scanned for it.
 func (d *Document) readNavDoc(p string) []Outline {
 	b, err := d.Read(p)
 	if err != nil {
@@ -100,8 +94,6 @@ func (d *Document) readNavDoc(p string) []Outline {
 		if err := dec.DecodeElement(&nav, &start); err != nil {
 			break
 		}
-		// The type attribute is epub:type, which the decoder hands over
-		// under its local name.
 		if hasWord(attr(start, "type"), "toc") {
 			return d.navEntries(nav.List, p, 0)
 		}
@@ -115,7 +107,7 @@ func (d *Document) readNavDoc(p string) []Outline {
 	return nil
 }
 
-// attr returns an attribute by local name, whatever namespace it is in.
+// attr returns an attribute by local name.
 func attr(e xml.StartElement, name string) string {
 	for _, a := range e.Attr {
 		if a.Name.Local == name {
@@ -125,8 +117,7 @@ func attr(e xml.StartElement, name string) string {
 	return ""
 }
 
-// hasWord reports whether a whitespace separated list holds a word, which is
-// how epub:type and the manifest properties are written.
+// hasWord reports whether a whitespace separated list holds a word.
 func hasWord(list, want string) bool {
 	for _, w := range strings.Fields(list) {
 		if w == want {
@@ -200,8 +191,7 @@ func (d *Document) ncxEntries(points []ncxPoint, base string, depth int) []Outli
 	return out
 }
 
-// link resolves a reference inside a part into the path of another and the
-// anchor in it.
+// link resolves a reference into a path and the anchor in it.
 func (d *Document) link(base, ref string) (string, string) {
 	href, frag := splitFragment(ref)
 	if href == "" {
@@ -213,5 +203,5 @@ func (d *Document) link(base, ref string) (string, string) {
 	return path.Join(path.Dir(base), href), frag
 }
 
-// squash collapses the whitespace a table of contents is indented with.
+// squash collapses whitespace.
 func squash(s string) string { return strings.Join(strings.Fields(s), " ") }

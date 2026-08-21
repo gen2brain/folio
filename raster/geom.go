@@ -70,7 +70,7 @@ func (r Rect) AddPoint(p Point) Rect {
 	return Rect{min32(r.X0, p.X), min32(r.Y0, p.Y), max32(r.X1, p.X), max32(r.Y1, p.Y)}
 }
 
-// Outer returns the whole pixels r covers, and four zeroes when it is empty.
+// Outer returns the whole pixels r covers, and zeroes when it is empty.
 func (r Rect) Outer() (x0, y0, x1, y1 int) {
 	if r.IsEmpty() {
 		return 0, 0, 0, 0

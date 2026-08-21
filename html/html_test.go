@@ -288,6 +288,7 @@ func FuzzBook(fu *testing.F) {
 		"EPUB/text/one.xhtml":    "<html/>",
 	}))
 	fu.Add([]byte("plain text"))
+	fu.Add(buildMOBI([]byte("<html><body>Hi</body></html>"), []byte{0x81}, []byte("\x89PNG\r\n\x1a\n0123456789")))
 	fu.Fuzz(func(t *testing.T, b []byte) {
 		d, err := Load(b)
 		if err != nil {
@@ -312,4 +313,138 @@ func FuzzBook(fu *testing.F) {
 		}
 		walk(d.Outline(), 0)
 	})
+}
+
+// buildMOBI writes the smallest PalmDB that is a book: a header, a record
+// list, the record that describes the rest, one compressed text record and
+// one picture.
+func buildMOBI(text []byte, trailing []byte, image []byte) []byte {
+	rec0 := make([]byte, 16+232)
+	be16(rec0[0:], 2)                 // PalmDOC LZ77
+	be32(rec0[4:], uint32(len(text))) // text length
+	be16(rec0[8:], 1)                 // one text record
+	be16(rec0[10:], 4096)             // record size
+	copy(rec0[16:], "MOBI")
+	be32(rec0[20:], 232)              // header length
+	be32(rec0[28:], 65001)            // UTF-8
+	be32(rec0[16+0x50-16:], 2)        // first non-book index
+	be32(rec0[0x54:], uint32(16+232)) // the full name follows the header
+	be32(rec0[0x58:], uint32(len("A Title")))
+	be32(rec0[0x80:], 0x40) // EXTH is there
+	if len(trailing) > 0 {
+		be32(rec0[0xf0:], 2)
+	}
+
+	var exth []byte
+	add := func(kind int, v string) {
+		e := make([]byte, 8+len(v))
+		be32(e, uint32(kind))
+		be32(e[4:], uint32(len(e)))
+		copy(e[8:], v)
+		exth = append(exth, e...)
+	}
+	add(100, "An Author")
+	add(101, "A Publisher")
+	add(105, "A Subject")
+	head := make([]byte, 12)
+	copy(head, "EXTH")
+	be32(head[4:], uint32(12+len(exth)))
+	be32(head[8:], 3)
+	rec0 = append(rec0, append(head, exth...)...)
+	be32(rec0[0x54:], uint32(len(rec0)))
+	rec0 = append(rec0, "A Title"...)
+
+	var comp []byte
+	for i := 0; i < len(text); i += 8 {
+		n := min(8, len(text)-i)
+		comp = append(comp, byte(n))
+		comp = append(comp, text[i:i+n]...)
+	}
+	comp = append(comp, trailing...)
+
+	recs := [][]byte{rec0, comp}
+	if image != nil {
+		recs = append(recs, image)
+	}
+	head2 := make([]byte, 78+8*len(recs))
+	copy(head2, "A Book")
+	copy(head2[60:], "BOOKMOBI")
+	be16(head2[76:], uint16(len(recs)))
+	off := len(head2)
+	for i, r := range recs {
+		be32(head2[78+8*i:], uint32(off))
+		off += len(r)
+	}
+	out := head2
+	for _, r := range recs {
+		out = append(out, r...)
+	}
+	return out
+}
+
+func be16(b []byte, v uint16) { b[0], b[1] = byte(v>>8), byte(v) }
+
+func be32(b []byte, v uint32) {
+	b[0], b[1], b[2], b[3] = byte(v>>24), byte(v>>16), byte(v>>8), byte(v)
+}
+
+func TestMOBI(t *testing.T) {
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
+	d, err := Load(buildMOBI([]byte("<html><body><p>Hello</p></body></html>"), nil, png))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Kind() != KindMOBI {
+		t.Fatalf("kind = %v", d.Kind())
+	}
+	m := d.Metadata()
+	if m.Title != "A Title" || m.Author != "An Author" || m.Publisher != "A Publisher" {
+		t.Fatalf("metadata = %+v", m)
+	}
+	if len(m.Subjects) != 1 || m.Subjects[0] != "A Subject" {
+		t.Fatalf("subjects = %v", m.Subjects)
+	}
+	b, err := d.Read("index.html")
+	if err != nil || string(b) != "<html><body><p>Hello</p></body></html>" {
+		t.Fatalf("text = %q, %v", b, err)
+	}
+	// The picture is a part named by the number the HTML refers to it by.
+	if len(d.Manifest()) != 2 || d.Manifest()[1].Path != "00001" {
+		t.Fatalf("manifest = %+v", d.Manifest())
+	}
+	if got, _ := d.Read("00001"); string(got) != string(png) {
+		t.Fatalf("the picture came back as %d bytes", len(got))
+	}
+}
+
+// TestMOBITrailing checks that the entries a record carries after its data
+// are taken off, which is what tells the text from the index behind it.
+func TestMOBITrailing(t *testing.T) {
+	// One trailing entry of four bytes, its own size written backwards in the
+	// last byte with the top bit marking where it ends.
+	trailing := []byte{'x', 'y', 'z', 0x80 | 4}
+	d, err := Load(buildMOBI([]byte("Hello"), trailing, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if b, _ := d.Read("index.html"); string(b) != "Hello" {
+		t.Fatalf("text = %q, want the trailing entry gone", b)
+	}
+}
+
+// TestMOBIRepeat checks the two byte form of the compression, which points
+// back into what has already been written and may run past the end of it.
+func TestMOBIRepeat(t *testing.T) {
+	rec := []byte{2, 'a', 'b', 0x80, byte(2<<3 | (6 - 3))}
+	if got := string(palmDoc(nil, rec)); got != "abababab" {
+		t.Fatalf("palmDoc = %q, want abababab", got)
+	}
+}
+
+func TestCP1252(t *testing.T) {
+	if got := string(fromCP1252([]byte{'a', 0x92, 'b', 0xe9})); got != "a’bé" {
+		t.Fatalf("fromCP1252 = %q", got)
+	}
 }

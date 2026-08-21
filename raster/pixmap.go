@@ -67,8 +67,7 @@ func newPixmap(model Model, n, w, h int, alpha bool) *Pixmap {
 // Comps is how many components a pixel has, color plus alpha, which is also
 // how many bytes it takes.
 // Coverage returns the first component of every pixel as an alpha only
-// pixmap, which is what a mask made of color samples comes down to. A pixmap
-// that already has one component is returned as it is.
+// pixmap. A pixmap that already has one component is returned as it is.
 func (p *Pixmap) Coverage() *Pixmap {
 	n := p.Comps()
 	if n == 1 {

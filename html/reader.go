@@ -2,8 +2,7 @@ package html
 
 import "io"
 
-// byteReader is a buffer read the way a file is, which is what every entry
-// point comes down to.
+// byteReader is a buffer read the way a file is.
 type byteReader struct{ b []byte }
 
 func newByteReader(b []byte) *byteReader { return &byteReader{b} }

@@ -153,9 +153,8 @@ func (f *File) firstID() []byte {
 	return f.GetBytes(ids[0])
 }
 
-// key128 is algorithm 2, for /R 2 to 4. The key is an MD5 digest, so a file
-// asking for a longer one than that is asking for the whole digest: a crypt
-// filter may name the 32 bytes AESV3 uses, which only /R 5 and above reach.
+// key128 is algorithm 2, for /R 2 to 4. The key is an MD5 digest, so a crypt
+// filter naming the 32 bytes of AESV3 gets the whole digest instead.
 func (f *File) key128(enc *encrypt, password, o, u, id []byte, metadata bool, length int) ([]byte, bool, error) {
 	length = min(max(length, 5), md5.Size)
 	tryKey := func(pw []byte) []byte {

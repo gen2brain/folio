@@ -12,9 +12,7 @@ import (
 // page rather than rendered to a mask and remembered.
 const maxCachedGlyph = 100 * 100
 
-// maxGlyphDepth bounds a font whose glyph procedures show text in the same
-// font, which is a cycle a document is free to contain. A font that draws
-// its own glyphs is expected to stop sooner; this is the backstop.
+// maxGlyphDepth bounds a font whose glyphs show text in the same font.
 const maxGlyphDepth = 32
 
 // DrawDevice renders into a raster.Pixmap. Everything it is given is in the
@@ -43,8 +41,7 @@ type DrawDevice struct {
 	// until the next one; a nested interpreter takes its own.
 	src   []uint8
 	depth int
-	// cache remembers rendered glyph masks between pages, and err collects
-	// what a damaged document did; both belong to whoever opened the file.
+	// cache and err belong to whoever opened the document.
 	cache *raster.GlyphCache
 	err   func(error)
 }
@@ -100,17 +97,13 @@ func NewDrawDevice(dst *raster.Pixmap) *DrawDevice {
 // Pixmap returns what has been drawn.
 func (d *DrawDevice) Pixmap() *raster.Pixmap { return d.dst }
 
-// Clip returns the rectangle drawing is confined to, which starts as the
-// whole destination.
+// Clip returns the rectangle drawing is confined to.
 func (d *DrawDevice) Clip() raster.Rect { return d.clip.rect }
 
-// SetGlyphCache gives the device somewhere to keep rendered glyph masks. The
-// cache belongs to the document rather than to one rendering, so that a
-// second page of the same file finds the glyphs of the first.
+// SetGlyphCache gives the device somewhere to keep rendered glyph masks.
 func (d *DrawDevice) SetGlyphCache(c *raster.GlyphCache) { d.cache = c }
 
-// SetErrorFunc says where to report what went wrong on the way. A page that
-// fails in the middle still draws the part that worked.
+// SetErrorFunc says where to report what went wrong on the way.
 func (d *DrawDevice) SetErrorFunc(f func(error)) { d.err = f }
 
 func (d *DrawDevice) fail(err error) {
@@ -501,8 +494,7 @@ func (d *DrawDevice) pushTextClip(t *Text, ctm raster.Matrix, s *raster.Stroke) 
 }
 
 // runGlyph lets a font with no program draw one glyph for itself. The scratch
-// color goes with it, because what the glyph draws runs through this device
-// and would otherwise overwrite the color of the text it belongs to.
+// color is saved, because the glyph draws through this device.
 func (d *DrawDevice) runGlyph(f Font, gid int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32) {
 	if d.depth >= maxGlyphDepth {
 		return

@@ -31,8 +31,7 @@ func (p *Page) StructuredText() (*TextPage, error) {
 	return p.StructuredTextOptions(nil)
 }
 
-// StructuredTextOptions is StructuredText with the options a caller wants,
-// which is how images are kept and hidden text dropped.
+// StructuredTextOptions is StructuredText with options.
 func (p *Page) StructuredTextOptions(o *TextOptions) (*TextPage, error) {
 	st := &TextPage{Bounds: p.Bounds()}
 	err := p.Run(gfx.NewTextDevice(st, o), p.Matrix(72))
@@ -50,8 +49,7 @@ func (p *Page) Text() (string, error) {
 }
 
 // WriteSVG writes the page as SVG. Paths, text and images come out as
-// themselves; a shading and a soft mask are rasterized, because SVG has
-// neither in a form that survives the round trip.
+// themselves; a shading and a soft mask are rasterized.
 func (p *Page) WriteSVG(w io.Writer) error {
 	m := p.Matrix(72)
 	dev := gfx.NewSVGDevice(w, m.ApplyRect(p.Bounds()))
@@ -65,10 +63,8 @@ func (p *Page) SVG() (string, error) {
 	return b.String(), err
 }
 
-// Image renders the page at the resolution its own content is in, which for a
-// scanned page is the resolution of the scan. A page whose largest image
-// covers half of it and that carries no text is cropped to that image, which
-// is what a scan with a margin around it wants.
+// Image renders the page at the resolution its own content is in. A page with
+// no text whose largest image covers half of it is cropped to that image.
 func (p *Page) Image() (*image.RGBA, error) {
 	dpi, box, crop := p.naturalDPI()
 	img, err := p.ImageDPI(dpi)
@@ -78,12 +74,11 @@ func (p *Page) Image() (*image.RGBA, error) {
 	return cropTo(img, box, dpi), err
 }
 
-// defaultDPI is what a page with no image in it is rendered at, because there
-// is nothing to read a resolution off.
+// defaultDPI is what a page with no image in it is rendered at.
 const defaultDPI = 300
 
 // naturalDPI is the highest resolution any image on the page is drawn at, and
-// the box of the largest of them when the page is nothing but that image.
+// the box of the largest when the page is nothing but that image.
 func (p *Page) naturalDPI() (dpi float64, box raster.Rect, crop bool) {
 	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
 	if st == nil {
@@ -117,7 +112,7 @@ func (p *Page) naturalDPI() (dpi float64, box raster.Rect, crop bool) {
 	return dpi, box, !text && pa > 0 && area >= 0.5*pa
 }
 
-// cropTo cuts out the part of a rendered page a box in page space covers.
+// cropTo cuts out the part of a rendered page box covers.
 func cropTo(img *image.RGBA, box raster.Rect, dpi float64) *image.RGBA {
 	s := dpi / 72
 	r := image.Rect(

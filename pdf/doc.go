@@ -188,8 +188,7 @@ func (d *Document) errorf(format string, a ...any) {
 	d.fail(fmt.Errorf(format, a...))
 }
 
-// fail records one error a damaged file caused, which is also what the
-// devices report through.
+// fail records one error a damaged file caused.
 func (d *Document) fail(err error) {
 	d.errMu.Lock()
 	defer d.errMu.Unlock()
@@ -443,12 +442,11 @@ func (d *Document) optionalContentVisible(obj Object) bool {
 	}
 }
 
-// Outline is one entry of the document outline, ISO 32000-1 12.3.3: what a
-// viewer shows as the table of contents.
+// Outline is one entry of the document outline, ISO 32000-1 12.3.3.
 type Outline struct {
 	Title string
-	// Page is the page the entry leads to, and -1 for one that leads out of
-	// the document or nowhere; Point is where on that page.
+	// Page is the page the entry leads to, and -1 otherwise; Point is where
+	// on it.
 	Page  int
 	Point raster.Point
 	// URI is where an entry leading out of the document points.
@@ -459,12 +457,10 @@ type Outline struct {
 	Children []Outline
 }
 
-// maxOutlineDepth bounds an outline that points at itself, which a damaged
-// file is free to do.
+// maxOutlineDepth bounds an outline that points at itself.
 const maxOutlineDepth = 32
 
-// Outline returns the document outline as the tree it is. A caller that wants
-// it flat walks Children and counts the depth.
+// Outline returns the document outline as the tree it is.
 func (d *Document) Outline() []Outline {
 	f := d.f
 	root := f.GetDict(f.Lookup(f.Catalog(), "Outlines"))
@@ -511,8 +507,7 @@ func (d *Document) outlineList(first Object, depth int, seen map[Ref]bool) []Out
 	return out
 }
 
-// Metadata is what the document says about itself, ISO 32000-1 14.3.3. A
-// field the file does not carry is empty.
+// Metadata is what the document says about itself, ISO 32000-1 14.3.3.
 type Metadata struct {
 	Title    string
 	Author   string
@@ -520,8 +515,7 @@ type Metadata struct {
 	Keywords string
 	Creator  string
 	Producer string
-	// Created and Modified are the zero time when the file gives no date, or
-	// one this cannot read.
+	// Created and Modified are zero when the file gives no date.
 	Created  time.Time
 	Modified time.Time
 }
@@ -546,9 +540,8 @@ func (d *Document) Metadata() Metadata {
 	}
 }
 
-// parseDate reads a PDF date, ISO 32000-1 7.9.4: D:YYYYMMDDHHmmSSOHH'mm',
-// truncated anywhere after the year. Everything about it is optional in
-// practice, including the prefix and the apostrophes.
+// parseDate reads a PDF date, ISO 32000-1 7.9.4, truncated anywhere after
+// the year.
 func parseDate(s string) time.Time {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "D:")
@@ -564,7 +557,6 @@ func parseDate(s string) time.Time {
 		return time.Time{}
 	}
 	for len(digits) < 14 {
-		// A date that stops early means the first of the month, midnight.
 		switch len(digits) {
 		case 4, 6:
 			digits = append(digits, '0', '1')
@@ -579,8 +571,7 @@ func parseDate(s string) time.Time {
 	return t
 }
 
-// dateZone reads the offset a date ends with, which is a sign, two digits, an
-// apostrophe and two more, with everything after the sign optional.
+// dateZone reads the offset a date ends with, all of it optional.
 func dateZone(s string) *time.Location {
 	if s == "" || s[0] == 'Z' {
 		return time.UTC
@@ -612,9 +603,8 @@ func dateZone(s string) *time.Location {
 	return time.FixedZone("", sign*(hh*3600+mm*60))
 }
 
-// PageLabels returns the label of every page, ISO 32000-1 12.4.2: what a
-// viewer shows instead of the page number, so that a preface numbers itself
-// in lower case roman numerals. A document with no labels returns nil.
+// PageLabels returns what a viewer numbers each page with, ISO 32000-1
+// 12.4.2, and nil for a document with no labels.
 func (d *Document) PageLabels() []string {
 	f := d.f
 	root := f.Lookup(f.Catalog(), "PageLabels")
@@ -673,8 +663,7 @@ func pageLabel(style Name, n int) string {
 	return ""
 }
 
-// romanDigits are the values and their spellings, largest first, with the
-// subtractive forms in place so that a single pass writes them.
+// romanDigits are the values and their spellings, largest first.
 var romanDigits = []struct {
 	v int
 	s string
@@ -684,8 +673,7 @@ var romanDigits = []struct {
 	{10, "X"}, {9, "IX"}, {5, "V"}, {4, "IV"}, {1, "I"},
 }
 
-// maxRoman is where a roman numeral stops being one; a label past it is
-// written in digits, which is what a viewer does with it.
+// maxRoman is where a roman numeral stops being one.
 const maxRoman = 4000
 
 func roman(n int) string {
@@ -702,8 +690,7 @@ func roman(n int) string {
 	return b.String()
 }
 
-// letters numbers a page A, B ... Z, AA, BB, as the specification says rather
-// than as a spreadsheet column does.
+// letters numbers a page A, B ... Z, AA, BB, as the specification says.
 func letters(n int) string {
 	if n <= 0 {
 		return ""
