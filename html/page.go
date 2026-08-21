@@ -119,7 +119,8 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 		if vertical {
 			colw, pageLen = ch, cw
 		}
-		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets), vertical: vertical}
+		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets), vertical: vertical,
+			cbh: pageLen}
 		l.run(buildBoxes(root, st), colw)
 		errs = append(errs, l.errs...)
 		if len(l.spans) == 0 {

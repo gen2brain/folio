@@ -152,36 +152,39 @@ func (l *layout) fail(err error) {
 
 // pictureSize is how much room a picture takes: what the style or the element
 // asks for, its own size otherwise, and never wider than the line.
-func pictureSize(b *box, p *picture, avail float32) (float32, float32) {
+func pictureSize(b *box, p *picture, avail, cbh float32) (float32, float32) {
 	w, h := float32(p.w), float32(p.h)
 	if w <= 0 || h <= 0 {
 		return 0, 0
 	}
 	ratio := h / w
-	sw, sh := b.style.Width, b.style.Height
+	sw := b.style.Width
+	sh, tall := definiteHeight(b.style.Height, cbh)
 	switch {
 	case sw.Unit == UnitPx:
 		w, h = sw.Value, sw.Value*ratio
 	case sw.Unit == UnitPercent && avail > 0:
 		w = sw.Resolve(avail)
 		h = w * ratio
-	case sh.Unit == UnitPx:
-		h, w = sh.Value, sh.Value/ratio
+	case tall:
+		h, w = sh, sh/ratio
 	default:
 		if v := attrLength(b.node, "width"); v > 0 {
 			w, h = v, v*ratio
 		}
 	}
-	if sh.Unit == UnitPx && sw.Unit == UnitPx {
-		h = sh.Value
+	// A picture given both a width and a height is drawn at both of them,
+	// which is how a cover fills the page it is the whole of.
+	if tall && (sw.Unit == UnitPx || (sw.Unit == UnitPercent && avail > 0)) {
+		h = sh
 	}
 	if m := b.style.MaxWidth; !m.Auto() {
 		if lim := m.Resolve(avail); lim > 0 && w > lim {
 			w, h = lim, lim*ratio
 		}
 	}
-	if m := b.style.MaxHeight; m.Unit == UnitPx && m.Value > 0 && h > m.Value {
-		h, w = m.Value, m.Value/ratio
+	if m, ok := definiteHeight(b.style.MaxHeight, cbh); ok && m > 0 && h > m {
+		h, w = m, m/ratio
 	}
 	if avail > 0 && w > avail {
 		w, h = avail, avail*ratio

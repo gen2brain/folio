@@ -2611,3 +2611,46 @@ func TestLayoutVerticalAlign(t *testing.T) {
 		t.Errorf("the tall cell moved: %v, %v, %v", top[0], mid[0], bot[0])
 	}
 }
+
+// TestLayoutPercentHeight covers CSS 2.1 10.5: a percentage height is a
+// percentage of the containing block's height, and auto when that block has
+// no height of its own. It used to be resolved against the width.
+func TestLayoutPercentHeight(t *testing.T) {
+	height := func(sheet string) float32 {
+		t.Helper()
+		d, _ := styledPage(t, "body { margin: 0 } "+sheet, `<div id="a"><div id="b">x</div></div>`,
+			&LayoutOptions{Width: 400, Height: 200, Margin: 0})
+		defer d.Close()
+		var found float32
+		var walk func(*box)
+		walk = func(bx *box) {
+			if Attr(bx.node, "id") == "b" {
+				found = bx.h
+			}
+			for _, k := range bx.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return found
+	}
+
+	// The page is 400 wide and 200 tall, so a height resolved against the
+	// wrong axis is unmistakable.
+	auto := height(`#b { height: 50% }`)
+	if auto > 100 {
+		t.Errorf("inside a block with no height of its own a percentage came to %v, want auto", auto)
+	}
+	fixed := height(`#a { height: 120px } #b { height: 50% }`)
+	if fixed != 60 {
+		t.Errorf("half of 120px came to %v, want 60", fixed)
+	}
+	root := height(`html, body, #a { height: 100% } #b { height: 25% }`)
+	if root != 50 {
+		t.Errorf("a quarter of the page came to %v, want 50", root)
+	}
+	least := height(`#a { height: 120px } #b { min-height: 50% }`)
+	if least != 60 {
+		t.Errorf("a min-height of half of 120px came to %v, want 60", least)
+	}
+}

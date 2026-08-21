@@ -34,6 +34,11 @@ type layout struct {
 	// placed against: the nearest ancestor that is positioned itself. posH is
 	// zero when that box has no height of its own yet.
 	posX, posY, posW, posH float32
+	// cbh is the height of the containing block, which a percentage height
+	// resolves against, and negative when that block has no height of its own
+	// and takes one from what it holds. CSS 2.1 10.5 says a percentage of
+	// that is auto.
+	cbh float32
 	// fonts are the faces the book brings with it for this part.
 	fonts *fontSet
 	// root is the tree run laid out.
@@ -53,7 +58,7 @@ const layoutProbes = 1 << 16
 func (l *layout) sub(y float32) *layout {
 	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y,
 		fonts: l.fonts, posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH,
-		vertical: l.vertical}
+		cbh: l.cbh, vertical: l.vertical}
 }
 
 // spend takes one trial layout out of the budget.
@@ -290,11 +295,22 @@ func (l *layout) flow(b *box, x, avail float32) {
 	l.y += bt + pt
 	top := l.y
 	savedX, savedY, savedW, savedH := l.posX, l.posY, l.posW, l.posH
+	own, definite := definiteHeight(s.Height, l.cbh)
 	if s.Position != PosStatic {
 		l.posX, l.posY, l.posW, l.posH = b.x+bl+pl, top, w, 0
-		if s.Height.Unit == UnitPx {
-			l.posH = s.Height.Value
+		if definite {
+			l.posH = own
 		}
+	}
+	savedCB := l.cbh
+	l.cbh = -1
+	switch {
+	case definite:
+		l.cbh = own
+	case b == l.root:
+		// The outermost box is the initial containing block, which is the
+		// page, and it has a height whatever its own content comes to.
+		l.cbh = savedCB
 	}
 
 	switch {
@@ -311,12 +327,21 @@ func (l *layout) flow(b *box, x, avail float32) {
 	}
 
 	l.posX, l.posY, l.posW, l.posH = savedX, savedY, savedW, savedH
-	if h := clampLength(l.y-top, s.Height, s.MaxHeight, avail); h > l.y-top {
+	l.cbh = savedCB
+	content := l.y - top
+	h := content
+	if definite {
+		h = own
+	}
+	if v, ok := definiteHeight(s.MaxHeight, savedCB); ok {
+		h = min(h, v)
+	}
+	if v, ok := definiteHeight(s.MinHeight, savedCB); ok {
+		h = max(h, v)
+	}
+	if h > content {
 		l.apply()
 		l.y = top + h
-	} else if s.MinHeight.Unit == UnitPx && s.MinHeight.Value > l.y-top {
-		l.apply()
-		l.y = top + s.MinHeight.Value
 	}
 	if pb+bb > 0 {
 		l.apply()
@@ -360,6 +385,20 @@ func borderInset(b *box) (top, right, bottom, left float32) {
 
 // clampLength holds a length between what min and max ask for, treating a
 // length there is none of as no bound at all.
+// definiteHeight resolves a height that does not depend on what a box holds:
+// a length, or a percentage of a containing block that has one of its own.
+func definiteHeight(v Length, cb float32) (float32, bool) {
+	switch v.Unit {
+	case UnitPx:
+		return max(v.Value, 0), true
+	case UnitPercent:
+		if cb >= 0 {
+			return max(v.Value*cb/100, 0), true
+		}
+	}
+	return 0, false
+}
+
 func clampLength(v float32, lo, hi Length, against float32) float32 {
 	if !hi.Auto() {
 		v = min(v, hi.Resolve(against))
@@ -526,7 +565,7 @@ func (l *layout) imageBlock(b *box, x, w float32) {
 	if pic == nil {
 		return
 	}
-	iw, ih := pictureSize(b, pic, w)
+	iw, ih := pictureSize(b, pic, w, l.cbh)
 	if iw <= 0 || ih <= 0 {
 		return
 	}
@@ -937,7 +976,7 @@ func (c *inlineCtx) addImage(b *box) {
 	c.text.WriteString(objectChar)
 	c.begun = true
 	n := len(c.items) - 1
-	c.items[n].iw, c.items[n].ih = pictureSize(b, pic, c.avail)
+	c.items[n].iw, c.items[n].ih = pictureSize(b, pic, c.avail, c.l.cbh)
 	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: c.l.face(b.style)})
 }
 

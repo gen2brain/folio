@@ -143,6 +143,9 @@ func (l *layout) table(b *box, x, avail float32) {
 		h := float32(0)
 		for _, c := range byRow[r] {
 			sub := l.sub(rowTop[r])
+			// CSS 2.1 17.5.3 leaves a percentage height inside a cell
+			// undefined, and a row has no height of its own to give it yet.
+			sub.cbh = -1
 			sub.block(c.box, x+c.x, c.w)
 			sub.apply()
 			l.errs = append(l.errs, sub.errs...)
