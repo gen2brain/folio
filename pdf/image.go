@@ -2,10 +2,12 @@ package pdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	stdcolor "image/color"
 	"image/jpeg"
+	"io"
 	"sync"
 
 	"github.com/gen2brain/folio/raster"
@@ -900,6 +902,9 @@ func tightRows(pix []byte, stride, w, h, n int) []byte {
 // those are the three shapes a PDF color space can name.
 func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 	img, err := jpeg.Decode(bytes.NewReader(data))
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		img, err = jpeg.Decode(io.MultiReader(bytes.NewReader(data), bytes.NewReader([]byte{0xff, 0xd9})))
+	}
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
