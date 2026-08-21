@@ -237,6 +237,9 @@ func (d *Document) systemCJK(name, ordering string, bold, italic bool) *font.Fon
 func (d *Document) readToUnicode(ft *Font, dict Dict) {
 	st := d.f.GetStream(dict["ToUnicode"])
 	if st == nil {
+		if name := d.f.GetName(dict["ToUnicode"]); name != "" {
+			ft.toUnicode = d.predefinedCMap(name, 0)
+		}
 		return
 	}
 	data, err := st.Data()
