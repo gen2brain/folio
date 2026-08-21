@@ -48,10 +48,16 @@ func (p *Path) MoveTo(x, y float32) {
 
 // LineTo adds a straight segment. A path that begins with a line has an
 // implicit move to its first point, which is what a content stream that says
-// l before m means.
+// l before m means. A line to the point the path is already at is dropped
+// unless a move put it there, where it is a subpath of its own that a round
+// or a square cap paints as a dot.
 func (p *Path) LineTo(x, y float32) {
 	if !p.started {
 		p.MoveTo(x, y)
+		return
+	}
+	if p.cur.X == x && p.cur.Y == y &&
+		len(p.cmds) > 0 && p.cmds[len(p.cmds)-1] != cmdMove {
 		return
 	}
 	p.cmds = append(p.cmds, cmdLine)
@@ -59,10 +65,19 @@ func (p *Path) LineTo(x, y float32) {
 	p.pts = append(p.pts, p.cur)
 }
 
-// CurveTo adds a cubic Bezier segment.
+// CurveTo adds a cubic Bezier segment. A cubic whose control points sit on
+// its ends is a straight line and is added as one; one that collapses onto a
+// single point is nothing at all.
 func (p *Path) CurveTo(x1, y1, x2, y2, x3, y3 float32) {
 	if !p.started {
 		p.MoveTo(x1, y1)
+	}
+	at1 := p.cur.X == x1 && p.cur.Y == y1
+	at2 := x1 == x2 && y1 == y2
+	at3 := x2 == x3 && y2 == y3
+	if at1 && at3 || at1 && at2 || at2 && at3 {
+		p.LineTo(x3, y3)
+		return
 	}
 	p.cmds = append(p.cmds, cmdCurve)
 	p.pts = append(p.pts, Point{x1, y1}, Point{x2, y2}, Point{x3, y3})

@@ -61,6 +61,42 @@ func TestPathImplicitMove(t *testing.T) {
 	}
 }
 
+// TestPathDegenerate checks the segments a path leaves out: a line to the
+// point it is already at, and a cubic whose control points sit on its ends,
+// which is a straight line however it is written.
+func TestPathDegenerate(t *testing.T) {
+	var p Path
+	p.MoveTo(1, 2)
+	p.LineTo(3, 4)
+	p.LineTo(3, 4)
+	p.CurveTo(3, 4, 5, 6, 5, 6)
+	p.CurveTo(5, 6, 5, 6, 7, 8)
+	p.CurveTo(9, 10, 11, 12, 11, 12)
+	want := "m 1 2\nl 3 4\nl 5 6\nl 7 8\nc 9 10 11 12 11 12\n"
+	if got := walk(&p); got != want {
+		t.Errorf("path =\n%s\nwant\n%s", got, want)
+	}
+
+	// A line to the point a move put the path at is a subpath of its own,
+	// which a round or a square cap paints as a dot.
+	var q Path
+	q.MoveTo(1, 1)
+	q.LineTo(1, 1)
+	if got, want := walk(&q), "m 1 1\nl 1 1\n"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+
+	// A cubic that collapses onto the point the path is already at is
+	// nothing at all.
+	var r Path
+	r.MoveTo(0, 0)
+	r.LineTo(2, 2)
+	r.CurveTo(2, 2, 2, 2, 2, 2)
+	if got, want := walk(&r), "m 0 0\nl 2 2\n"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
 func TestPathBounds(t *testing.T) {
 	var p Path
 	p.MoveTo(10, 10)
