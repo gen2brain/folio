@@ -2614,3 +2614,53 @@ func FuzzDocument(fu *testing.F) {
 		}
 	})
 }
+
+// TestCP936Disguise checks the font that says it is simple and is not: one
+// generator writes /WinAnsiEncoding on a Chinese font and then draws two byte
+// GBK codes through it.
+func TestCP936Disguise(t *testing.T) {
+	// The bytes are the GBK name of SimFang, and the string is "全世".
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R" +
+			" /Resources << /Font << /F 5 0 R >> >> >>",
+		streamObj("", "BT /F 12 Tf 10 50 Td <C8ABCAC0> Tj ET"),
+		"<< /Type /Font /Subtype /TrueType /BaseFont /#B7#C2#CB#CE_GB2312" +
+			" /Encoding /WinAnsiEncoding /FirstChar 0 /LastChar 255" +
+			" /FontDescriptor << /Flags 4 /MissingWidth 1000 >> >>",
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "全世") {
+		t.Fatalf("text = %q, want the two characters the GBK bytes stand for", got)
+	}
+}
+
+// TestCP936OnlyWhenDisguised checks the test is narrow: a font that is what it
+// says it is keeps its own encoding.
+func TestCP936OnlyWhenDisguised(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R" +
+			" /Resources << /Font << /F 5 0 R >> >> >>",
+		streamObj("", "BT /F 12 Tf 10 50 Td (Hi) Tj ET"),
+		"<< /Type /Font /Subtype /TrueType /BaseFont /Helvetica" +
+			" /Encoding /WinAnsiEncoding /FontDescriptor << /Flags 4 >> >>",
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := p.Text()
+	if !strings.Contains(got, "Hi") {
+		t.Fatalf("text = %q, want Hi", got)
+	}
+}

@@ -106,7 +106,11 @@ func (d *Document) font(obj Object, res Dict) *Font {
 		d.readType3(ft, dict, res)
 		d.readSimpleWidths(ft, dict)
 	default:
-		d.readSimpleWidths(ft, dict)
+		if cp936Disguised(f, dict) {
+			d.readCP936(ft)
+		} else {
+			d.readSimpleWidths(ft, dict)
+		}
 	}
 	if ft.Name == "" && ft.Type3 {
 		ft.Name = f.GetName(dict["Name"])
@@ -387,6 +391,55 @@ func (d *Document) readType3(ft *Font, dict Dict, res Dict) {
 	if ft.Resources == nil {
 		ft.Resources = res
 	}
+}
+
+// cp936Fonts are the five Chinese fonts one generator writes as simple fonts
+// with /WinAnsiEncoding and then draws two byte GBK text through. The names
+// are the GBK bytes of what the fonts call themselves.
+var cp936Fonts = []Name{
+	"\xCB\xCE\xCC\xE5",        // SimSun
+	"\xBA\xDA\xCC\xE5",        // SimHei
+	"\xBF\xAC\xCC\xE5_GB2312", // SimKai
+	"\xB7\xC2\xCB\xCE_GB2312", // SimFang
+	"\xC1\xA5\xCA\xE9",        // SimLi
+}
+
+// cp936Disguised reports a simple font that is really a composite one: the
+// generator wrote /WinAnsiEncoding meaning code page 936, and the content
+// stream holds two bytes per character. Everything about the test is narrow
+// on purpose, because a font that is what it says it is must not be caught by
+// it.
+func cp936Disguised(f *syntax.File, dict Dict) bool {
+	desc := f.GetDict(dict["FontDescriptor"])
+	if desc == nil || f.GetInt(desc["Flags"], 0) != 4 {
+		return false
+	}
+	if n, ok := f.Resolve(dict["Encoding"]).(Name); !ok || n != "WinAnsiEncoding" {
+		return false
+	}
+	base := f.GetName(dict["BaseFont"])
+	for _, n := range cp936Fonts {
+		if base == n {
+			return true
+		}
+	}
+	return false
+}
+
+// readCP936 turns such a font into the composite font it is: GBK codes, CIDs
+// of Adobe-GB1, and the collection's own Unicode mapping behind them. The
+// /Widths array is one width per byte and means nothing here.
+func (d *Document) readCP936(ft *Font) {
+	ft.Type0 = true
+	ft.cmap = d.predefinedCMap("GBK-EUC-H", 0)
+	if ft.cmap == nil {
+		ft.Type0 = false
+		return
+	}
+	ft.WMode = ft.cmap.WMode
+	ft.ordering = "GB1"
+	ft.defWidth = 1000
+	ft.cidWidth = map[uint32]float64{}
 }
 
 // readEncoding reads /Encoding: the base encoding it names, and the glyph

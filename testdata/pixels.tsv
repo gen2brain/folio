@@ -16,13 +16,13 @@ PDFJS-9279-reduced.pdf	1	100	0.00001	0.00000	cairo
 Pages-tree-refs.pdf	1	100	0.00032	0.00051	mupdf
 S2.pdf	1	100	0.00625	0.00772	cairo
 ShowText-ShadingPattern.pdf	1	100	0.00714	0.02375	cairo
-SimFang-variant.pdf	1	100	0.00022	0.00057	gs
+SimFang-variant.pdf	1	100	0.00061	0.00331	mupdf
 TAMReview.pdf	1	100	0.00368	0.00000	cairo
 Test-plusminus.pdf	1	100	0.00035	0.00000	cairo
 ThuluthFeatures.pdf	1	100	0.00835	0.00930	mupdf
 TrueType_without_cmap.pdf	1	100	0.00063	0.00000	mupdf
 Type3WordSpacing.pdf	1	100	0.00629	0.01190	mupdf
-XiaoBiaoSong.pdf	1	100	0.00870	0.02068	gs
+XiaoBiaoSong.pdf	1	100	0.02367	0.07992	mupdf
 ZapfDingbats.pdf	1	100	0.00921	0.00789	mupdf
 acroform_calculation_order.pdf	1	100	0.00024	0.00000	mupdf
 alphatrans.pdf	1	100	0.00038	0.00015	cairo

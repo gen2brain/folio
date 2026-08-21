@@ -444,7 +444,10 @@ func hexCode(s string) uint32 {
 }
 
 // uniRun is a run of CIDs standing for consecutive characters.
-type uniRun struct{ lo, hi, uni uint16 }
+type uniRun struct {
+	lo, hi uint16
+	uni    rune
+}
 
 var (
 	uniTablesMu sync.Mutex
@@ -497,10 +500,10 @@ func decodeCIDUnicode(enc string) []uniRun {
 		i = n
 		cid += gap
 		uni += unzigzag(step)
-		if cid < 0 || cid+length > 0xffff || uni < 0 || uni+length > 0xffff {
+		if cid < 0 || cid+length > 0xffff || uni < 32 || uni+length > 0x10ffff {
 			break
 		}
-		out = append(out, uniRun{uint16(cid), uint16(cid + length), uint16(uni)})
+		out = append(out, uniRun{uint16(cid), uint16(cid + length), rune(uni)})
 		cid += length + 1
 		uni += length + 1
 	}
@@ -550,5 +553,5 @@ func uniRuneOf(t []uniRun, cid uint32) rune {
 	if !ok {
 		return 0
 	}
-	return rune(t[i].uni + (c - t[i].lo))
+	return t[i].uni + rune(c-t[i].lo)
 }

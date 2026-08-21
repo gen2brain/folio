@@ -172,7 +172,9 @@ func (d *TextDevice) addText(t *Text, ctm raster.Matrix, cs *ColorSpace, color [
 			if it.Rune <= 0 {
 				continue
 			}
-			if it.Rune == 0xa0 {
+			// Every kind of space a font may draw reads back as one, which
+			// is what a reader wants and what the width of it says anyway.
+			if unicode.IsSpace(it.Rune) {
 				it.Rune = ' '
 			}
 			m := raster.Concat(raster.Matrix{
