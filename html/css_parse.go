@@ -670,7 +670,7 @@ func (d *Document) Stylesheets(path string, root *Node) []*Stylesheet {
 			}
 			s := ParseCSS([]byte(rawText(n)), OriginAuthor)
 			under(s, mediaOf(n))
-			resolveFaces(s, path)
+			resolveURLs(s, path)
 			for _, imp := range s.Imports {
 				out = d.importSheet(out, Resolve(path, imp.Path), nestMedia(mediaOf(n), imp.Media), seen, 1)
 			}
@@ -703,11 +703,35 @@ func (d *Document) importSheet(out []*Stylesheet, path string, media []MediaList
 	}
 	s := ParseCSS(b, OriginAuthor)
 	under(s, media)
-	resolveFaces(s, path)
+	resolveURLs(s, path)
 	for _, imp := range s.Imports {
 		out = d.importSheet(out, Resolve(path, imp.Path), nestMedia(media, imp.Media), seen, depth+1)
 	}
 	return append(out, s)
+}
+
+// resolveURLs turns every address a sheet names into the path it means, which
+// is relative to the sheet and not to the part that links it.
+func resolveURLs(s *Stylesheet, base string) {
+	resolveFaces(s, base)
+	for i := range s.Rules {
+		for j := range s.Rules[i].Decls {
+			toks := s.Rules[i].Decls[j].value
+			fn := false
+			for k := range toks {
+				switch {
+				case toks[k].kind == cssURL && toks[k].value != "":
+					toks[k].value = Resolve(base, toks[k].value)
+				case toks[k].kind == cssFunction:
+					fn = strings.EqualFold(toks[k].value, "url")
+				case toks[k].kind == cssString && fn && toks[k].value != "":
+					toks[k].value, fn = Resolve(base, toks[k].value), false
+				case toks[k].kind != cssSpace:
+					fn = false
+				}
+			}
+		}
+	}
 }
 
 // resolveFaces turns the places an @font-face names into the paths the

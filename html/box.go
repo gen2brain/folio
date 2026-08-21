@@ -33,10 +33,11 @@ type box struct {
 	x, y, w, h float32
 	// lines are the line boxes of a block whose children are inline.
 	lines []lineBox
-	// marker is what a list item draws before its first line, and img the
-	// picture an image box draws.
+	// marker is what a list item draws before its first line, img the
+	// picture an image box draws, and back the picture behind any box.
 	marker string
 	img    *picture
+	back   *picture
 	// natural is how wide a table came out, which its lines do not say, and
 	// markerFace what a list item draws its marker with.
 	natural    float32

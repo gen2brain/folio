@@ -266,6 +266,9 @@ func (l *layout) flow(b *box, x, avail float32) {
 	}
 	w = clampLength(w, s.MinWidth, s.MaxWidth, avail)
 
+	if s.BackgroundImage != "" {
+		b.back = l.pictureAt(s.BackgroundImage)
+	}
 	if s.BreakBefore == BreakAlways {
 		l.next = true
 	}

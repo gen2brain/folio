@@ -264,7 +264,7 @@ func expand(d *Declaration) []longhand {
 		}
 		return out
 	case "background":
-		return []longhand{{name: "background-color", toks: backgroundColor(d.value)}}
+		return expandBackground(d.value)
 	case "border-radius":
 		return expandRadius(d.value)
 	case "border":
@@ -355,6 +355,43 @@ func isBorderWidth(p []cssToken) bool {
 
 // backgroundColor picks the colour out of a background shorthand, which also
 // names an image, a repeat and a position the engine has no use for.
+// expandBackground splits the background shorthand into the colour, the
+// picture and where it goes, reading the first layer of a list.
+func expandBackground(toks []cssToken) []longhand {
+	out := []longhand{{name: "background-color", toks: backgroundColor(toks)}}
+	var pos []cssToken
+	for _, part := range splitSpace(splitCommas(toks)[0]) {
+		if len(part) == 0 {
+			continue
+		}
+		if part[0].kind == cssURL ||
+			part[0].kind == cssFunction && strings.EqualFold(part[0].value, "url") {
+			out = append(out, longhand{name: "background-image", toks: part})
+			continue
+		}
+		if part[0].kind == cssIdent {
+			switch strings.ToLower(part[0].value) {
+			case "repeat", "repeat-x", "repeat-y", "no-repeat":
+				out = append(out, longhand{name: "background-repeat", toks: part})
+				continue
+			case "scroll", "fixed", "local", "none", "transparent":
+				continue
+			}
+		}
+		if _, ok := (value{toks: part}).color(); ok {
+			continue
+		}
+		if len(pos) > 0 {
+			pos = append(pos, cssToken{kind: cssSpace})
+		}
+		pos = append(pos, part...)
+	}
+	if len(pos) > 0 {
+		out = append(out, longhand{name: "background-position", toks: pos})
+	}
+	return out
+}
+
 func backgroundColor(toks []cssToken) []cssToken {
 	parts := splitSpace(toks)
 	for i := len(parts) - 1; i >= 0; i-- {

@@ -48,6 +48,9 @@ type compound struct {
 
 type attrSel struct {
 	name string
+	// ns is the namespace prefix written before the name, which an XHTML
+	// document parsed as HTML keeps in the attribute name itself.
+	ns string
 	// op is 0 for a bare presence test, otherwise one of = ~ | ^ $ *.
 	op   byte
 	val  string
@@ -159,7 +162,7 @@ func parseCompound(toks []cssToken, a, b, c *int) (compound, []cssToken, bool) {
 			if !first {
 				return cur, toks, false
 			}
-			name, rest, ok := parseQualified(toks)
+			_, name, rest, ok := parseQualified(toks)
 			if !ok {
 				return cur, toks, false
 			}
@@ -199,9 +202,9 @@ func parseCompound(toks []cssToken, a, b, c *int) (compound, []cssToken, bool) {
 	return cur, toks, n > 0
 }
 
-// parseQualified reads an element name, dropping the namespace prefix a sheet
-// with an @namespace writes, and returns empty for the universal selector.
-func parseQualified(toks []cssToken) (string, []cssToken, bool) {
+// parseQualified reads a name and the namespace prefix a sheet with an
+// @namespace writes before it, and returns empty for the universal selector.
+func parseQualified(toks []cssToken) (string, string, []cssToken, bool) {
 	name := ""
 	if toks[0].kind == cssIdent {
 		name = toks[0].value
@@ -210,12 +213,12 @@ func parseQualified(toks []cssToken) (string, []cssToken, bool) {
 	if len(toks) >= 2 && toks[0].kind == cssDelim && toks[0].delim == '|' {
 		switch t := toks[1]; {
 		case t.kind == cssIdent:
-			return t.value, toks[2:], true
+			return name, t.value, toks[2:], true
 		case t.kind == cssDelim && t.delim == '*':
-			return "", toks[2:], true
+			return name, "", toks[2:], true
 		}
 	}
-	return name, toks, true
+	return "", name, toks, true
 }
 
 func parseAttr(toks []cssToken) (attrSel, []cssToken, bool) {
@@ -224,11 +227,11 @@ func parseAttr(toks []cssToken) (attrSel, []cssToken, bool) {
 	if len(toks) == 0 {
 		return at, toks, false
 	}
-	name, toks, ok := parseQualified(toks)
+	ns, name, toks, ok := parseQualified(toks)
 	if !ok || name == "" {
 		return at, toks, false
 	}
-	at.name = strings.ToLower(name)
+	at.name, at.ns = strings.ToLower(name), strings.ToLower(ns)
 	toks = skipSpace(toks)
 	if len(toks) == 0 {
 		return at, toks, false
@@ -542,7 +545,7 @@ func hasClass(n *Node, want string) bool {
 func matchAttr(a *attrSel, n *Node) bool {
 	v, ok := "", false
 	for _, at := range n.Attr {
-		if at.Key == a.name {
+		if at.Key == a.name || a.ns != "" && at.Key == a.ns+":"+a.name {
 			v, ok = at.Val, true
 			break
 		}

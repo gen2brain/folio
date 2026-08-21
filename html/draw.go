@@ -27,11 +27,17 @@ func (p *painter) walk(b *box) {
 	if b.reach > b.y && (b.y >= p.bottom || b.reach <= p.top) {
 		return
 	}
-	if c := b.style.Background; c.A > 0 && b.w > 0 && b.h > 0 {
-		if r, round := radii(b.style, b.w, b.h); round {
-			p.fillRound(b.x, b.y, b.w, b.h, r, c)
-		} else {
-			p.rect(b.x, b.y, b.w, b.h, c)
+	if b.w > 0 && b.h > 0 {
+		r, round := radii(b.style, b.w, b.h)
+		if c := b.style.Background; c.A > 0 {
+			if round {
+				p.fillRound(b.x, b.y, b.w, b.h, r, c)
+			} else {
+				p.rect(b.x, b.y, b.w, b.h, c)
+			}
+		}
+		if b.back != nil {
+			p.backdrop(b, r, round)
 		}
 	}
 	p.borders(b)
@@ -381,6 +387,66 @@ func (p *painter) rect(x, y, w, h float32, c Color) {
 	col, alpha := colorOf(c)
 	p.dev.FillPath(&p.path, false, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
 }
+
+// backdrop paints the picture behind a box, tiled the way the style asks and
+// clipped to the box itself.
+func (p *painter) backdrop(b *box, r [4]radius, round bool) {
+	s := b.style
+	iw, ih := float32(b.back.w), float32(b.back.h)
+	if iw <= 0 || ih <= 0 {
+		return
+	}
+	w, h := iw, ih
+	switch {
+	case !s.BackgroundW.Auto() && !s.BackgroundH.Auto():
+		w, h = s.BackgroundW.Resolve(b.w), s.BackgroundH.Resolve(b.h)
+	case !s.BackgroundW.Auto():
+		w = s.BackgroundW.Resolve(b.w)
+		h = ih * w / iw
+	case !s.BackgroundH.Auto():
+		h = s.BackgroundH.Resolve(b.h)
+		w = iw * h / ih
+	}
+	if w <= 0 || h <= 0 {
+		return
+	}
+	x := b.x + s.BackgroundX.Resolve(b.w-w)
+	y := b.y + s.BackgroundY.Resolve(b.h-h)
+	nx, ny := 1, 1
+	if s.BackgroundRepeat == RepeatBoth || s.BackgroundRepeat == RepeatX {
+		for x > b.x {
+			x -= w
+		}
+		nx = int((b.x+b.w-x)/w) + 1
+	}
+	if s.BackgroundRepeat == RepeatBoth || s.BackgroundRepeat == RepeatY {
+		for y > b.y {
+			y -= h
+		}
+		ny = int((b.y+b.h-y)/h) + 1
+	}
+	if nx*ny > maxTiles || nx <= 0 || ny <= 0 {
+		return
+	}
+
+	p.path.Reset()
+	if round {
+		roundRect(&p.path, b.x, b.y, b.w, b.h, r)
+	} else {
+		p.path.Rect(b.x, b.y, b.w, b.h)
+	}
+	p.dev.ClipPath(&p.path, false, p.ctm, raster.InfiniteRect)
+	for i := range ny {
+		for j := range nx {
+			p.image(b.back, x+float32(j)*w, y+float32(i)*h, w, h)
+		}
+	}
+	p.dev.PopClip()
+}
+
+// maxTiles is how many copies of a picture one background may be painted
+// with, which a picture a fraction of a pixel wide would otherwise run to.
+const maxTiles = 1 << 14
 
 func (p *painter) image(pic *picture, x, y, w, h float32) {
 	if w <= 0 || h <= 0 {

@@ -204,6 +204,17 @@ const (
 	BorderHidden
 )
 
+// Repeat is how the picture behind a box is tiled.
+type Repeat uint8
+
+// The background repeats.
+const (
+	RepeatBoth Repeat = iota
+	RepeatX
+	RepeatY
+	RepeatNone
+)
+
 // Writing is the direction the lines of a box run in.
 type Writing uint8
 
@@ -267,6 +278,12 @@ type Style struct {
 
 	Color      Color
 	Background Color
+	// BackgroundImage is the picture painted over the colour, with where in
+	// the box it sits, how big it is drawn and how it is tiled.
+	BackgroundImage          string
+	BackgroundRepeat         Repeat
+	BackgroundX, BackgroundY Length
+	BackgroundW, BackgroundH Length
 
 	TextAlign     TextAlign
 	TextIndent    Length
@@ -397,6 +414,104 @@ func cornerAt(name string) int {
 		}
 	}
 	return 0
+}
+
+// firstIdent is the name of the first value of a declaration, lower cased.
+func firstIdent(toks []cssToken) string {
+	parts := splitSpace(splitCommas(toks)[0])
+	if len(parts) == 0 || len(parts[0]) != 1 || parts[0][0].kind != cssIdent {
+		return ""
+	}
+	return strings.ToLower(parts[0][0].value)
+}
+
+// url reads the address of the first picture a declaration names, which is
+// written either as a url token or as a function around a string.
+func (v value) url() string {
+	toks := splitCommas(v.toks)[0]
+	for i, t := range toks {
+		switch {
+		case t.kind == cssURL:
+			return t.value
+		case t.kind == cssFunction && strings.EqualFold(t.value, "url"):
+			if args, _, ok := parseArgs(toks[i:]); ok {
+				if a := skipSpace(args); len(a) == 1 && a[0].kind == cssString {
+					return a[0].value
+				}
+			}
+			return ""
+		case t.kind == cssIdent && strings.EqualFold(t.value, "none"):
+			return ""
+		}
+	}
+	return ""
+}
+
+// The offsets the keywords of a background position stand for.
+var positionKeywords = map[string]Length{
+	"left": {Unit: UnitPercent}, "top": {Unit: UnitPercent},
+	"center": {Value: 50, Unit: UnitPercent},
+	"right":  {Value: 100, Unit: UnitPercent}, "bottom": {Value: 100, Unit: UnitPercent},
+}
+
+// position reads where in a box the picture behind it sits.
+func (v value) position() (Length, Length, bool) {
+	parts := splitSpace(splitCommas(v.toks)[0])
+	if len(parts) == 0 || len(parts) > 2 {
+		return Length{}, Length{}, false
+	}
+	var out [2]Length
+	vertical := [2]bool{}
+	for i, part := range parts {
+		if len(part) != 1 {
+			return Length{}, Length{}, false
+		}
+		if part[0].kind == cssIdent {
+			name := strings.ToLower(part[0].value)
+			l, ok := positionKeywords[name]
+			if !ok {
+				return Length{}, Length{}, false
+			}
+			out[i], vertical[i] = l, name == "top" || name == "bottom"
+			continue
+		}
+		l, ok := length(part[0], v.em, v.rm)
+		if !ok {
+			return Length{}, Length{}, false
+		}
+		out[i] = l
+	}
+	if len(parts) == 1 {
+		return out[0], Length{Value: 50, Unit: UnitPercent}, true
+	}
+	if vertical[0] {
+		return out[1], out[0], true
+	}
+	return out[0], out[1], true
+}
+
+// size reads how big the picture behind a box is drawn, in which a length
+// there is none of means the size the picture has.
+func (v value) size() (Length, Length, bool) {
+	parts := splitSpace(splitCommas(v.toks)[0])
+	if len(parts) == 0 || len(parts) > 2 {
+		return Length{}, Length{}, false
+	}
+	var out [2]Length
+	for i, part := range parts {
+		if len(part) != 1 {
+			return Length{}, Length{}, false
+		}
+		if part[0].kind == cssIdent {
+			continue
+		}
+		l, ok := length(part[0], v.em, v.rm)
+		if !ok {
+			return Length{}, Length{}, false
+		}
+		out[i] = l
+	}
+	return out[0], out[1], true
 }
 
 // spacing reads the one or two lengths a table leaves between its cells.
@@ -1038,6 +1153,27 @@ func applyProp(s *Style, name string, v value) bool {
 		}
 	case "content":
 		s.Content, s.HasContent = v.content()
+	case "background-image":
+		s.BackgroundImage = v.url()
+	case "background-repeat":
+		switch firstIdent(v.toks) {
+		case "repeat":
+			s.BackgroundRepeat = RepeatBoth
+		case "repeat-x":
+			s.BackgroundRepeat = RepeatX
+		case "repeat-y":
+			s.BackgroundRepeat = RepeatY
+		case "no-repeat":
+			s.BackgroundRepeat = RepeatNone
+		}
+	case "background-position":
+		if x, y, ok := v.position(); ok {
+			s.BackgroundX, s.BackgroundY = x, y
+		}
+	case "background-size":
+		if w, h, ok := v.size(); ok {
+			s.BackgroundW, s.BackgroundH = w, h
+		}
 	case "writing-mode", "-epub-writing-mode", "-webkit-writing-mode", "-ms-writing-mode":
 		switch v.ident() {
 		case "horizontal-tb", "lr-tb", "rl-tb":
@@ -1203,6 +1339,14 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.Float = src.Float
 	case "content":
 		dst.Content, dst.HasContent = src.Content, src.HasContent
+	case "background-image":
+		dst.BackgroundImage = src.BackgroundImage
+	case "background-repeat":
+		dst.BackgroundRepeat = src.BackgroundRepeat
+	case "background-position":
+		dst.BackgroundX, dst.BackgroundY = src.BackgroundX, src.BackgroundY
+	case "background-size":
+		dst.BackgroundW, dst.BackgroundH = src.BackgroundW, src.BackgroundH
 	case "writing-mode", "-epub-writing-mode", "-webkit-writing-mode", "-ms-writing-mode":
 		dst.Writing = src.Writing
 	case "text-orientation", "-epub-text-orientation", "-webkit-text-orientation":

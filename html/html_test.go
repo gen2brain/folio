@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -657,6 +659,51 @@ func TestCSSSelectors(t *testing.T) {
 		got := strings.Join(matchIDs(t, tc.sel), " ")
 		if got != tc.want {
 			t.Errorf("%q matched %q, want %q", tc.sel, got, tc.want)
+		}
+	}
+}
+
+// TestCSSNamespacedAttr checks the one namespaced attribute a book writes.
+// An XHTML part parsed as HTML keeps the prefix in the attribute name, so a
+// selector for it has to look for both spellings.
+func TestCSSNamespacedAttr(t *testing.T) {
+	root, err := Parse([]byte(`<html xmlns:epub="http://www.idpf.org/2007/ops"><body>` +
+		`<div epub:type="chapter" id="i">x</div><div id="j">y</div></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var el, other *Node
+	Walk(root, func(n *Node) bool {
+		switch Attr(n, "id") {
+		case "i":
+			el = n
+		case "j":
+			other = n
+		}
+		return true
+	})
+	if el == nil || other == nil {
+		t.Fatal("no divs")
+	}
+	for _, tc := range []struct {
+		sel  string
+		want bool
+	}{
+		{`div[epub|type="chapter"]`, true},
+		{`[epub|type]`, true},
+		{`div[epub|type="other"]`, false},
+		{`[type]`, false},
+	} {
+		sels, ok := parseSelectors(skipSpace(tokensOf(tc.sel)))
+		if !ok {
+			t.Errorf("%q did not parse", tc.sel)
+			continue
+		}
+		if got := sels[0].Match(el); got != tc.want {
+			t.Errorf("%q matched %v, want %v", tc.sel, got, tc.want)
+		}
+		if sels[0].Match(other) {
+			t.Errorf("%q matched the div with no attribute", tc.sel)
 		}
 	}
 }
@@ -2106,6 +2153,120 @@ func TestLayoutVertical(t *testing.T) {
 	}
 	if n := ink(280, 100, 300, 200); n > 50 {
 		t.Errorf("%d dark pixels below the line, want it to end above", n)
+	}
+}
+
+// TestCSSBackground reads the picture behind a box: the shorthand in the
+// order a book writes it, the longhands, and both spellings of an address.
+func TestCSSBackground(t *testing.T) {
+	pct := func(v float32) Length { return Length{Value: v, Unit: UnitPercent} }
+	for _, tc := range []struct {
+		sheet  string
+		image  string
+		repeat Repeat
+		x, y   Length
+	}{
+		{`#i { background: url(a.png) no-repeat right center }`, "a.png", RepeatNone, pct(100), pct(50)},
+		{`#i { background: #fff url('b.png') repeat-x }`, "b.png", RepeatX, Length{}, Length{}},
+		{`#i { background-image: url("c.png") }`, "c.png", RepeatBoth, Length{}, Length{}},
+		{`#i { background-image: none }`, "", RepeatBoth, Length{}, Length{}},
+		{`#i { background-image: url(d.png); background-position: left bottom }`,
+			"d.png", RepeatBoth, pct(0), pct(100)},
+		{`#i { background-image: url(e.png); background-position: 10px }`,
+			"e.png", RepeatBoth, Length{Value: 10, Unit: UnitPx}, pct(50)},
+	} {
+		got := styleOf(t, tc.sheet, `<p id="i">t</p>`, "i")
+		if got.BackgroundImage != tc.image || got.BackgroundRepeat != tc.repeat {
+			t.Errorf("%s gave %q repeat %d", tc.sheet, got.BackgroundImage, got.BackgroundRepeat)
+		}
+		if got.BackgroundX != tc.x || got.BackgroundY != tc.y {
+			t.Errorf("%s sits at %v %v, want %v %v", tc.sheet, got.BackgroundX, got.BackgroundY, tc.x, tc.y)
+		}
+	}
+	got := styleOf(t, `#i { background-size: 50% auto }`, `<p id="i">t</p>`, "i")
+	if got.BackgroundW != pct(50) || !got.BackgroundH.Auto() {
+		t.Errorf("background-size gave %v %v", got.BackgroundW, got.BackgroundH)
+	}
+
+	// An address in a sheet is relative to the sheet, not to the part that
+	// links it.
+	sheet := ParseCSS([]byte(`p { background-image: url(pic.png) }
+		div { background: url("../up.png") }`), OriginAuthor)
+	resolveURLs(sheet, "EPUB/css/main.css")
+	for i, want := range []string{"EPUB/css/pic.png", "EPUB/up.png"} {
+		if got := (value{toks: sheet.Rules[i].Decls[0].value}).url(); got != want {
+			t.Errorf("the address resolved to %q, want %q", got, want)
+		}
+	}
+}
+
+// TestLayoutBackdrop paints the picture behind a box: where it sits, how it
+// is tiled and how big it is drawn, all clipped to the box.
+func TestLayoutBackdrop(t *testing.T) {
+	m := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := range 8 {
+		for x := range 8 {
+			c := color.RGBA{255, 0, 0, 255}
+			if x >= 4 {
+				c = color.RGBA{0, 0, 255, 255}
+			}
+			m.Set(x, y, c)
+		}
+	}
+	var pic bytes.Buffer
+	if err := png.Encode(&pic, m); err != nil {
+		t.Fatal(err)
+	}
+	sheet := `body { margin: 0 } div { margin: 0; width: 200px; height: 40px }
+		.a { background: url(pic.png) no-repeat right center }
+		.b { background-image: url(pic.png); background-repeat: repeat-x }
+		.c { background-image: url(pic.png); background-repeat: no-repeat;
+		     background-position: left top; background-size: 50% auto }`
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml": "<html><head><style>" + sheet + "</style></head><body>" +
+			`<div class="a">a</div><div class="b">b</div><div class="c">c</div></body></html>`,
+		"EPUB/text/pic.png": pic.String(),
+	})
+	if _, err := d.Layout(&LayoutOptions{Width: 300, Height: 300, Margin: 0}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(x, y int) [3]uint8 {
+		i := img.PixOffset(x, y)
+		return [3]uint8{img.Pix[i], img.Pix[i+1], img.Pix[i+2]}
+	}
+	var (
+		white = [3]uint8{255, 255, 255}
+		red   = [3]uint8{255, 0, 0}
+		blue  = [3]uint8{0, 0, 255}
+	)
+	for _, c := range []struct {
+		what string
+		x, y int
+		want [3]uint8
+	}{
+		{"the tile against the right edge", 194, 20, red},
+		{"the tile's other half", 198, 20, blue},
+		{"the box beside it", 100, 20, white},
+		{"a row of tiles along the top", 2, 42, red},
+		{"the row's second tile", 14, 42, blue},
+		{"below the row", 100, 70, white},
+		{"a picture drawn half the width of its box", 20, 82, red},
+		{"the other half of it", 70, 82, blue},
+		{"past the picture", 150, 82, white},
+	} {
+		if got := at(c.x, c.y); got != c.want {
+			t.Errorf("%s at %d,%d is %v, want %v", c.what, c.x, c.y, got, c.want)
+		}
 	}
 }
 

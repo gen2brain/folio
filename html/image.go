@@ -111,10 +111,18 @@ func decodePicture(b []byte) (*picture, error) {
 // picture decodes the image an element names, once per part.
 func (l *layout) picture(b *box) *picture {
 	src := Attr(b.node, "src")
-	if l.doc == nil || src == "" || strings.Contains(src, "://") {
+	if src == "" {
 		return nil
 	}
-	path := Resolve(l.path, src)
+	return l.pictureAt(Resolve(l.path, src))
+}
+
+// pictureAt decodes one image of the book, once per part. The path is the one
+// the address resolved to, which for a sheet is relative to the sheet.
+func (l *layout) pictureAt(path string) *picture {
+	if l.doc == nil || path == "" || strings.Contains(path, "://") {
+		return nil
+	}
 	if p, ok := l.pics[path]; ok {
 		return p
 	}
