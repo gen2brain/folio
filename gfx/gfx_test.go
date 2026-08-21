@@ -1,6 +1,8 @@
 package gfx
 
 import (
+	"encoding/binary"
+	"sort"
 	"testing"
 
 	"github.com/gen2brain/folio/font"
@@ -132,5 +134,119 @@ func TestTextPageText(t *testing.T) {
 	d.Close()
 	if got, want := st.Text(), "ab\n\nab\n\n"; got != want {
 		t.Fatalf("text = %q, want %q", got, want)
+	}
+}
+
+// buildICC assembles a matrix/TRC profile out of the tags a test needs.
+func buildICC(t *testing.T, space string, tags map[string][]byte) []byte {
+	t.Helper()
+	head := make([]byte, 128)
+	copy(head[12:], "mntr")
+	copy(head[16:], space)
+	copy(head[20:], "XYZ ")
+	copy(head[36:], "acsp")
+
+	names := make([]string, 0, len(tags))
+	for k := range tags {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	out := append([]byte{}, head...)
+	out = binary.BigEndian.AppendUint32(out, uint32(len(names)))
+	off := len(out) + 12*len(names)
+	body := []byte{}
+	for _, k := range names {
+		out = append(out, k...)
+		out = binary.BigEndian.AppendUint32(out, uint32(off+len(body)))
+		out = binary.BigEndian.AppendUint32(out, uint32(len(tags[k])))
+		body = append(body, tags[k]...)
+	}
+	return append(out, body...)
+}
+
+func iccXYZTag(x, y, z float64) []byte {
+	b := append([]byte("XYZ "), 0, 0, 0, 0)
+	for _, v := range []float64{x, y, z} {
+		b = binary.BigEndian.AppendUint32(b, uint32(int32(v*65536)))
+	}
+	return b
+}
+
+func iccGammaTag(g float64) []byte {
+	b := append([]byte("curv"), 0, 0, 0, 0)
+	b = binary.BigEndian.AppendUint32(b, 1)
+	return binary.BigEndian.AppendUint16(b, uint16(g*256))
+}
+
+func TestICCProfile(t *testing.T) {
+	// sRGB's own primaries, adapted to D50 as a profile stores them, so that
+	// the matrix contributes nothing and the curve is what is under test.
+	primaries := map[string][]byte{
+		"rXYZ": iccXYZTag(0.4360, 0.2225, 0.0139),
+		"gXYZ": iccXYZTag(0.3851, 0.7169, 0.0971),
+		"bXYZ": iccXYZTag(0.1431, 0.0606, 0.7141),
+	}
+	// A gamma of 1.8 is what Apple's Generic RGB profile carries, and the one
+	// file of the corpus that needs a profile read at all is written in it.
+	generic := map[string][]byte{}
+	for k, v := range primaries {
+		generic[k] = v
+	}
+	for _, k := range []string{"rTRC", "gTRC", "bTRC"} {
+		generic[k] = iccGammaTag(1.8)
+	}
+	p := ParseICC(buildICC(t, "RGB ", generic))
+	if p == nil {
+		t.Fatal("a matrix/TRC profile was not read")
+	}
+	if p.Components() != 3 {
+		t.Fatalf("Components = %d, want 3", p.Components())
+	}
+	// Half gray through a gamma of 1.8 is lighter than half gray through
+	// sRGB's curve: linear 0.5^1.8 encoded again is 0.567, which is the 145
+	// to 146 out of 255 that MuPDF, poppler, cairo and Ghostscript all show.
+	r, g, b := p.ToRGB([]float32{0.5, 0.5, 0.5})
+	want := linearToSRGB(pow32(0.5, 1.8))
+	for _, v := range []float32{r, g, b} {
+		if abs32(v-want) > 0.002 {
+			t.Fatalf("0.5 gray became %.4f, want %.4f", v, want)
+		}
+	}
+
+	// An sRGB profile says nothing the pipeline does not already do, and is
+	// dropped so that a page stays byte for byte what it was.
+	srgb := map[string][]byte{}
+	for k, v := range primaries {
+		srgb[k] = v
+	}
+	curve := append([]byte("curv"), 0, 0, 0, 0)
+	curve = binary.BigEndian.AppendUint32(curve, 256)
+	for i := 0; i < 256; i++ {
+		v := srgbToLinear(float32(i) / 255)
+		curve = binary.BigEndian.AppendUint16(curve, uint16(v*65535+0.5))
+	}
+	for _, k := range []string{"rTRC", "gTRC", "bTRC"} {
+		srgb[k] = curve
+	}
+	if p := ParseICC(buildICC(t, "RGB ", srgb)); p != nil {
+		t.Error("an sRGB profile should be left to the pipeline")
+	}
+
+	// A gray profile is one curve, and a profile shaped in a way this cannot
+	// read is not guessed at.
+	gray := ParseICC(buildICC(t, "GRAY", map[string][]byte{"kTRC": iccGammaTag(2.2)}))
+	if gray == nil || gray.Components() != 1 {
+		t.Fatal("a gray profile was not read")
+	}
+	wantGray := linearToSRGB(pow32(0.5, 2.2))
+	if v, _, _ := gray.ToRGB([]float32{0.5}); abs32(v-wantGray) > 0.002 {
+		t.Errorf("0.5 gray became %.4f, want %.4f", v, wantGray)
+	}
+	if p := ParseICC(buildICC(t, "CMYK", generic)); p != nil {
+		t.Error("a CMYK profile has no matrix and must not be read as one")
+	}
+	for n := 0; n < 140; n++ {
+		ParseICC(buildICC(t, "RGB ", generic)[:n])
 	}
 }

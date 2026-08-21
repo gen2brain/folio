@@ -237,7 +237,7 @@ bug1868759.pdf	1	100	0.00224	0.00000	cairo
 bug1871353.1.pdf	1	100	0.00350	0.00000	mupdf
 bug1871353.pdf	1	100	0.00007	0.00020	cairo
 bug1872721.pdf	1	100	0.00344	0.00000	mupdf
-bug1873345.pdf	1	100	0.00287	0.00002	mupdf
+bug1873345.pdf	1	100	0.00282	0.00002	mupdf
 bug1883609.pdf	1	100	0.00292	0.00295	cairo
 bug1885505.pdf	1	100	0.00469	0.00003	cairo
 bug1889122.pdf	1	100	0.00073	0.00000	mupdf
@@ -344,7 +344,7 @@ font_ascent_descent.pdf	1	100	0.00034	0.00000	poppler
 form_two_pages.pdf	1	100	0.00007	0.00000	cairo
 fraction-highlight.pdf	1	100	0.00013	0.00000	cairo
 franz.pdf	1	100	0.00839	0.01429	poppler
-franz_2.pdf	1	100	0.06273	0.00000	mupdf
+franz_2.pdf	1	100	0.00351	0.00000	cairo
 freeculture.pdf	1	100	0.02165	0.03057	mupdf
 freetext_no_appearance.pdf	1	100	0.00001	0.00000	poppler
 freetexts.pdf	1	100	0.00070	0.00024	mupdf
@@ -937,7 +937,7 @@ tracemonkey_annotation_on_page_8.pdf	1	100	0.00456	0.00000	cairo
 tracemonkey_freetext.pdf	1	100	0.00458	0.00000	cairo
 tracemonkey_with_annotations.pdf	1	100	0.00460	0.00000	cairo
 tracemonkey_with_editable_annotations.pdf	1	100	0.00456	0.00000	cairo
-transparency_group.pdf	1	100	0.00619	0.00000	cairo
+transparency_group.pdf	1	100	0.00035	0.00000	cairo
 transparent.pdf	1	100	0.00111	0.00000	mupdf
 two_pages.pdf	1	100	0.00600	0.02170	cairo
 two_paragraphs.pdf	1	100	0.00006	0.00000	cairo

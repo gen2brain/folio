@@ -1,6 +1,9 @@
 package pdf
 
-import "github.com/gen2brain/folio/syntax"
+import (
+	"github.com/gen2brain/folio/gfx"
+	"github.com/gen2brain/folio/syntax"
+)
 
 // colorSpace resolves a color space object, which is either a name, an array,
 // or a name that has to be looked up in the resource dictionary.
@@ -48,12 +51,20 @@ func (d *Document) colorSpaceArray(a Array, res Dict, depth int) *ColorSpace {
 		if st == nil {
 			return DeviceGray
 		}
+		n := int(d.f.GetInt(st.Dict["N"], 0))
+		if p := d.iccProfile(st, n); p != nil {
+			kind := KindRGB
+			if n == 1 {
+				kind = KindGray
+			}
+			return &ColorSpace{Name: "ICCBased", Kind: kind, N: n, ICC: p}
+		}
 		if alt := st.Dict["Alternate"]; alt != nil {
-			if cs := d.colorSpace(alt, res, depth+1); cs.N == int(d.f.GetInt(st.Dict["N"], 0)) {
+			if cs := d.colorSpace(alt, res, depth+1); cs.N == n {
 				return cs
 			}
 		}
-		switch d.f.GetInt(st.Dict["N"], 0) {
+		switch n {
 		case 1:
 			return DeviceGray
 		case 4:
@@ -168,4 +179,23 @@ func (d *Document) colorSpaceArray(a Array, res Dict, depth int) *ColorSpace {
 
 	d.errorf("unknown color space %v", syntax.Name(d.f.GetName(a[0])))
 	return DeviceGray
+}
+
+// iccProfile reads the profile an ICCBased space embeds, which says what its
+// numbers mean where the alternate space only says how many there are. It is
+// nil for a profile shaped in a way this cannot read, for one that says no
+// more than sRGB already does, and for one that disagrees with /N.
+func (d *Document) iccProfile(st *syntax.Stream, n int) *gfx.ICC {
+	if n != 1 && n != 3 {
+		return nil
+	}
+	data, err := st.Data()
+	if err != nil {
+		return nil
+	}
+	p := gfx.ParseICC(data)
+	if p == nil || p.Components() != n {
+		return nil
+	}
+	return p
 }

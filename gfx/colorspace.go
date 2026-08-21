@@ -48,6 +48,9 @@ type ColorSpace struct {
 	Matrix []float64
 	// Tint maps colorant values to the alternate space.
 	Tint Tint
+	// ICC is the profile an ICCBased space embedded, when it is one this can
+	// read and one that says anything sRGB does not.
+	ICC *ICC
 }
 
 // The device spaces, which every content stream can use without declaring.

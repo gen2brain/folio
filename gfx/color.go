@@ -43,8 +43,18 @@ func (cs *ColorSpace) convert(c []float32, out []float32, want outKind, depth in
 
 	switch cs.Kind {
 	case KindGray:
+		if cs.ICC != nil {
+			r, g, b := cs.ICC.ToRGB(c)
+			fromRGB(r, g, b, out, want)
+			return
+		}
 		fromGray(at(c, 0), out, want)
 	case KindRGB:
+		if cs.ICC != nil {
+			r, g, b := cs.ICC.ToRGB(c)
+			fromRGB(r, g, b, out, want)
+			return
+		}
 		fromRGB(at(c, 0), at(c, 1), at(c, 2), out, want)
 	case KindCMYK:
 		fromCMYK(at(c, 0), at(c, 1), at(c, 2), at(c, 3), out, want)
