@@ -82,6 +82,9 @@ type frag struct {
 	// dy is how far vertical-align raises the run above the baseline of the
 	// line it is on.
 	dy float32
+	// sub is the box an inline-block put on the line, which is laid out on
+	// its own and moved to where the line ended up.
+	sub *box
 	// img is set for a picture, and h its height.
 	img *picture
 	h   float32
@@ -170,7 +173,7 @@ func generated(n *Node, st Styles, p PseudoElement) *box {
 // flow of its parent. A float belongs to neither: it is placed where it is
 // written and the lines beside it work around it.
 func (b *box) inlineLevel() bool {
-	if b.floated() || b.placed() {
+	if b.ownFlow() {
 		return true
 	}
 	switch b.kind {
@@ -178,6 +181,16 @@ func (b *box) inlineLevel() bool {
 		return true
 	}
 	return false
+}
+
+// ownFlow reports a box laid out on its own rather than as part of the lines
+// of the block around it: a float, a box taken out of the flow, and an
+// inline-block, which is a block that happens to sit on a line.
+func (b *box) ownFlow() bool {
+	if b.floated() || b.placed() {
+		return true
+	}
+	return b.kind != textBox && b.style != nil && b.style.Display == DisplayInlineBlock
 }
 
 // floated reports a box taken out of the flow. A text box carries the style

@@ -327,10 +327,10 @@ func (t *textCollector) walk(b *box) {
 			}
 		}
 		// The rest of the children are the inline boxes the lines were made
-		// of, and say nothing the lines do not, except a float or a placed
-		// box, which was laid out on its own.
+		// of, and say nothing the lines do not, except the ones laid out on
+		// their own.
 		for _, k := range b.kids {
-			if k.floated() || k.placed() {
+			if k.ownFlow() {
 				t.walk(k)
 			}
 		}

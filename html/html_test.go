@@ -2654,3 +2654,75 @@ func TestLayoutPercentHeight(t *testing.T) {
 		t.Errorf("a min-height of half of 120px came to %v, want 60", least)
 	}
 }
+
+// TestLayoutInlineBlock puts a box on a line: it is as wide as what it holds,
+// it sits beside the text rather than under it, and its baseline is the one
+// of its last line.
+func TestLayoutInlineBlock(t *testing.T) {
+	lay := func(sheet, body string) (*box, []frag, float32) {
+		t.Helper()
+		d, _ := styledPage(t, "body { margin: 0; font-size: 20px; line-height: 20px } "+sheet,
+			body, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		t.Cleanup(func() { d.Close() })
+		var found *box
+		var frags []frag
+		lines := 0
+		var walk func(*box)
+		walk = func(b *box) {
+			if b.node != nil && Attr(b.node, "id") == "k" {
+				// What the box holds is a line of its own, and the
+				// fragments wanted here are the ones on the line it sits on.
+				found = b
+				return
+			}
+			lines += len(b.lines)
+			for i := range b.lines {
+				frags = append(frags, b.lines[i].frags...)
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return found, frags, float32(lines)
+	}
+
+	k, frags, lines := lay(`#k { display: inline-block }`,
+		`<p>ab<span id="k">cd</span>ef</p>`)
+	if k == nil {
+		t.Fatal("the inline-block left no box")
+	}
+	if len(frags) != 3 {
+		t.Fatalf("%d fragments, want the text either side of the box", len(frags))
+	}
+	if frags[1].sub != k {
+		t.Fatal("the box is not the fragment between the two runs")
+	}
+	if !(frags[0].x < frags[1].x && frags[1].x < frags[2].x) {
+		t.Errorf("the three sit at %v, %v, %v, want them in order along the line",
+			frags[0].x, frags[1].x, frags[2].x)
+	}
+	if k.x != frags[1].x {
+		t.Errorf("the box is at %v and its fragment at %v", k.x, frags[1].x)
+	}
+	// It is as wide as the two characters it holds, not as wide as the page.
+	if k.w <= 0 || k.w > 100 {
+		t.Errorf("the box came out %v wide, want it to shrink to what it holds", k.w)
+	}
+	// The text either side of it and the box are on one line of the block,
+	// and the box holds a line of its own.
+	if lines != 1 {
+		t.Errorf("%v lines outside the box, want the text either side of it on one", lines)
+	}
+
+	// A block does not share a line, so the same markup laid out as a block
+	// puts the box below the text that comes before it.
+	block, _, _ := lay(`#k { display: block }`, `<p>ab<span id="k">cd</span>ef</p>`)
+	if block == nil {
+		t.Fatal("the block left no box")
+	}
+	if block.y <= k.y {
+		t.Errorf("as a block the box is at %v and inline at %v, want the block lower",
+			block.y, k.y)
+	}
+}

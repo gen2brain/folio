@@ -591,10 +591,9 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	edge := false
 	for _, p := range c.pieces(lo, hi) {
 		it := &c.items[p.item]
-		a, d := strut(it.style, it.face)
-		if it.img != nil {
+		a, d := itemBox(it)
+		if it.sub != nil || it.img != nil {
 			total += it.iw
-			a, d = it.ih, 0
 		} else {
 			total += it.face.width(c.str[p.lo:p.hi])
 			spaces += strings.Count(c.str[p.lo:p.hi], " ")
@@ -618,10 +617,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 			default:
 				continue
 			}
-			a, d := strut(it.style, it.face)
-			if it.img != nil {
-				a, d = it.ih, 0
-			}
+			a, d := itemBox(it)
 			if h := a + d - (above + below); h > 0 {
 				if it.style.VerticalAlign == AlignTop {
 					below += h
@@ -650,10 +646,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	for _, p := range c.pieces(lo, hi) {
 		it := &c.items[p.item]
 		f := frag{x: cx, style: it.style, face: it.face}
-		a, d := strut(it.style, it.face)
-		if it.img != nil {
-			a, d = it.ih, 0
-		}
+		a, d := itemBox(it)
 		switch it.style.VerticalAlign {
 		case AlignTop:
 			f.dy = above - a
@@ -661,6 +654,12 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 			f.dy = d - below
 		default:
 			f.dy = alignShift(it.style, it.face, sf, a, d)
+		}
+		if it.sub != nil {
+			f.sub, f.w, f.h = it.sub, it.iw, it.ih
+			cx += it.iw
+			line.frags = append(line.frags, f)
+			continue
 		}
 		if it.img != nil {
 			f.img, f.w, f.h = it.img, it.iw, it.ih
@@ -676,10 +675,33 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	}
 
 	line.h, line.baseline, line.natural = above+below, above, total+indent
+	// An inline-block was laid out on its own, so it is moved to where the
+	// line put it once the line knows where its baseline is.
+	for i := range line.frags {
+		f := &line.frags[i]
+		if f.sub == nil {
+			continue
+		}
+		ml := f.style.MarginLeft.Resolve(w)
+		shift(f.sub, f.x+ml-f.sub.x, line.y+above-f.dy-inlineBaseline(f.sub)-f.sub.y)
+	}
 	b.lines = append(b.lines, line)
 	l.spans = append(l.spans, lineSpan{top: line.y, bottom: line.y + line.h, force: l.next})
 	l.next = false
 	l.y += line.h
+}
+
+// itemBox is how far an item on a line reaches above and below its own
+// baseline: the em box of its face for a run of text, the whole of a picture,
+// and what an inline-block came out as.
+func itemBox(it *inlineItem) (above, below float32) {
+	switch {
+	case it.sub != nil:
+		return it.ib, it.ih - it.ib
+	case it.img != nil:
+		return it.ih, 0
+	}
+	return strut(it.style, it.face)
 }
 
 // alignShift is how far vertical-align raises a box above the baseline of the
@@ -758,6 +780,10 @@ type inlineItem struct {
 	face   face
 	img    *picture
 	iw, ih float32
+	// sub is the box an inline-block contributes, and ib how far its own
+	// baseline sits below its top.
+	sub *box
+	ib  float32
 }
 
 // breaks are the places a line may end: the opportunities of UAX #14, less
@@ -835,6 +861,12 @@ func (c *inlineCtx) gather(b *box) {
 	case imageBox:
 		c.addImage(b)
 	default:
+		// The style of a text box is the style of the element around it, so
+		// only a box of its own can be the inline-block.
+		if b.style.Display == DisplayInlineBlock {
+			c.addInlineBlock(b)
+			return
+		}
 		for _, k := range b.kids {
 			c.gather(k)
 		}
@@ -980,6 +1012,59 @@ func (c *inlineCtx) addImage(b *box) {
 	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: c.l.face(b.style)})
 }
 
+// addInlineBlock lays a box out on its own and puts it on the line as one
+// character wide as it came out. CSS 2.1 10.3.9 gives it the width it would
+// take if nothing wrapped, less whatever the line has room for.
+func (c *inlineCtx) addInlineBlock(b *box) {
+	l := c.l
+	w := c.avail
+	if !b.style.Width.Auto() {
+		w = b.style.Width.Resolve(c.avail)
+	} else if mx := l.probe(b, maxContentWidth); mx > 0 && mx < c.avail {
+		w = mx
+	}
+	sub := l.sub(0)
+	sub.cbh = l.cbh
+	sub.flow(b, 0, max(w, 0))
+	sub.apply()
+	l.errs = append(l.errs, sub.errs...)
+	if b.w <= 0 && b.h <= 0 {
+		return
+	}
+	c.flushSpace()
+	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: l.face(b.style)})
+	c.text.WriteString(objectChar)
+	c.begun = true
+	n := len(c.items) - 1
+	c.items[n].sub = b
+	c.items[n].iw = b.w + b.style.MarginLeft.Resolve(c.avail) + b.style.MarginRight.Resolve(c.avail)
+	c.items[n].ih = b.h
+	c.items[n].ib = inlineBaseline(b)
+	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: l.face(b.style)})
+}
+
+// inlineBaseline is where an inline-block's baseline is, which CSS 2.1 10.8.1
+// puts on the last line box it holds and at its bottom edge when it holds
+// none.
+func inlineBaseline(b *box) float32 {
+	if v, ok := lastLineBaseline(b); ok {
+		return v - b.y
+	}
+	return b.h
+}
+
+func lastLineBaseline(b *box) (float32, bool) {
+	for i := len(b.kids) - 1; i >= 0; i-- {
+		if v, ok := lastLineBaseline(b.kids[i]); ok {
+			return v, true
+		}
+	}
+	if n := len(b.lines); n > 0 {
+		return b.lines[n-1].y + b.lines[n-1].baseline, true
+	}
+	return 0, false
+}
+
 // itemAt is which item a byte of the text belongs to.
 func (c *inlineCtx) itemAt(off int) int {
 	i := sort.Search(len(c.items), func(i int) bool { return c.items[i].start > off })
@@ -1009,7 +1094,7 @@ func (c *inlineCtx) pieces(lo, hi int) []piece {
 func (c *inlineCtx) measure(lo, hi int) float32 {
 	w := float32(0)
 	for _, p := range c.pieces(lo, hi) {
-		if it := &c.items[p.item]; it.img != nil {
+		if it := &c.items[p.item]; it.img != nil || it.sub != nil {
 			w += it.iw
 		} else {
 			w += it.face.width(c.str[p.lo:p.hi])
