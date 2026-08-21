@@ -89,7 +89,8 @@ func parseSFNT(data []byte) (*Font, error) {
 		}
 	}
 
-	f := &Font{Kind: KindTrueType, sfnt: s, UnitsPerEm: 1000}
+	f := &Font{Kind: KindTrueType, sfnt: s, UnitsPerEm: 1000,
+		Ascent: defaultAscent, Descent: defaultDescent}
 	if head := s.tables["head"]; len(head) >= 54 {
 		if u := be16(head, 18); u >= 16 && u <= 16384 {
 			s.upem = u
@@ -115,6 +116,7 @@ func parseSFNT(data []byte) (*Font, error) {
 			s.numGlyphs = inner.glyphs
 		}
 		inner.readHmtx(s)
+		inner.readVertical(s)
 		return inner, nil
 	}
 
@@ -123,7 +125,30 @@ func parseSFNT(data []byte) (*Font, error) {
 		f.glyphs = s.locaGlyphs()
 	}
 	f.readHmtx(s)
+	f.readVertical(s)
 	return f, nil
+}
+
+// readVertical reads the em box out of hhea, and falls back to the OS/2 typo
+// metrics when hhea has none, which some fonts leave at zero.
+func (f *Font) readVertical(s *sfnt) {
+	upem := float32(s.upem)
+	if upem <= 0 {
+		return
+	}
+	asc, desc := 0, 0
+	if hhea := s.tables["hhea"]; len(hhea) >= 10 {
+		asc, desc = int(int16(be16(hhea, 4))), int(int16(be16(hhea, 6)))
+	}
+	if asc == 0 && desc == 0 {
+		if os2 := s.tables["OS/2"]; len(os2) >= 72 {
+			asc, desc = int(int16(be16(os2, 68))), int(int16(be16(os2, 70)))
+		}
+	}
+	if asc == 0 && desc == 0 {
+		return
+	}
+	f.Ascent, f.Descent = float32(asc)/upem, float32(desc)/upem
 }
 
 // locaGlyphs counts glyphs from the loca table when maxp is unusable.

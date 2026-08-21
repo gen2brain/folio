@@ -410,8 +410,8 @@ func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n i
 	return nil
 }
 
-// Image renders the page at a resolution in dots per inch.
-func (p *Page) Image(dpi float64) (*image.RGBA, error) {
+// ImageDPI renders the page at a resolution in dots per inch.
+func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 	px, err := p.Render(p.Matrix(dpi), nil)
 	if px == nil {
 		return nil, err

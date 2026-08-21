@@ -16,6 +16,7 @@ type type1Font struct {
 	subrs       [][]byte
 	enc         *[256]string
 	matrix      raster.Matrix
+	bbox        []float32
 
 	// widths is filled by running a charstring, which is the only place a
 	// Type 1 glyph's advance is written down, so it is a cache and needs a
@@ -69,10 +70,13 @@ func parseType1(data []byte) (*Font, error) {
 		glyphs:     len(t.names),
 		UnitsPerEm: 1000,
 		Matrix:     t.matrix,
+		Ascent:     defaultAscent,
+		Descent:    defaultDescent,
 	}
 	if f.Matrix.A != 0 {
 		f.UnitsPerEm = int(1/f.Matrix.A + 0.5)
 	}
+	f.emBox(t.bbox, f.Matrix.D)
 	return f, nil
 }
 
@@ -153,26 +157,36 @@ func eexec(b []byte, key uint16, skip int) []byte {
 }
 
 func (t *type1Font) readMatrix(b []byte) {
-	i := indexOf(b, "/FontMatrix")
-	if i < 0 {
-		return
+	if v := numbersAfter(b, "/FontMatrix"); len(v) == 6 && v[0] != 0 {
+		t.matrix = raster.Matrix{A: v[0], B: v[1], C: v[2], D: v[3], E: v[4], F: v[5]}
 	}
-	j := bytes.IndexByte(b[i:], '[')
-	k := bytes.IndexByte(b[i:], ']')
+	if v := numbersAfter(b, "/FontBBox"); len(v) == 4 {
+		t.bbox = v
+	}
+}
+
+// numbersAfter reads the bracketed or braced list of numbers a key
+// introduces, and returns nil for anything it cannot read whole.
+func numbersAfter(b []byte, key string) []float32 {
+	i := indexOf(b, key)
+	if i < 0 {
+		return nil
+	}
+	rest := b[i+len(key):]
+	j := bytes.IndexAny(rest, "[{")
+	k := bytes.IndexAny(rest, "]}")
 	if j < 0 || k < j {
-		return
+		return nil
 	}
 	var v []float32
-	for _, f := range bytes.Fields(b[i+j+1 : i+k]) {
+	for _, f := range bytes.Fields(rest[j+1 : k]) {
 		n, err := strconv.ParseFloat(string(f), 32)
 		if err != nil {
-			return
+			return nil
 		}
 		v = append(v, float32(n))
 	}
-	if len(v) == 6 && v[0] != 0 {
-		t.matrix = raster.Matrix{A: v[0], B: v[1], C: v[2], D: v[3], E: v[4], F: v[5]}
-	}
+	return v
 }
 
 // readEncoding reads the built in encoding, which is either the standard one

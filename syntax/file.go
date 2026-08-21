@@ -41,6 +41,11 @@ type File struct {
 	root  Dict
 	pages []Ref
 
+	// pageMu guards pageIdx, which is built the first time a reference has
+	// to be turned back into a page number.
+	pageMu  sync.Mutex
+	pageIdx map[Ref]int
+
 	// errs collects everything that went wrong while parsing or reading. A
 	// damaged file still yields the parts that could be read, so this is a
 	// log rather than a failure: only Open returning an error means nothing

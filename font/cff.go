@@ -111,6 +111,11 @@ func parseCFF(data []byte) (*Font, error) {
 		UnitsPerEm: c.upem,
 		Matrix:     c.matrix,
 		CID:        c.isCID,
+		Ascent:     defaultAscent,
+		Descent:    defaultDescent,
+	}
+	if b := top[5]; len(b) == 4 {
+		f.emBox([]float32{float32(b[0]), float32(b[1]), float32(b[2]), float32(b[3])}, c.matrix.D)
 	}
 	return f, nil
 }

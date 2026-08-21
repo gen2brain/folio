@@ -7,17 +7,39 @@
 //	defer doc.Close()
 //
 //	p, err := doc.Page(0)
-//	img, err := p.Image(150)
+//	img, err := p.ImageDPI(150)
 //
-// Image returns *image.RGBA. ImageOptions renders into the color space the
-// caller asks for and returns the standard library type that matches, Render
-// returns the pixmap itself, and RenderTo draws into a destination the caller
-// owns. A page composites in one color space throughout and converts once,
-// at that boundary, so a CMYK document can come back as *image.CMYK.
+// ImageDPI returns *image.RGBA, and Image returns the page at the resolution
+// its own content is in, which for a scan is the resolution of the scan.
+// ImageOptions renders into the color space the caller asks for and returns
+// the standard library type that matches, Render returns the pixmap itself,
+// and RenderTo draws into a destination the caller owns. A page composites in
+// one color space throughout and converts once, at that boundary, so a CMYK
+// document can come back as *image.CMYK.
+//
+// # Text, links and SVG
+//
+// A page is more than a picture. Text returns what it says, StructuredText
+// returns the same with the box every character, line and block occupies,
+// Links returns where its link annotations lead, and WriteSVG writes it as
+// SVG:
+//
+//	txt, err := p.Text()
+//	st, err := p.StructuredText()
+//	for _, l := range p.Links() {
+//		fmt.Println(l.Rect, l.URI)
+//	}
+//
+// All four work in page space at 72 dots per inch, with y counting down from
+// the top left.
+//
+// # Devices
 //
 // Everything a page draws goes through Device, which Page.Run takes. The
-// renderer is one implementation; a trace and a bounding box are others, and
-// embedding BaseDevice is how to write another.
+// renderer is one implementation; text extraction, SVG, a trace and a
+// bounding box are others, and embedding BaseDevice is how to write another.
+// The interface and the devices are in the gfx package, which knows nothing
+// about PDF, and are aliased here so that one import is enough.
 //
 // A damaged file renders the part that could be read. What went wrong on the
 // way is collected in Document.Err rather than returned, unless
@@ -32,7 +54,7 @@
 //	for i := range doc.NumPages() {
 //		go func() {
 //			p, err := doc.Page(i)
-//			img, err := p.Image(150)
+//			img, err := p.ImageDPI(150)
 //		}()
 //	}
 //

@@ -9,13 +9,14 @@ doc, err := pdf.Open("file.pdf")
 defer doc.Close()
 
 p, err := doc.Page(0)
-img, err := p.Image(150)
+img, err := p.ImageDPI(150)
+txt, err := p.Text()
 ```
 
 Over the pdf.js test corpus it renders a page in about the time MuPDF takes, and it renders
 files MuPDF refuses. See the [package documentation](https://pkg.go.dev/github.com/gen2brain/pdf/pdf)
-for rendering into another color space, driving a device other than the renderer, concurrency,
-and optional content.
+for text extraction, SVG, rendering into another color space, driving a device other than the
+renderer, concurrency, and optional content.
 
 ### Supported
 
@@ -27,6 +28,9 @@ groups, the sixteen blend modes and soft masks, annotation appearances, optional
 that a caller can turn on and off, encryption, and files damaged enough that the cross-reference
 table has to be rebuilt.
 
+A page also comes back as text with the box every character occupies, as the links it carries,
+and as SVG.
+
 Out of scope: writing or editing PDF, form field values, JavaScript, XFA, signature validation
 and PDF/A validation.
 
@@ -34,19 +38,22 @@ and PDF/A validation.
 
 | | |
 | --- | --- |
-| [pdf](https://pkg.go.dev/github.com/gen2brain/pdf/pdf) | the interpreter, the devices and the public API |
+| [pdf](https://pkg.go.dev/github.com/gen2brain/pdf/pdf) | the interpreter and the public API |
+| [gfx](https://pkg.go.dev/github.com/gen2brain/pdf/gfx) | the device interface and the devices behind it |
 | [raster](https://pkg.go.dev/github.com/gen2brain/pdf/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes |
 | [font](https://pkg.go.dev/github.com/gen2brain/pdf/font) | font programs in, outlines and metrics out |
 | [syntax](https://pkg.go.dev/github.com/gen2brain/pdf/syntax) | the file format: objects, filters, encryption, repair |
 
-`raster` and `font` know nothing about PDF, and `syntax` has no graphics in it.
+`raster` and `font` know nothing about PDF, `gfx` knows no file format, and `syntax` has no
+graphics in it.
 
 ### Correctness
 
 The object layer is checked against MuPDF, poppler and qpdf; the interpreter against
-`mutool trace`, call for call; the font engine against `mutool draw -F svg`, glyph for glyph.
-The 2D engine is byte-exact against AGG, the JPEG 2000 decoder byte-exact against OpenJPEG, and
-rendered pages are scored against MuPDF, poppler, cairo and Ghostscript.
+`mutool trace`, call for call; the font engine against `mutool draw -F svg`, glyph for glyph;
+text extraction against `mutool draw -F txt`, line for line. The 2D engine is byte-exact against
+AGG, the JPEG 2000 decoder byte-exact against OpenJPEG, and rendered pages are scored against
+MuPDF, poppler, cairo and Ghostscript.
 
 ### License
 

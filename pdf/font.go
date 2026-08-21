@@ -36,6 +36,8 @@ type Font struct {
 	CharProcs  Dict
 	Resources  Dict
 
+	ascent    float32
+	descent   float32
 	symbolic  bool
 	serif     bool
 	fixed     bool
@@ -132,6 +134,8 @@ func (ft *Font) readDescriptor(d *Document, dict Dict) {
 	}
 	ft.descriptor = desc
 	ft.missingWidth = f.GetFloat(desc["MissingWidth"], 0)
+	ft.ascent = float32(f.GetFloat(desc["Ascent"], 0)) / 1000
+	ft.descent = float32(f.GetFloat(desc["Descent"], 0)) / 1000
 	flags := int(f.GetInt(desc["Flags"], 0))
 	ft.fixed = flags&1 != 0
 	ft.serif = flags&2 != 0
@@ -459,6 +463,19 @@ func (ft *Font) Program() *font.Font { return ft.prog }
 // FontName is the name the font goes by, which is /BaseFont or, for a Type3
 // font, /Name.
 func (ft *Font) FontName() string { return string(ft.Name) }
+
+// EmBox is how far the font's em box reaches above and below the baseline, in
+// text space. The descriptor is preferred over the program, because a
+// substituted program is not the font the file asked for.
+func (ft *Font) EmBox() (ascent, descent float32) {
+	if ft.ascent > 0 && ft.descent < 0 {
+		return ft.ascent, ft.descent
+	}
+	if ft.prog != nil {
+		return ft.prog.Ascent, ft.prog.Descent
+	}
+	return 0.8, -0.2
+}
 
 // RunGlyph draws one glyph of a Type3 font into dev. Such a glyph is a
 // content stream, so the only thing that can draw it is the interpreter, and

@@ -636,7 +636,7 @@ func TestRenderPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	img, err := p.Image(72)
+	img, err := p.ImageDPI(72)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2254,5 +2254,172 @@ func TestAnnotationWidgetsLast(t *testing.T) {
 	px := renderDoc(t, d, nil)
 	if c := pixel(px, 50, 50); !same(c, 255, 0, 0) {
 		t.Errorf("the widget is under the square: %v, want the widget's red", c)
+	}
+}
+
+// textDoc is a page of Helvetica text: two lines, and a third far enough to
+// the right on the second baseline to be a line of its own.
+func textDoc(t *testing.T) *Document {
+	t.Helper()
+	return buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R" +
+			" /Resources << /Font << /F 5 0 R >> >> /Annots [6 0 R] >>",
+		streamObj("", "BT /F 12 Tf 20 160 Td (Hello world) Tj"+
+			" 20 140 Td (Second line) Tj 200 0 Td (far away) Tj ET"),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		"<< /Type /Annot /Subtype /Link /Rect [20 150 120 175]" +
+			" /A << /S /URI /URI (https://example.com/) >> >>",
+	})
+}
+
+func TestPageText(t *testing.T) {
+	p, err := textDoc(t).Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Hello world", "Second line", "far away"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("text %q does not hold %q", got, want)
+		}
+	}
+	if strings.Contains(got, "Second line far away") {
+		t.Fatalf("a gap of two hundred points did not break the line: %q", got)
+	}
+}
+
+func TestStructuredText(t *testing.T) {
+	p, err := textDoc(t).Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := p.StructuredText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []*TextLine
+	for i := range st.Blocks {
+		for j := range st.Blocks[i].Lines {
+			lines = append(lines, &st.Blocks[i].Lines[j])
+		}
+	}
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3", len(lines))
+	}
+	first := lines[0]
+	if got := len(first.Chars); got != len("Hello world") {
+		t.Fatalf("the first line has %d characters, want %d", got, len("Hello world"))
+	}
+	// The device works in page space, where y counts down from the top, so
+	// text drawn at y=160 in user space is near the top of a 200 point page.
+	if first.Bounds.Y0 < 20 || first.Bounds.Y0 > 45 {
+		t.Fatalf("the first line is at y %v, want it near the top", first.Bounds.Y0)
+	}
+	if first.Dir != (raster.Point{X: 1}) {
+		t.Fatalf("direction = %v, want it along x", first.Dir)
+	}
+	for _, c := range first.Chars {
+		if c.Quad.Bounds().IsEmpty() && c.Rune != ' ' {
+			t.Fatalf("character %q has an empty quad", c.Rune)
+		}
+	}
+}
+
+func TestPageLinks(t *testing.T) {
+	p, err := textDoc(t).Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := p.Links()
+	if len(links) != 1 {
+		t.Fatalf("got %d links, want 1", len(links))
+	}
+	if got := links[0].URI; got != "https://example.com/" {
+		t.Fatalf("uri = %q", got)
+	}
+	if got := links[0].Page; got != -1 {
+		t.Fatalf("page = %d, want -1 for a link out of the document", got)
+	}
+	// /Rect is in user space and the link comes back in page space, so the
+	// top of the rectangle is 200-175.
+	if got := links[0].Rect; got.Y0 != 25 || got.Y1 != 50 || got.X0 != 20 {
+		t.Fatalf("rect = %v", got)
+	}
+}
+
+func TestLinkDestination(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /Names << /Dests 6 0 R >> >>",
+		"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R] >>",
+		"<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Dest (target) >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+		"<< /Names [(target) [5 0 R /XYZ 30 40 0]] >>",
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := p.Links()
+	if len(links) != 1 {
+		t.Fatalf("got %d links, want 1", len(links))
+	}
+	if got := links[0].Page; got != 1 {
+		t.Fatalf("page = %d, want 1", got)
+	}
+	if got := links[0].Point; got.X != 30 || got.Y != 40 {
+		t.Fatalf("point = %v", got)
+	}
+}
+
+func TestPageImageNaturalSize(t *testing.T) {
+	// A page of 72 by 72 points carrying nothing but a 144 by 144 image is a
+	// scan at 144 dots per inch, and has to come back at that size.
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Contents 4 0 R" +
+			" /Resources << /XObject << /Im 5 0 R >> >> >>",
+		streamObj("", "q 72 0 0 72 0 0 cm /Im Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 144 /Height 144"+
+			" /ColorSpace /DeviceGray /BitsPerComponent 8", strings.Repeat("\x80", 144*144)),
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := p.Image()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := img.Bounds().Dx(); got != 144 {
+		t.Fatalf("width = %d, want the 144 the image has", got)
+	}
+}
+
+func TestPageSVG(t *testing.T) {
+	p, err := textDoc(t).Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := p.SVG()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<svg xmlns="http://www.w3.org/2000/svg"`,
+		`width="300" height="200"`,
+		"<defs>",
+		"<use xlink:href=",
+		"</svg>",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("the svg does not hold %q:\n%s", want, s)
+		}
 	}
 }

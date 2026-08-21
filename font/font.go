@@ -39,6 +39,10 @@ type Font struct {
 	UnitsPerEm int
 	// Matrix maps glyph space to text space, where one unit is the font size.
 	Matrix raster.Matrix
+	// Ascent and Descent are how far the em box reaches above and below the
+	// baseline, in text space. A program that declares neither keeps the
+	// defaults, which are what a font with no vertical metrics is set as.
+	Ascent, Descent float32
 	// CID is true for a CFF font keyed by CID rather than by name.
 	CID bool
 
@@ -65,6 +69,8 @@ func (f *Font) alias(name string) *Font {
 		Name:       name,
 		UnitsPerEm: f.UnitsPerEm,
 		Matrix:     f.Matrix,
+		Ascent:     f.Ascent,
+		Descent:    f.Descent,
 		CID:        f.CID,
 		sfnt:       f.sfnt,
 		cff:        f.cff,
@@ -91,6 +97,26 @@ func Parse(data []byte) (*Font, error) {
 		return parseType1(data[i:])
 	}
 	return nil, fmt.Errorf("%w: unrecognized font program", ErrUnsupported)
+}
+
+// The em box of a font that declares no vertical metrics.
+const (
+	defaultAscent  = 0.8
+	defaultDescent = -0.2
+)
+
+// emBox takes the em box from a font bounding box in glyph space, which is
+// what a program with no vertical metrics of its own carries. A box that
+// straddles the baseline the wrong way is left alone.
+func (f *Font) emBox(bbox []float32, scale float32) {
+	if len(bbox) != 4 || scale == 0 {
+		return
+	}
+	asc, desc := bbox[3]*scale, bbox[1]*scale
+	if asc <= 0 || desc >= 0 {
+		return
+	}
+	f.Ascent, f.Descent = asc, desc
 }
 
 // NumGlyphs returns how many glyphs the program has.

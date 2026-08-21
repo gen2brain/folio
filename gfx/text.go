@@ -12,11 +12,24 @@ type Font interface {
 	// Program is the font program the glyphs come from, and nil for a font
 	// that draws its glyphs by running procedures instead.
 	Program() *font.Font
+	// EmBox is how far the em box reaches above and below the baseline, in
+	// text space where one unit is the font size. It is what a character
+	// occupies, as against the outline of one glyph.
+	EmBox() (ascent, descent float32)
 	// RunGlyph draws one glyph into dev, which a font with no program has to
 	// do for itself, under ctm and in the color the text is being filled
 	// with. depth is how deep dev already is inside procedures that
 	// re-entered it, so that a glyph drawing a glyph terminates.
 	RunGlyph(dev Device, gid int, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, depth int)
+}
+
+// Quad is a rectangle under a transform: the four corners of what a
+// character occupies, which rotation and shear make more than a rectangle.
+type Quad struct{ UL, UR, LL, LR raster.Point }
+
+// Bounds returns the smallest rectangle holding the quad.
+func (q Quad) Bounds() raster.Rect {
+	return raster.EmptyRect.AddPoint(q.UL).AddPoint(q.UR).AddPoint(q.LL).AddPoint(q.LR)
 }
 
 // TextItem is one glyph placed by a text showing operator.
