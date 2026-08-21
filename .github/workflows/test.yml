@@ -51,6 +51,8 @@ jobs:
             target: FuzzLoad
           - package: ./font
             target: FuzzParse
+          - package: ./font
+            target: FuzzBrotli
           - package: ./pdf
             target: FuzzContent
           - package: ./syntax

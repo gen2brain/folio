@@ -324,6 +324,9 @@ func dictFloat(d map[int][]float64, op int, def float64) float64 {
 // readCharset reads the glyph name identifiers, or the CIDs of a CID font.
 func (c *cffFont) readCharset(off int) {
 	n := len(c.charStrings)
+	if n == 0 {
+		return
+	}
 	c.charset = make([]uint16, n)
 	switch off {
 	case 0: // ISOAdobe: identity

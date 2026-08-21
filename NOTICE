@@ -1,4 +1,4 @@
-github.com/gen2brain/pdf
+github.com/gen2brain/folio
 
 This product includes software developed by the Mozilla Foundation as part of
 PDF.js (https://github.com/mozilla/pdf.js), licensed under the Apache License,
@@ -19,5 +19,14 @@ Copyright (c) 2011 Google Inc., both licensed under a BSD-style license.
 Portions are derived from OpenJPEG (https://github.com/uclouvain/openjpeg),
 licensed under the 2-clause BSD license.
 
+Portions are derived from Brotli (https://github.com/google/brotli),
+Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors, and from WOFF2
+(https://github.com/google/woff2), Copyright (c) 2013-2017 by the WOFF2
+Authors, both licensed under the MIT license, including the RFC 7932 static
+dictionary and word transforms.
+
 The Adobe Glyph List and the Adobe CMap resources are Copyright Adobe Inc.,
 licensed under the BSD-3-Clause license.
+
+The line breaking tables are derived from the Unicode Character Database,
+Copyright Unicode, Inc., licensed under the Unicode License.

@@ -1,7 +1,9 @@
 package font
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -194,6 +196,17 @@ func TestMalformedFonts(t *testing.T) {
 	for _, b := range [][]byte{nil, {}, {0}, {1, 0, 4, 2}, []byte("%!PS-AdobeFont"), []byte("OTTO")} {
 		mustNotPanic(t, b)
 	}
+	// A bare CFF whose charstring index is empty.
+	mustNotPanic(t, []byte{
+		1, 0, 4, 2,
+		0, 0,
+		0, 1, 1, 1, 9,
+		28, 0, 25, 15, 28, 0, 23, 17,
+		0, 0,
+		0, 0,
+		0, 0,
+		0,
+	})
 }
 
 func mustNotPanic(t *testing.T, b []byte) {
@@ -221,6 +234,9 @@ func FuzzParse(fu *testing.F) {
 		fu.Add([]byte(stdFontData[file]))
 		break
 	}
+	if b, err := os.ReadFile(filepath.Join("..", "testdata", "mini.woff2")); err == nil {
+		fu.Add(b)
+	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
 		f, err := Parse(b)
 		if err != nil {
@@ -228,6 +244,20 @@ func FuzzParse(fu *testing.F) {
 		}
 		for gid := 0; gid < f.NumGlyphs() && gid < 20; gid++ {
 			f.GlyphPath(gid)
+		}
+	})
+}
+
+func FuzzBrotli(fu *testing.F) {
+	if b, err := os.ReadFile(filepath.Join("..", "testdata", "minimal.br")); err == nil {
+		fu.Add(b)
+	}
+	fu.Add([]byte{0x0b})
+	fu.Fuzz(func(t *testing.T, b []byte) {
+		const limit = 1 << 20
+		out, err := brotliDecode(b, limit)
+		if err == nil && len(out) > limit {
+			t.Fatalf("%d bytes past the limit", len(out))
 		}
 	})
 }
@@ -427,4 +457,132 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// TestBrotli decodes what the brotli command line compresses, which is the
+// only oracle for RFC 7932 this needs.
+func TestBrotli(t *testing.T) {
+	if _, err := exec.LookPath("brotli"); err != nil {
+		t.Skip("no brotli command")
+	}
+	var random [1 << 14]byte
+	x := uint32(12345)
+	for i := range random {
+		x = x*1664525 + 1013904223
+		random[i] = byte(x >> 24)
+	}
+	prose := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 40) +
+		"<html><head><title>Time of the day</title></head><body> and \"other\" things.</body></html>"
+	cases := map[string][]byte{
+		"empty":  nil,
+		"one":    []byte("x"),
+		"prose":  []byte(prose),
+		"font":   []byte(stdFontData["FoxitSans"]),
+		"random": random[:],
+	}
+	for name, want := range cases {
+		for _, q := range []string{"0", "5", "9", "11"} {
+			for _, w := range []string{"10", "16", "24"} {
+				cmd := exec.Command("brotli", "-c", "-q", q, "-w", w)
+				cmd.Stdin = bytes.NewReader(want)
+				var out bytes.Buffer
+				cmd.Stdout = &out
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("brotli -q %s -w %s: %v", q, w, err)
+				}
+				got, err := brotliDecode(out.Bytes(), len(want)+1)
+				if err != nil {
+					t.Errorf("%s q%s w%s: %v", name, q, w, err)
+					continue
+				}
+				if !bytes.Equal(got, want) {
+					t.Errorf("%s q%s w%s: %d bytes, want %d", name, q, w, len(got), len(want))
+				}
+			}
+		}
+	}
+}
+
+// TestBrotliFile decodes the one stream checked in, which carries enough
+// English to reach the static dictionary and the word transforms.
+func TestBrotliFile(t *testing.T) {
+	want, err := os.ReadFile(filepath.Join("..", "testdata", "minimal.pdf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "minimal.br"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := brotliDecode(src, len(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%d bytes, want %d", len(got), len(want))
+	}
+	if _, err := brotliDecode(src, len(want)-1); err == nil {
+		t.Error("a stream decoded past its limit")
+	}
+	for i := range src {
+		b := append([]byte(nil), src[:i]...)
+		if _, err := brotliDecode(b, len(want)); err == nil {
+			t.Errorf("%d bytes of the stream decoded whole", i)
+		}
+	}
+}
+
+// TestWOFF2 unpacks the web font checked in, whose four glyphs are one of
+// each shape the glyph transform has a path for, and holds the result to
+// what the reference decoder makes of the same file.
+func TestWOFF2(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "mini.woff2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("..", "testdata", "mini.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := woff2SFNT(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		i := 0
+		for i < len(got) && i < len(want) && got[i] == want[i] {
+			i++
+		}
+		t.Fatalf("%d bytes of sfnt, want %d, differing at %d", len(got), len(want), i)
+	}
+
+	f, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Family != "Mini" || f.NumGlyphs() != 4 || f.UnitsPerEm != 1000 {
+		t.Errorf("family %q, %d glyphs, %d per em", f.Family, f.NumGlyphs(), f.UnitsPerEm)
+	}
+	for i, c := range "ABC" {
+		g := f.GIDForRune(c)
+		if g != i+1 {
+			t.Errorf("%c is glyph %d, want %d", c, g, i+1)
+		}
+		if f.GlyphPath(g) == nil {
+			t.Errorf("%c has no outline", c)
+		}
+	}
+	for g, want := range []float32{500, 600, 700, 900} {
+		if got := f.Advance(g); got != want {
+			t.Errorf("glyph %d is %v wide, want %v", g, got, want)
+		}
+	}
+	if _, err := Parse(append([]byte("wOF2"), make([]byte, 60)...)); err == nil {
+		t.Error("an empty WOFF2 parsed")
+	}
+	for i := range src {
+		if _, err := Parse(src[:i]); err == nil {
+			t.Errorf("%d bytes of the web font parsed whole", i)
+		}
+	}
 }

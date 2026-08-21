@@ -96,6 +96,8 @@ func Parse(data []byte) (*Font, error) {
 		return parseSFNT(data)
 	case isWOFF(data):
 		return parseWOFF(data)
+	case isWOFF2(data):
+		return parseWOFF2(data)
 	case data[0] == 1 && data[1] == 0:
 		return parseCFF(data)
 	case data[0] == '%' || data[0] == 0x80 || hasPrefix(data, "%!"):
