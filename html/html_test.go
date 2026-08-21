@@ -1538,6 +1538,146 @@ func TestLayoutBorders(t *testing.T) {
 	}
 }
 
+// TestCSSBorderRadius reads the corner shorthand in every shape it is
+// written in: one value for all four corners, four for one each, and a slash
+// that gives the vertical radii their own list.
+func TestCSSBorderRadius(t *testing.T) {
+	px := func(v float32) Length { return Length{Value: v, Unit: UnitPx} }
+	for _, tc := range []struct {
+		sheet string
+		want  [4]Corner
+	}{
+		{`#i { border-radius: 5px }`, [4]Corner{
+			{px(5), px(5)}, {px(5), px(5)}, {px(5), px(5)}, {px(5), px(5)}}},
+		{`#i { border-radius: 4px 4px 0 0 }`, [4]Corner{
+			{px(4), px(4)}, {px(4), px(4)}, {px(0), px(0)}, {px(0), px(0)}}},
+		{`#i { border-radius: 10px / 5px }`, [4]Corner{
+			{px(10), px(5)}, {px(10), px(5)}, {px(10), px(5)}, {px(10), px(5)}}},
+		{`#i { border-radius: 1px 2px 3px 4px / 5px 6px }`, [4]Corner{
+			{px(1), px(5)}, {px(2), px(6)}, {px(3), px(5)}, {px(4), px(6)}}},
+		{`#i { border-radius: .5em }`, [4]Corner{
+			{px(8), px(8)}, {px(8), px(8)}, {px(8), px(8)}, {px(8), px(8)}}},
+		{`#i { border-top-left-radius: 7px 8px }`, [4]Corner{{px(7), px(8)}}},
+	} {
+		if got := styleOf(t, tc.sheet, `<p id="i">t</p>`, "i").Radius; got != tc.want {
+			t.Errorf("%s gave %v, want %v", tc.sheet, got, tc.want)
+		}
+	}
+
+	// No edge may be asked for more than its length: the four are scaled by
+	// the same factor until none is.
+	s := styleOf(t, `#i { border-radius: 100px }`, `<p id="i">t</p>`, "i")
+	r, round := radii(s, 50, 50)
+	if !round || r[0] != (radius{25, 25}) || r[2] != (radius{25, 25}) {
+		t.Errorf("radii scaled to %v", r)
+	}
+	if _, round := radii(styleOf(t, `#i { color: red }`, `<p id="i">t</p>`, "i"), 50, 50); round {
+		t.Error("a box with no radius is rounded")
+	}
+}
+
+// TestLayoutBorderRadius renders the corners: a rounded background does not
+// reach the corner of its box, a rounded border is a ring, and four colours
+// meet on the diagonals.
+func TestLayoutBorderRadius(t *testing.T) {
+	at := func(img *image.RGBA, x, y int) [3]uint8 {
+		i := img.PixOffset(x, y)
+		return [3]uint8{img.Pix[i], img.Pix[i+1], img.Pix[i+2]}
+	}
+	render := func(sheet string) *image.RGBA {
+		t.Helper()
+		d, p := styledPage(t, "body { margin: 0 } .b { margin: 0; width: 100px; height: 100px }"+sheet,
+			`<div class="b">x</div>`, &LayoutOptions{Width: 200, Height: 200, Margin: 0})
+		defer d.Close()
+		img, err := p.ImageDPI(96)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return img
+	}
+	var (
+		white = [3]uint8{255, 255, 255}
+		red   = [3]uint8{255, 0, 0}
+		blue  = [3]uint8{0, 0, 255}
+	)
+	square := render(`.b { background: red }`)
+	if got := at(square, 1, 1); got != red {
+		t.Errorf("the corner of a square background is %v, want %v", got, red)
+	}
+	round := render(`.b { background: red; border-radius: 30px }`)
+	if got := at(round, 1, 1); got != white {
+		t.Errorf("the corner of a rounded background is %v, want %v", got, white)
+	}
+	if got := at(round, 50, 50); got != red {
+		t.Errorf("the middle of a rounded background is %v, want %v", got, red)
+	}
+	if got := at(round, 50, 1); got != red {
+		t.Errorf("the top edge of a rounded background is %v, want %v", got, red)
+	}
+
+	ring := render(`.b { border: 6px solid blue; border-radius: 30px }`)
+	for _, c := range []struct {
+		x, y int
+		want [3]uint8
+	}{{1, 1, white}, {50, 3, blue}, {50, 50, white}, {3, 50, blue}} {
+		if got := at(ring, c.x, c.y); got != c.want {
+			t.Errorf("the ring at %d,%d is %v, want %v", c.x, c.y, got, c.want)
+		}
+	}
+
+	sides := render(`.b { border: 8px solid; border-top-color: red;
+		border-right-color: lime; border-bottom-color: blue;
+		border-left-color: black; border-radius: 25px }`)
+	for _, c := range []struct {
+		x, y int
+		want [3]uint8
+	}{
+		{58, 3, red}, {113, 58, [3]uint8{0, 255, 0}},
+		{58, 113, blue}, {3, 58, [3]uint8{0, 0, 0}},
+		{2, 2, white}, {58, 58, white},
+	} {
+		if got := at(sides, c.x, c.y); got != c.want {
+			t.Errorf("the side at %d,%d is %v, want %v", c.x, c.y, got, c.want)
+		}
+	}
+}
+
+// TestLayoutMargins checks what a margin nobody wrote is. The initial value
+// is zero, not auto: a block with a width of its own sits at the left edge,
+// and only a margin written as auto centres it.
+func TestLayoutMargins(t *testing.T) {
+	left := func(sheet string) float32 {
+		t.Helper()
+		d, _ := styledPage(t, "body { margin: 0 } "+sheet, `<div class="b">x</div>`,
+			&LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		defer d.Close()
+		out := float32(-1)
+		var walk func(*box)
+		walk = func(b *box) {
+			if b.style.Width.Value == 100 && out < 0 {
+				out = b.x
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return out
+	}
+	for _, tc := range []struct {
+		sheet string
+		want  float32
+	}{
+		{`.b { width: 100px }`, 0},
+		{`.b { width: 100px; margin: 0 auto }`, 150},
+		{`.b { width: 100px; margin-left: 20px }`, 20},
+	} {
+		if got := left(tc.sheet); got != tc.want {
+			t.Errorf("%s put the box at %v, want %v", tc.sheet, got, tc.want)
+		}
+	}
+}
+
 // TestLayoutFloat checks that a float narrows the lines beside it and that
 // clear moves a box below.
 func TestLayoutFloat(t *testing.T) {

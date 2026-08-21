@@ -254,6 +254,10 @@ type Style struct {
 	Float Float
 	Clear Clear
 
+	// Radius is the corner radii of the border box, clockwise from the top
+	// left.
+	Radius [4]Corner
+
 	// Content is the text a rule generates before or after an element, and
 	// HasContent whether it generates a box there at all.
 	Content    string
@@ -268,10 +272,14 @@ const DefaultFontSize = 16
 
 func initialStyle() Style {
 	return Style{
-		FontSize:   DefaultFontSize,
-		FontWeight: 400,
-		LineHeight: Length{Value: 1.2, Unit: UnitScale},
-		Color:      Color{A: 255},
+		FontSize:     DefaultFontSize,
+		FontWeight:   400,
+		LineHeight:   Length{Value: 1.2, Unit: UnitScale},
+		Color:        Color{A: 255},
+		MarginTop:    Px(0),
+		MarginRight:  Px(0),
+		MarginBottom: Px(0),
+		MarginLeft:   Px(0),
 	}
 }
 
@@ -295,6 +303,14 @@ func (s *Style) inherit() Style {
 	c.ListStyle = s.ListStyle
 	return c
 }
+
+// Corner is the two radii one corner of a border box is rounded by.
+type Corner struct {
+	X, Y Length
+}
+
+// Zero reports a corner that is not rounded at all.
+func (c Corner) Zero() bool { return c.X.Value <= 0 || c.Y.Value <= 0 }
 
 // value carries what a declaration's tokens are read against: the element's
 // own font size for an em, the root's for a rem, and the parent's style for
@@ -326,6 +342,42 @@ func (v value) parentWeight() int {
 		return 400
 	}
 	return v.parent.FontWeight
+}
+
+// The corners of a border box, clockwise from the top left, in the order one
+// to four values of the shorthand fill them.
+var cornerNames = [4]string{
+	"border-top-left-radius", "border-top-right-radius",
+	"border-bottom-right-radius", "border-bottom-left-radius",
+}
+
+func cornerAt(name string) int {
+	for i, n := range cornerNames {
+		if n == name {
+			return i
+		}
+	}
+	return 0
+}
+
+// corner reads the one or two lengths a corner is rounded by, the vertical
+// one taking the horizontal when it is left out.
+func (v value) corner() (Corner, bool) {
+	parts := splitSpace(v.toks)
+	if len(parts) == 0 || len(parts) > 2 {
+		return Corner{}, false
+	}
+	x, ok := length(parts[0][0], v.em, v.rm)
+	if !ok || len(parts[0]) != 1 {
+		return Corner{}, false
+	}
+	y := x
+	if len(parts) == 2 {
+		if y, ok = length(parts[1][0], v.em, v.rm); !ok || len(parts[1]) != 1 {
+			return Corner{}, false
+		}
+	}
+	return Corner{X: x, Y: y}, true
 }
 
 // content reads what a rule generates: the strings it is written as, joined,
@@ -925,6 +977,11 @@ func applyProp(s *Style, name string, v value) bool {
 		}
 	case "content":
 		s.Content, s.HasContent = v.content()
+	case "border-top-left-radius", "border-top-right-radius",
+		"border-bottom-right-radius", "border-bottom-left-radius":
+		if c, ok := v.corner(); ok {
+			s.Radius[cornerAt(name)] = c
+		}
 	case "clear":
 		switch v.ident() {
 		case "none":
@@ -1056,6 +1113,9 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.Float = src.Float
 	case "content":
 		dst.Content, dst.HasContent = src.Content, src.HasContent
+	case "border-top-left-radius", "border-top-right-radius",
+		"border-bottom-right-radius", "border-bottom-left-radius":
+		dst.Radius[cornerAt(name)] = src.Radius[cornerAt(name)]
 	case "clear":
 		dst.Clear = src.Clear
 	case "page-break-before", "break-before":

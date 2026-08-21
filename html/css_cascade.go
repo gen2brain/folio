@@ -265,6 +265,8 @@ func expand(d *Declaration) []longhand {
 		return out
 	case "background":
 		return []longhand{{name: "background-color", toks: backgroundColor(d.value)}}
+	case "border-radius":
+		return expandRadius(d.value)
 	case "border":
 		w, st, c := borderParts(d.value)
 		out := make([]longhand, 0, 12)
@@ -383,6 +385,36 @@ func boxIndex(side, n int) int {
 
 // expandFont splits the font shorthand, which is an optional style, variant
 // and weight, then a size with an optional line height, then the family.
+// expandRadius splits the corner shorthand, whose horizontal radii come
+// before the slash and whose vertical ones come after it.
+func expandRadius(toks []cssToken) []longhand {
+	across, down := toks, []cssToken(nil)
+	for i, t := range toks {
+		if t.kind == cssDelim && t.delim == '/' {
+			across, down = toks[:i], toks[i+1:]
+			break
+		}
+	}
+	h := splitSpace(across)
+	if len(h) == 0 || len(h) > 4 {
+		return nil
+	}
+	v := splitSpace(down)
+	if len(v) > 4 {
+		return nil
+	}
+	out := make([]longhand, 4)
+	for i := range out {
+		part := h[boxIndex(i, len(h))]
+		if len(v) > 0 {
+			part = append(append([]cssToken{}, part...), cssToken{kind: cssSpace})
+			part = append(part, v[boxIndex(i, len(v))]...)
+		}
+		out[i] = longhand{name: cornerNames[i], toks: part}
+	}
+	return out
+}
+
 func expandFont(toks []cssToken) []longhand {
 	parts := splitSpace(toks)
 	size := -1
