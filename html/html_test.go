@@ -3,9 +3,14 @@ package html
 import (
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // buildEPUB writes the parts into the archive an EPUB is, mimetype first and
@@ -1032,4 +1037,157 @@ func FuzzCSS(fu *testing.F) {
 		}
 		Cascade(root, Media{Width: 600, Height: 800, FontSize: 16}, UserAgent(), sheet)
 	})
+}
+
+// TestLineBreakConformance runs the Unicode line break test, which is the
+// oracle for UAX #14. It needs the reference directory tools/fetch.sh fills.
+func TestLineBreakConformance(t *testing.T) {
+	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), "/temp/pdf"), "specs/LineBreakTest.txt")
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Skipf("no %s", name)
+	}
+	total, bad := 0, 0
+	for n, line := range strings.Split(string(b), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		text, want, ok := lineBreakCase(line)
+		if !ok {
+			t.Fatalf("line %d: cannot read %q", n+1, line)
+		}
+		total++
+		got := map[int]bool{}
+		for _, br := range lineBreaks(text) {
+			got[br.pos] = true
+		}
+		for pos, w := range want {
+			if got[pos] != w {
+				if bad++; bad <= 20 {
+					t.Errorf("line %d %q: break at %d = %v, want %v", n+1, line, pos, got[pos], w)
+				}
+				break
+			}
+		}
+	}
+	if bad > 0 {
+		t.Fatalf("%d of %d cases differ", bad, total)
+	}
+	t.Logf("%d cases", total)
+}
+
+// lineBreakCase reads one case of the Unicode test: code points in hex with
+// the division sign where a break is allowed and the times sign where it is
+// not.
+func lineBreakCase(line string) (string, map[int]bool, bool) {
+	var text strings.Builder
+	want := map[int]bool{}
+	for _, f := range strings.Fields(line) {
+		switch f {
+		case "÷":
+			want[text.Len()] = true
+			continue
+		case "×":
+			want[text.Len()] = false
+			continue
+		}
+		v, err := strconv.ParseUint(f, 16, 32)
+		if err != nil {
+			return "", nil, false
+		}
+		text.WriteRune(rune(v))
+	}
+	// The break before the first character is never one, and the one after
+	// the last always is; neither is what lineBreaks reports.
+	delete(want, 0)
+	return text.String(), want, true
+}
+
+// TestLineBreaks is the part of UAX #14 that matters to a book, kept in the
+// repository so that CI covers it without the reference directory. The
+// division sign marks where a break is allowed.
+func TestLineBreaks(t *testing.T) {
+	cases := []string{
+		"one ÷two ÷three",
+		"a  ÷b",
+		"no-÷break-÷here",
+		"and÷—÷dashes",
+		"(a) ÷b",
+		"$12.50 ÷each",
+		"a, ÷b",
+		"end.\n÷next",
+		"日÷本÷語",
+		"ひ÷ら÷が÷な",
+		"a b ÷c",
+		"“quoted” ÷after",
+		"a​÷b",
+		"one\r\n÷two",
+	}
+	for _, tc := range cases {
+		text := strings.ReplaceAll(tc, "÷", "")
+		want := map[int]bool{}
+		n := 0
+		for _, r := range tc {
+			if r == '÷' {
+				want[n] = true
+				continue
+			}
+			n += utf8.RuneLen(r)
+		}
+		want[len(text)] = true
+		got := map[int]bool{}
+		for _, br := range lineBreaks(text) {
+			got[br.pos] = true
+		}
+		for pos := range len(text) + 1 {
+			if got[pos] != want[pos] {
+				t.Errorf("%q: break at %d = %v, want %v (all %v)", tc, pos, got[pos], want[pos], got)
+				break
+			}
+		}
+	}
+
+	if b := lineBreaks("a\nb"); len(b) != 2 || !b[0].mandatory || b[0].pos != 2 {
+		t.Errorf("a newline is not a mandatory break: %+v", b)
+	}
+	if b := lineBreaks(""); b != nil {
+		t.Errorf("empty text has a break: %+v", b)
+	}
+}
+
+func FuzzLineBreak(fu *testing.F) {
+	fu.Add("one two three")
+	fu.Add("日本語のテキスト")
+	fu.Add("a‍̈b\r\n (1.5)")
+	fu.Fuzz(func(t *testing.T, s string) {
+		// A break lands where a character starts, which for a string that is
+		// not valid UTF-8 is where the decoder puts a replacement.
+		starts := map[int]bool{len(s): true}
+		for i := range s {
+			starts[i] = true
+		}
+		last := -1
+		for _, br := range lineBreaks(s) {
+			if br.pos <= last || !starts[br.pos] {
+				t.Fatalf("break at %d after %d in %q", br.pos, last, s)
+			}
+			last = br.pos
+		}
+	})
+}
+
+func BenchmarkLineBreaks(b *testing.B) {
+	const para = "It is a truth universally acknowledged, that a single man in " +
+		"possession of a good fortune, must be in want of a wife. However little " +
+		"known the feelings or views of such a man may be on his first entering a " +
+		"neighbourhood, this truth is so well fixed in the minds of the surrounding " +
+		"families, that he is considered as the rightful property of some one or " +
+		"other of their daughters."
+	b.SetBytes(int64(len(para)))
+	for b.Loop() {
+		lineBreaks(para)
+	}
 }

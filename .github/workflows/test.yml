@@ -65,6 +65,8 @@ jobs:
             target: FuzzBook
           - package: ./html
             target: FuzzCSS
+          - package: ./html
+            target: FuzzLineBreak
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
