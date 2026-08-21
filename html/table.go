@@ -20,6 +20,9 @@ type cell struct {
 	cols     int
 	min, max float32
 	x, w     float32
+	// content is how tall what the cell holds came out, and base how far the
+	// first baseline in it sits below the top of the cell.
+	content, base float32
 }
 
 // tableRows collects the rows of a table, through the row groups a document
@@ -143,8 +146,10 @@ func (l *layout) table(b *box, x, avail float32) {
 			sub.block(c.box, x+c.x, c.w)
 			sub.apply()
 			l.errs = append(l.errs, sub.errs...)
+			c.content = sub.y - rowTop[r]
+			c.base = firstBaseline(c.box) - rowTop[r]
 			if c.rows == 1 {
-				h = max(h, sub.y-rowTop[r])
+				h = max(h, c.content)
 			}
 		}
 		rowTop[r+1] = rowTop[r] + h + sy
@@ -168,6 +173,8 @@ func (l *layout) table(b *box, x, avail float32) {
 			}
 		}
 	}
+
+	alignCells(cells, byRow, rowTop, sy, len(rows))
 
 	// Every cell fills the height of the rows it spans: its border and its
 	// background reach the ones beside it.
@@ -302,6 +309,79 @@ func boxFrame(b *box) float32 {
 	}
 	return b.style.PaddingLeft.Resolve(0) + b.style.PaddingRight.Resolve(0) +
 		b.inset[3] + b.inset[1]
+}
+
+// alignCells places what each cell holds inside the height its rows came to,
+// which is what vertical-align means on a table cell. Its initial value lines
+// the first baseline of every cell in a row up with the lowest of them, and
+// that is what a table with no style of its own gets.
+func alignCells(cells []*cell, byRow [][]*cell, rowTop []float32, sy float32, nrows int) {
+	base := make([]float32, len(byRow))
+	for r, row := range byRow {
+		for _, c := range row {
+			if c.rows == 1 && cellAlign(c) == AlignBaseline {
+				base[r] = max(base[r], c.base)
+			}
+		}
+	}
+	for _, c := range cells {
+		room := rowTop[min(c.row+c.rows, nrows)] - sy - rowTop[c.row]
+		dy := float32(0)
+		switch cellAlign(c) {
+		case AlignBaseline:
+			dy = base[c.row] - c.base
+		case AlignMiddle:
+			dy = (room - c.content) / 2
+		case AlignBottom:
+			dy = room - c.content
+		}
+		if dy > 0 {
+			shiftContent(c.box, dy)
+		}
+	}
+}
+
+// cellAlign is the alignment a cell asks for, where the four a table cell
+// takes are not the ones an inline box takes: everything else is its top.
+func cellAlign(c *cell) VerticalAlign {
+	switch v := c.box.style.VerticalAlign; v {
+	case AlignBaseline, AlignMiddle, AlignBottom:
+		return v
+	}
+	return AlignTop
+}
+
+// firstBaseline is where the first line of a subtree sits. A cell with no
+// line at all has no baseline, and CSS 2.1 17.5.4 puts it at the bottom of
+// what the cell holds.
+func firstBaseline(b *box) float32 {
+	if v, ok := lineBaseline(b); ok {
+		return v
+	}
+	return b.y + b.h
+}
+
+func lineBaseline(b *box) (float32, bool) {
+	if len(b.lines) > 0 {
+		return b.lines[0].y + b.lines[0].baseline, true
+	}
+	for _, k := range b.kids {
+		if v, ok := lineBaseline(k); ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// shiftContent moves what a box holds without moving the box, which is how a
+// cell's border and background stay where the row put them.
+func shiftContent(b *box, dy float32) {
+	for i := range b.lines {
+		b.lines[i].y += dy
+	}
+	for _, k := range b.kids {
+		shift(k, 0, dy)
+	}
 }
 
 // shift moves a laid out subtree.

@@ -330,6 +330,22 @@ func (f face) gid(r rune) int { return int(f.m.glyph(r).gid) }
 func (f face) ascent() float32  { return f.m.ascent * f.size }
 func (f face) descent() float32 { return -f.m.descent * f.size }
 
+// xHeight, subOffset and superOffset are what the program says about a lower
+// case x and about where a script sits, and a plain fraction of the em for a
+// program that says nothing, which is every one that is not an SFNT.
+func (f face) xHeight() float32 { return f.metric(f.prog.XHeight, 0.5) }
+
+func (f face) subOffset() float32 { return f.metric(f.prog.SubOffset, 0.1) }
+
+func (f face) superOffset() float32 { return f.metric(f.prog.SuperOffset, 0.35) }
+
+func (f face) metric(v, def float32) float32 {
+	if f.prog == nil || v <= 0 {
+		return def * f.size
+	}
+	return v * f.size
+}
+
 // fontSet are the faces a book brings with it, from the @font-face rules of
 // the sheets that style a part.
 type fontSet struct {

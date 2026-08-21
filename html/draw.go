@@ -79,10 +79,10 @@ func (p *painter) line(ln *lineBox) {
 	for i := range ln.frags {
 		f := &ln.frags[i]
 		if f.img != nil {
-			p.image(f.img, f.x, base-f.h, f.w, f.h)
+			p.image(f.img, f.x, base-f.dy-f.h, f.w, f.h)
 			continue
 		}
-		p.text(f.text, f.face, f.style, f.x, base, mid, f.extra)
+		p.text(f.text, f.face, f.style, f.x, base-f.dy, mid, f.extra)
 	}
 }
 

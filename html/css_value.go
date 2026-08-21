@@ -177,6 +177,9 @@ const (
 	AlignTop
 	AlignMiddle
 	AlignBottom
+	AlignTextTop
+	AlignTextBottom
+	AlignLength
 )
 
 // Decoration is a set of text decoration lines.
@@ -292,6 +295,9 @@ type Style struct {
 	Decoration    Decoration
 	WhiteSpace    WhiteSpace
 	VerticalAlign VerticalAlign
+	// VerticalShift is how far AlignLength raises the box, a percentage of
+	// the line height.
+	VerticalShift Length
 	ListStyle     ListStyle
 
 	Float Float
@@ -1131,12 +1137,20 @@ func applyProp(s *Style, name string, v value) bool {
 			s.VerticalAlign = AlignSub
 		case "super":
 			s.VerticalAlign = AlignSuper
-		case "top", "text-top":
+		case "top":
 			s.VerticalAlign = AlignTop
 		case "middle":
 			s.VerticalAlign = AlignMiddle
-		case "bottom", "text-bottom":
+		case "bottom":
 			s.VerticalAlign = AlignBottom
+		case "text-top":
+			s.VerticalAlign = AlignTextTop
+		case "text-bottom":
+			s.VerticalAlign = AlignTextBottom
+		default:
+			if l, ok := v.length(); ok {
+				s.VerticalAlign, s.VerticalShift = AlignLength, l
+			}
 		}
 	case "list-style-type":
 		if l, ok := v.listStyle(); ok {
@@ -1332,7 +1346,7 @@ func copyProp(dst, src *Style, name string) bool {
 	case "white-space":
 		dst.WhiteSpace = src.WhiteSpace
 	case "vertical-align":
-		dst.VerticalAlign = src.VerticalAlign
+		dst.VerticalAlign, dst.VerticalShift = src.VerticalAlign, src.VerticalShift
 	case "list-style-type":
 		dst.ListStyle = src.ListStyle
 	case "float":

@@ -2516,3 +2516,98 @@ func TestLayoutEmbeddedFont(t *testing.T) {
 		t.Error("the font was read twice")
 	}
 }
+
+// TestLayoutVerticalAlign covers the two places vertical-align means
+// something: where an inline box sits on the line it is on, and where the
+// content of a table cell sits in the height its row came to.
+func TestLayoutVerticalAlign(t *testing.T) {
+	frags := func(sheet, body string) []frag {
+		t.Helper()
+		d, _ := styledPage(t, "body { margin: 0; font-size: 20px; line-height: 20px } "+sheet,
+			body, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		defer d.Close()
+		var out []frag
+		var walk func(*box)
+		walk = func(b *box) {
+			for _, ln := range b.lines {
+				out = append(out, ln.frags...)
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return out
+	}
+
+	f := frags(``, `<p>a<sup>b</sup>c<sub>d</sub></p>`)
+	if len(f) != 4 {
+		t.Fatalf("%d fragments, want 4", len(f))
+	}
+	if f[0].dy != 0 || f[2].dy != 0 {
+		t.Errorf("plain text is at %v and %v, want the baseline", f[0].dy, f[2].dy)
+	}
+	if f[1].dy <= 0 {
+		t.Errorf("a superscript is at %v, want it above the baseline", f[1].dy)
+	}
+	if f[3].dy >= 0 {
+		t.Errorf("a subscript is at %v, want it below the baseline", f[3].dy)
+	}
+
+	// The edge alignments are measured against the line, so the two of them
+	// sit exactly one line apart when nothing else makes the line taller.
+	f = frags(`.t { vertical-align: top } .b { vertical-align: bottom }`,
+		`<p>a<span class="t">b</span><span class="b">c</span></p>`)
+	if len(f) != 3 {
+		t.Fatalf("%d fragments, want 3", len(f))
+	}
+	if f[1].dy != 0 || f[2].dy != 0 {
+		t.Errorf("top is at %v and bottom at %v, want both on a line they fit in",
+			f[1].dy, f[2].dy)
+	}
+
+	cells := func(sheet string) []float32 {
+		t.Helper()
+		d, _ := styledPage(t, "body, table { margin: 0 } td { padding: 0; width: 60px } "+sheet,
+			`<table><tr><td id="tall">a<br>b<br>c</td><td id="short">d</td></tr></table>`,
+			&LayoutOptions{Width: 300, Height: 300, Margin: 0})
+		defer d.Close()
+		var out []float32
+		var walk func(*box)
+		walk = func(b *box) {
+			if b.style.Display == DisplayTableCell && b.kind != textBox {
+				y := float32(-1)
+				if len(b.lines) > 0 {
+					y = b.lines[0].y
+				} else if len(b.kids) > 0 && len(b.kids[0].lines) > 0 {
+					y = b.kids[0].lines[0].y
+				}
+				out = append(out, y)
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return out
+	}
+
+	top := cells(`td { vertical-align: top }`)
+	mid := cells(`td { vertical-align: middle }`)
+	bot := cells(`td { vertical-align: bottom }`)
+	for _, v := range [][]float32{top, mid, bot} {
+		if len(v) != 2 {
+			t.Fatalf("%d cells, want 2", len(v))
+		}
+	}
+	if top[0] != top[1] {
+		t.Errorf("aligned to the top the cells start at %v and %v", top[0], top[1])
+	}
+	if !(mid[1] > top[1] && bot[1] > mid[1]) {
+		t.Errorf("the short cell is at %v top, %v middle, %v bottom, want each below the last",
+			top[1], mid[1], bot[1])
+	}
+	if mid[0] != top[0] || bot[0] != top[0] {
+		t.Errorf("the tall cell moved: %v, %v, %v", top[0], mid[0], bot[0])
+	}
+}

@@ -79,6 +79,9 @@ type frag struct {
 	face  face
 	// extra is what justification adds to each space of the run.
 	extra float32
+	// dy is how far vertical-align raises the run above the baseline of the
+	// line it is on.
+	dy float32
 	// img is set for a picture, and h its height.
 	img *picture
 	h   float32

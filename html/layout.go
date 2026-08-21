@@ -549,17 +549,48 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	line := lineBox{y: l.y}
 
 	total, spaces := float32(0), 0
+	edge := false
 	for _, p := range c.pieces(lo, hi) {
 		it := &c.items[p.item]
+		a, d := strut(it.style, it.face)
 		if it.img != nil {
 			total += it.iw
-			above = max(above, it.ih)
+			a, d = it.ih, 0
+		} else {
+			total += it.face.width(c.str[p.lo:p.hi])
+			spaces += strings.Count(c.str[p.lo:p.hi], " ")
+		}
+		switch it.style.VerticalAlign {
+		case AlignTop, AlignBottom:
+			edge = true
 			continue
 		}
-		total += it.face.width(c.str[p.lo:p.hi])
-		spaces += strings.Count(c.str[p.lo:p.hi], " ")
-		a, d := strut(it.style, it.face)
-		above, below = max(above, a), max(below, d)
+		dy := alignShift(it.style, it.face, sf, a, d)
+		above, below = max(above, a+dy), max(below, d-dy)
+	}
+	// A box aligned to the edge of the line is placed against a height the
+	// rest of the line already decided, and only grows it when it does not
+	// fit; CSS 2.1 10.8.1.
+	if edge {
+		for _, p := range c.pieces(lo, hi) {
+			it := &c.items[p.item]
+			switch it.style.VerticalAlign {
+			case AlignTop, AlignBottom:
+			default:
+				continue
+			}
+			a, d := strut(it.style, it.face)
+			if it.img != nil {
+				a, d = it.ih, 0
+			}
+			if h := a + d - (above + below); h > 0 {
+				if it.style.VerticalAlign == AlignTop {
+					below += h
+				} else {
+					above += h
+				}
+			}
+		}
 	}
 
 	extra, off := float32(0), float32(0)
@@ -580,6 +611,18 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	for _, p := range c.pieces(lo, hi) {
 		it := &c.items[p.item]
 		f := frag{x: cx, style: it.style, face: it.face}
+		a, d := strut(it.style, it.face)
+		if it.img != nil {
+			a, d = it.ih, 0
+		}
+		switch it.style.VerticalAlign {
+		case AlignTop:
+			f.dy = above - a
+		case AlignBottom:
+			f.dy = d - below
+		default:
+			f.dy = alignShift(it.style, it.face, sf, a, d)
+		}
 		if it.img != nil {
 			f.img, f.w, f.h = it.img, it.iw, it.ih
 			cx += it.iw
@@ -598,6 +641,30 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	l.spans = append(l.spans, lineSpan{top: line.y, bottom: line.y + line.h, force: l.next})
 	l.next = false
 	l.y += line.h
+}
+
+// alignShift is how far vertical-align raises a box above the baseline of the
+// line it sits on. The edge alignments are not here: they are measured against a
+// line whose height the rest of it has already decided.
+func alignShift(s *Style, f, parent face, above, below float32) float32 {
+	switch s.VerticalAlign {
+	case AlignSub:
+		return -parent.subOffset()
+	case AlignSuper:
+		return parent.superOffset()
+	case AlignTextTop:
+		return parent.ascent() - above
+	case AlignTextBottom:
+		return below - parent.descent()
+	case AlignMiddle:
+		return parent.xHeight()/2 - (above-below)/2
+	case AlignLength:
+		if s.VerticalShift.Unit == UnitPercent {
+			return s.VerticalShift.Value / 100 * lineHeight(s, f)
+		}
+		return s.VerticalShift.Resolve(f.size)
+	}
+	return 0
 }
 
 // strut is how far a line box reaches above and below its baseline for one
