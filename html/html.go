@@ -21,6 +21,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -68,6 +69,9 @@ type Item struct {
 	ID string
 	// Properties are the manifest properties of an EPUB item.
 	Properties []string
+	// Linear is false for a spine item the package marks as auxiliary, which
+	// a reader may leave out of the main flow.
+	Linear bool
 }
 
 // Metadata is what a book says about itself.
@@ -106,7 +110,8 @@ type Document struct {
 	// base is the directory the paths are relative to.
 	base string
 	// tocID is what the spine calls the EPUB 2 table of contents.
-	tocID string
+	tocID    string
+	headings sync.Once
 }
 
 // Open reads the named file, deciding from its contents what it is.
@@ -168,8 +173,16 @@ func (d *Document) Spine() []Item { return d.spine }
 // lists none.
 func (d *Document) Manifest() []Item { return d.manifest }
 
-// Outline returns the table of contents as the tree it is.
-func (d *Document) Outline() []Outline { return d.outline }
+// Outline returns the table of contents as the tree it is. A book that
+// carries none gets one built from the headings of its parts.
+func (d *Document) Outline() []Outline {
+	d.headings.Do(func() {
+		if len(d.outline) == 0 {
+			d.outline = d.fromHeadings()
+		}
+	})
+	return d.outline
+}
 
 // Read returns the bytes of one part.
 func (d *Document) Read(p string) ([]byte, error) {

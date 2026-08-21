@@ -46,7 +46,8 @@ and PDF/A validation.
 | [html](https://pkg.go.dev/github.com/gen2brain/pdf/html) | reflowable books: EPUB, MOBI and plain text |
 
 `raster` and `font` know nothing about PDF, `gfx` knows no file format, and `syntax` has no
-graphics in it.
+graphics in it. Rendering a PDF pulls in nothing outside the standard library; `html` is the one
+package with a dependency, `golang.org/x/net/html`.
 
 ### Correctness
 

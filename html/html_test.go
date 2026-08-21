@@ -129,10 +129,11 @@ func TestEPUBSpine(t *testing.T) {
 		t.Fatalf("kind = %v", d.Kind())
 	}
 	spine := d.Spine()
-	// The cover is in the manifest and out of the spine, because the package
-	// says it is not linear.
-	if len(spine) != 2 {
+	if len(spine) != 3 {
 		t.Fatalf("spine = %+v", spine)
+	}
+	if !spine[0].Linear || spine[2].Linear {
+		t.Fatalf("the package marks the cover auxiliary: %+v", spine)
 	}
 	if spine[0].Path != "EPUB/text/one.xhtml" {
 		t.Fatalf("path = %q, want it relative to the archive", spine[0].Path)
@@ -296,8 +297,10 @@ func FuzzBook(fu *testing.F) {
 		}
 		defer d.Close()
 		d.Metadata()
+		d.Text()
 		for _, it := range d.Spine() {
 			d.Read(it.Path)
+			d.ParsePart(it.Path)
 		}
 		for _, it := range d.Manifest() {
 			d.Read(it.Path)
@@ -446,5 +449,72 @@ func TestMOBIRepeat(t *testing.T) {
 func TestCP1252(t *testing.T) {
 	if got := string(fromCP1252([]byte{'a', 0x92, 'b', 0xe9})); got != "a’bé" {
 		t.Fatalf("fromCP1252 = %q", got)
+	}
+}
+
+func TestNodeText(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"<p>One</p><p>Two</p>", "One\nTwo"},
+		{"<p>One <b>two</b> three</p>", "One two three"},
+		{"<p>One<br>Two</p>", "One\nTwo"},
+		{"<head><title>T</title></head><body><p>Hi</p>", "Hi"},
+		{"<p>Hi</p><script>var x = 1</script><style>p{}</style>", "Hi"},
+		{"<ul><li>One</li><li>Two</li></ul>", "One\nTwo"},
+		{"<p>  lots   of\n space  </p>", "lots of space"},
+		{"<pre>kept\n  as is</pre>", "kept\n  as is"},
+		{"<p><ruby>山路<rp>(</rp><rt>やまみち</rt><rp>)</rp></ruby></p>", "山路やまみち"},
+		{"<p>日本<span>\n</span>語</p>", "日本語"},
+		{"<p>one<span>\n</span>two</p>", "one two"},
+	}
+	for _, tc := range cases {
+		root, err := Parse([]byte("<html><body>" + tc.in + "</body></html>"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(NodeText(root)); got != tc.want {
+			t.Fatalf("NodeText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestDocumentText(t *testing.T) {
+	d := fullBook(t)
+	got, err := d.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "One") || !strings.Contains(got, "Two") {
+		t.Fatalf("text = %q", got)
+	}
+	// The cover is a picture in the spine and has no text in it.
+	if strings.Contains(got, "PNG") {
+		t.Fatalf("a picture in the spine reached the text: %q", got)
+	}
+}
+
+// TestOutlineFromHeadings checks the table of contents a book with none gets.
+func TestOutlineFromHeadings(t *testing.T) {
+	pkg2 := strings.Replace(pkg,
+		`<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`,
+		"", 1)
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg2,
+		"EPUB/text/one.xhtml": "<html><body><h1 id='a'>One</h1><h2>Under one</h2>" +
+			"<h2>Also under</h2><h1>Two</h1></body></html>",
+		"EPUB/text/two.xhtml": "<html><body><h1>Three</h1></body></html>",
+	})
+	o := d.Outline()
+	if len(o) != 3 {
+		t.Fatalf("outline = %+v", o)
+	}
+	if o[0].Title != "One" || o[0].Fragment != "a" || o[0].Path != "EPUB/text/one.xhtml" {
+		t.Fatalf("first = %+v", o[0])
+	}
+	if len(o[0].Children) != 2 || o[0].Children[1].Title != "Also under" {
+		t.Fatalf("children = %+v", o[0].Children)
+	}
+	if o[2].Title != "Three" || len(o[2].Children) != 0 {
+		t.Fatalf("third = %+v", o[2])
 	}
 }

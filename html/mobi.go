@@ -46,7 +46,7 @@ func openMOBI(r io.ReaderAt, size int64) (*Document, error) {
 	}
 
 	parts := map[string][]byte{mobiIndex: text}
-	item := Item{Path: mobiIndex, Type: "text/html"}
+	item := Item{Path: mobiIndex, Type: "text/html", Linear: true}
 	if kind == mobiText {
 		item.Type = "text/plain"
 	}

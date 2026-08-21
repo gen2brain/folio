@@ -21,7 +21,7 @@ func openText(r io.ReaderAt, size int64) (*Document, error) {
 	if !readsAsText(b) {
 		return nil, fmt.Errorf("%w: not a book", ErrInvalid)
 	}
-	item := Item{Path: textPath, Type: "text/plain"}
+	item := Item{Path: textPath, Type: "text/plain", Linear: true}
 	return &Document{
 		kind:     KindText,
 		spine:    []Item{item},

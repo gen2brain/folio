@@ -151,16 +151,15 @@ func (d *Document) readPackage(root string) error {
 		}
 	}
 	for _, ref := range p.Spine.ItemRefs {
-		if ref.Linear == "no" {
-			continue
-		}
 		if item, ok := byID[ref.IDRef]; ok {
+			item.Linear = ref.Linear != "no"
 			d.spine = append(d.spine, item)
 		}
 	}
 	if len(d.spine) == 0 {
 		for _, item := range d.manifest {
 			if isChapter(item.Type) {
+				item.Linear = true
 				d.spine = append(d.spine, item)
 			}
 		}
