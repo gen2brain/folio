@@ -437,7 +437,7 @@ func (d *TraceDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ct
 	d.matrix(ctm)
 	d.w.WriteString(">\n")
 	d.depth++
-	return 0
+	return 1
 }
 
 // EndTile implements Device.
