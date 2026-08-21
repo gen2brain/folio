@@ -54,8 +54,8 @@ func parseType1(data []byte) (*Font, error) {
 
 	lenIV := 4
 	if j := indexOf(private, "/lenIV"); j >= 0 {
-		if v, ok := readInt(private[j+6:]); ok && v >= 0 && v <= 16 {
-			lenIV = v
+		if v, ok := readInt(private[j+6:]); ok && v <= 16 {
+			lenIV = max(v, -1)
 		}
 	}
 	t.readSubrs(private, lenIV)
@@ -156,6 +156,17 @@ func eexec(b []byte, key uint16, skip int) []byte {
 	return nil
 }
 
+// charstring unwraps one charstring, which a negative /lenIV says is stored
+// with no encryption at all.
+func charstring(b []byte, lenIV int) []byte {
+	if lenIV < 0 {
+		out := make([]byte, len(b))
+		copy(out, b)
+		return out
+	}
+	return eexec(b, 4330, lenIV)
+}
+
 func (t *type1Font) readMatrix(b []byte) {
 	if v := numbersAfter(b, "/FontMatrix"); len(v) == 6 && v[0] != 0 {
 		t.matrix = raster.Matrix{A: v[0], B: v[1], C: v[2], D: v[3], E: v[4], F: v[5]}
@@ -235,10 +246,13 @@ func readInt(b []byte) (int, bool) {
 		i++
 	}
 	start := i
+	if i < len(b) && (b[i] == '-' || b[i] == '+') {
+		i++
+	}
 	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
 		i++
 	}
-	if i == start {
+	if i == start || (i == start+1 && (b[start] == '-' || b[start] == '+')) {
 		return 0, false
 	}
 	v, err := strconv.Atoi(string(b[start:i]))
@@ -295,7 +309,7 @@ func (t *type1Font) readSubrs(b []byte, lenIV int) {
 			return
 		}
 		if idx >= 0 && idx < n {
-			t.subrs[idx] = eexec(b[start:start+length], 4330, lenIV)
+			t.subrs[idx] = charstring(b[start:start+length], lenIV)
 		}
 		at = start + length
 	}
@@ -351,7 +365,7 @@ func (t *type1Font) readCharstrings(b []byte, lenIV int) {
 			return
 		}
 		if _, dup := t.charstrings[name]; !dup {
-			t.charstrings[name] = eexec(b[start:start+length], 4330, lenIV)
+			t.charstrings[name] = charstring(b[start:start+length], lenIV)
 			t.names = append(t.names, name)
 		}
 		at = start + length
