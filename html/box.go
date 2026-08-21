@@ -37,12 +37,17 @@ type box struct {
 	// picture an image box draws.
 	marker string
 	img    *picture
+	// natural is how wide a table came out, which its lines do not say.
+	natural float32
 }
 
-// lineBox is one line of a block, placed relative to the block's content box.
+// lineBox is one line of a block.
 type lineBox struct {
 	y, h, baseline float32
-	frags          []frag
+	// natural is what the line measures before it is aligned, which a float
+	// shrinking to fit is measured by.
+	natural float32
+	frags   []frag
 }
 
 // frag is a run of text or a picture on a line.
@@ -96,7 +101,9 @@ func build(n *Node, st Styles) *box {
 		}
 	}
 	b := &box{style: s, node: n}
-	if n.Type == xhtml.ElementNode && s.Display == DisplayInline {
+	// A float is block level whatever display says, so an inline image can be
+	// floated out of the line it was written in.
+	if n.Type == xhtml.ElementNode && s.Display == DisplayInline && s.Float == FloatNone {
 		b.kind = inlineBox
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -111,14 +118,22 @@ func build(n *Node, st Styles) *box {
 }
 
 // inlineLevel reports a box that belongs on a line rather than in the block
-// flow of its parent.
+// flow of its parent. A float belongs to neither: it is placed where it is
+// written and the lines beside it work around it.
 func (b *box) inlineLevel() bool {
+	if b.floated() {
+		return true
+	}
 	switch b.kind {
 	case inlineBox, textBox, imageBox, breakBox:
 		return true
 	}
 	return false
 }
+
+// floated reports a box taken out of the flow. A text box carries the style
+// of the element around it, so only a box of its own can be one.
+func (b *box) floated() bool { return b.kind != textBox && b.style.Float != FloatNone }
 
 // blank reports a text box that is nothing but collapsible white space, which
 // generates no box between two blocks.
@@ -171,7 +186,11 @@ func fixup(b *box) {
 			}
 		}
 		if !empty {
-			out = append(out, &box{style: b.style, kids: run})
+			// An anonymous block takes the inherited properties of the box
+			// it is inside and the initial value of the rest: it has no
+			// margin, no padding and no background of its own.
+			s := b.style.inherit()
+			out = append(out, &box{style: &s, kids: run})
 		}
 		run = nil
 	}

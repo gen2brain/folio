@@ -21,16 +21,163 @@ type layout struct {
 	// force marks one a page must start at.
 	spans []lineSpan
 	next  bool
-	pics  map[string]*picture
-	errs  []error
+	// floats are the boxes taken out of the flow, which the line boxes
+	// beside them work around.
+	floats []exclusion
+	pics   map[string]*picture
+	errs   []error
+	// budget bounds the trial layouts a table and a float measure with,
+	// which nest and would otherwise multiply.
+	budget *int
 	// root is the tree run laid out.
 	root *box
+}
+
+// layoutProbes is how many trial layouts one part may measure with.
+const layoutProbes = 1 << 16
+
+// sub is a layout for a box measured or placed on its own: a float, a table
+// cell, or a trial of either.
+func (l *layout) sub(y float32) *layout {
+	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y}
+}
+
+// spend takes one trial layout out of the budget.
+func (l *layout) spend() bool {
+	if l.budget == nil || *l.budget <= 0 {
+		return false
+	}
+	*l.budget--
+	return true
 }
 
 // lineSpan is one line box as pagination sees it.
 type lineSpan struct {
 	top, bottom float32
 	force       bool
+}
+
+// exclusion is a float the lines beside it must avoid.
+type exclusion struct {
+	top, bottom float32
+	x0, x1      float32
+	right       bool
+}
+
+// band is the free horizontal range between x and x+avail over a vertical
+// range, once the floats that overlap it are taken out.
+func (l *layout) band(x, avail, top, bottom float32) (float32, float32) {
+	x0, x1 := x, x+avail
+	for _, f := range l.floats {
+		if f.bottom <= top || f.top >= bottom {
+			continue
+		}
+		if f.right {
+			x1 = min(x1, f.x0)
+		} else {
+			x0 = max(x0, f.x1)
+		}
+	}
+	return x0, x1
+}
+
+// nextBottom is the next vertical position at which a float ends, and top
+// itself when none does.
+func (l *layout) nextBottom(top float32) float32 {
+	next := top
+	for _, f := range l.floats {
+		if f.bottom > top && (next == top || f.bottom < next) {
+			next = f.bottom
+		}
+	}
+	return next
+}
+
+// clearance is how far down a box must go to be past the floats it clears.
+func (l *layout) clearance(c Clear) float32 {
+	y := float32(0)
+	for _, f := range l.floats {
+		if c == ClearLeft && f.right || c == ClearRight && !f.right {
+			continue
+		}
+		y = max(y, f.bottom)
+	}
+	return y
+}
+
+// placeFloat takes a box out of the flow and puts it against one edge, below
+// whatever is already there that it does not fit beside.
+func (l *layout) placeFloat(b *box, x, avail float32) {
+	l.apply()
+	w := min(l.floatWidth(b, avail), avail)
+	top := l.y
+	for {
+		x0, x1 := l.band(x, avail, top, top+1)
+		if x1-x0 >= w {
+			break
+		}
+		next := l.nextBottom(top)
+		if next <= top {
+			break
+		}
+		top = next
+	}
+	x0, x1 := l.band(x, avail, top, top+1)
+	left := x0
+	if b.style.Float == FloatRight {
+		left = max(x1-w, x)
+	}
+	sub := l.sub(top)
+	sub.block(b, left, w)
+	sub.apply()
+	l.spans = append(l.spans, sub.spans...)
+	l.errs = append(l.errs, sub.errs...)
+	l.floats = append(l.floats, exclusion{
+		top: top, bottom: max(sub.y, top), x0: left, x1: left + w,
+		right: b.style.Float == FloatRight,
+	})
+}
+
+// floatWidth is how wide a float ends up: what it asks for, or the widest
+// line it makes when it is left to shrink to fit.
+func (l *layout) floatWidth(b *box, avail float32) float32 {
+	s := b.style
+	frame := s.MarginLeft.Resolve(avail) + s.MarginRight.Resolve(avail) +
+		s.PaddingLeft.Resolve(avail) + s.PaddingRight.Resolve(avail) +
+		s.BorderLeft.Thickness() + s.BorderRight.Thickness()
+	if !s.Width.Auto() {
+		return s.Width.Resolve(avail) + frame
+	}
+	if !l.spend() {
+		return avail
+	}
+	probe := l.sub(0)
+	probe.block(b, 0, avail)
+	w := widest(b)
+	reset(b)
+	return min(w+frame, avail)
+}
+
+// reset clears what a layout wrote into a box: measuring a float and then
+// placing it must not leave the tree with both.
+func reset(b *box) {
+	b.lines, b.natural = nil, 0
+	b.x, b.y, b.w, b.h = 0, 0, 0, 0
+	for _, k := range b.kids {
+		reset(k)
+	}
+}
+
+// widest is the natural width of the widest line under a box.
+func widest(b *box) float32 {
+	w := b.natural
+	for i := range b.lines {
+		w = max(w, b.lines[i].natural)
+	}
+	for _, k := range b.kids {
+		w = max(w, widest(k))
+	}
+	return w
 }
 
 func (l *layout) collapse(m float32) {
@@ -55,11 +202,18 @@ func (l *layout) apply() {
 // run lays out a whole part into a column of the given width.
 func (l *layout) run(b *box, w float32) {
 	l.root = b
+	if l.budget == nil {
+		n := layoutProbes
+		l.budget = &n
+	}
 	if b == nil {
 		return
 	}
 	l.block(b, 0, w)
 	l.apply()
+	// A float's lines are laid out where the float was met, so the spans
+	// reach pagination out of order.
+	sort.Slice(l.spans, func(i, j int) bool { return l.spans[i].top < l.spans[j].top })
 }
 
 // block places one block level box and everything under it.
@@ -68,11 +222,16 @@ func (l *layout) block(b *box, x, avail float32) {
 	ml, mr := s.MarginLeft.Resolve(avail), s.MarginRight.Resolve(avail)
 	pl, pr := s.PaddingLeft.Resolve(avail), s.PaddingRight.Resolve(avail)
 	pt, pb := s.PaddingTop.Resolve(avail), s.PaddingBottom.Resolve(avail)
-	w := avail - ml - mr - pl - pr
-	if !s.Width.Auto() {
+	bt, br := s.BorderTop.Thickness(), s.BorderRight.Thickness()
+	bb, bl := s.BorderBottom.Thickness(), s.BorderLeft.Thickness()
+	frame := pl + pr + bl + br
+	w := avail - ml - mr - frame
+	// A cell is as wide as its column, which the table worked out from what
+	// every cell in it asked for.
+	if !s.Width.Auto() && s.Display != DisplayTableCell {
 		w = s.Width.Resolve(avail)
 		if s.MarginLeft.Auto() && s.MarginRight.Auto() {
-			ml = max((avail-w-pl-pr)/2, 0)
+			ml = max((avail-w-frame)/2, 0)
 		}
 	}
 	w = max(w, 0)
@@ -80,22 +239,31 @@ func (l *layout) block(b *box, x, avail float32) {
 	if s.BreakBefore == BreakAlways {
 		l.next = true
 	}
+	if s.Clear != ClearNone {
+		l.apply()
+		l.y = max(l.y, l.clearance(s.Clear))
+	}
 	l.collapse(s.MarginTop.Resolve(avail))
-	if pt > 0 || s.Background.A > 0 {
+	if pt+bt > 0 || s.Background.A > 0 {
 		l.apply()
 	}
-	b.x, b.y, b.w = x+ml, l.y, w+pl+pr
+	b.x, b.y, b.w = x+ml, l.y, w+frame
 	if l.pend != 0 {
 		l.waiting = append(l.waiting, b)
 	}
-	l.y += pt
+	l.y += bt + pt
 	top := l.y
 
-	if len(b.kids) > 0 && b.kids[0].inlineLevel() {
-		l.inline(b, b.x+pl, w)
-	} else {
+	switch {
+	case s.Display == DisplayTable:
+		l.table(b, b.x+bl+pl, w)
+	case b.kind == imageBox:
+		l.imageBlock(b, b.x+bl+pl, w)
+	case len(b.kids) > 0 && b.kids[0].inlineLevel():
+		l.inline(b, b.x+bl+pl, w)
+	default:
 		for _, k := range b.kids {
-			l.block(k, b.x+pl, w)
+			l.block(k, b.x+bl+pl, w)
 		}
 	}
 
@@ -103,9 +271,9 @@ func (l *layout) block(b *box, x, avail float32) {
 		l.apply()
 		l.y = max(l.y, top+s.Height.Value)
 	}
-	if pb > 0 {
+	if pb+bb > 0 {
 		l.apply()
-		l.y += pb
+		l.y += pb + bb
 	}
 	b.h = max(l.y-b.y, 0)
 	l.collapse(s.MarginBottom.Resolve(avail))
@@ -122,26 +290,33 @@ func (l *layout) inline(b *box, x, w float32) {
 	}
 	c.str = c.text.String()
 	if c.str == "" || len(c.items) == 0 {
+		l.release(c, x, w, 0)
 		return
 	}
 
+	sf := styleFace(b.style)
+	above, below := strut(b.style, sf)
 	indent := b.style.TextIndent.Resolve(w)
 	start, prev := 0, -1
 	first := true
 	for _, br := range lineBreaks(c.str) {
-		avail := w
+		l.release(c, x, w, start)
+		x0, x1 := l.lineBand(x, w, above+below)
+		avail := x1 - x0
 		if first {
 			avail -= indent
 		}
 		width := c.measure(start, trimEnd(c.str, br.pos))
 		if width > avail && prev >= 0 {
-			l.emit(b, c, x, w, start, prev, first, false)
+			l.emit(b, c, x0, x1-x0, lineIndent(indent, first), start, prev, false)
 			first, start, prev = false, skipSpaces(c.str, prev), -1
-			avail = w
+			l.release(c, x, w, start)
+			x0, x1 = l.lineBand(x, w, above+below)
+			avail = x1 - x0
 			width = c.measure(start, trimEnd(c.str, br.pos))
 		}
 		if br.mandatory {
-			l.emit(b, c, x, w, start, br.pos, first, true)
+			l.emit(b, c, x0, x1-x0, lineIndent(indent, first), start, br.pos, true)
 			first, start, prev = false, skipSpaces(c.str, br.pos), -1
 			continue
 		}
@@ -149,10 +324,63 @@ func (l *layout) inline(b *box, x, w float32) {
 			prev = br.pos
 		}
 	}
+	l.release(c, x, w, len(c.str))
+}
+
+func lineIndent(indent float32, first bool) float32 {
+	if first {
+		return indent
+	}
+	return 0
+}
+
+// lineBand is the room a line has once the floats beside it are taken out,
+// moving down past any that leave it none.
+func (l *layout) lineBand(x, w, h float32) (float32, float32) {
+	h = max(h, 1)
+	x0, x1 := l.band(x, w, l.y, l.y+h)
+	for x1 <= x0 {
+		next := l.nextBottom(l.y)
+		if next <= l.y {
+			return x, x + w
+		}
+		l.y = next
+		x0, x1 = l.band(x, w, l.y, l.y+h)
+	}
+	return x0, x1
+}
+
+// release places the floats written before a point in the text, which is
+// where they belong: beside the line they were written in.
+func (l *layout) release(c *inlineCtx, x, w float32, upto int) {
+	for len(c.floats) > 0 && c.floats[0].at <= upto {
+		l.placeFloat(c.floats[0].box, x, w)
+		c.floats = c.floats[1:]
+	}
+}
+
+// imageBlock lays a picture out as a block of its own, which an image that is
+// floated or block level is.
+func (l *layout) imageBlock(b *box, x, w float32) {
+	pic := l.picture(b)
+	if pic == nil {
+		return
+	}
+	iw, ih := pictureSize(b, pic, w)
+	if iw <= 0 || ih <= 0 {
+		return
+	}
+	l.apply()
+	line := lineBox{y: l.y, h: ih, baseline: ih, natural: iw,
+		frags: []frag{{x: x, w: iw, h: ih, img: pic, style: b.style}}}
+	b.lines = append(b.lines, line)
+	l.spans = append(l.spans, lineSpan{top: line.y, bottom: line.y + line.h, force: l.next})
+	l.next = false
+	l.y += ih
 }
 
 // emit places one line box, from lo to hi in the text of the context.
-func (l *layout) emit(b *box, c *inlineCtx, x, w float32, lo, hi int, first, last bool) {
+func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, last bool) {
 	hi = trimEnd(c.str, hi)
 	l.apply()
 
@@ -160,10 +388,6 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w float32, lo, hi int, first, las
 	above, below := strut(b.style, sf)
 	line := lineBox{y: l.y}
 
-	indent := float32(0)
-	if first {
-		indent = b.style.TextIndent.Resolve(w)
-	}
 	total, spaces := float32(0), 0
 	for _, p := range c.pieces(lo, hi) {
 		it := &c.items[p.item]
@@ -209,7 +433,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w float32, lo, hi int, first, las
 		line.frags = append(line.frags, f)
 	}
 
-	line.h, line.baseline = above+below, above
+	line.h, line.baseline, line.natural = above+below, above, total+indent
 	b.lines = append(b.lines, line)
 	l.spans = append(l.spans, lineSpan{top: line.y, bottom: line.y + line.h, force: l.next})
 	l.next = false
@@ -270,6 +494,12 @@ type inlineItem struct {
 	iw, ih float32
 }
 
+// pendingFloat is a float and the point in the text it was written at.
+type pendingFloat struct {
+	box *box
+	at  int
+}
+
 // piece is the part of one item that falls inside a line.
 type piece struct {
 	item   int
@@ -283,8 +513,10 @@ type inlineCtx struct {
 	text  strings.Builder
 	str   string
 	items []inlineItem
-	// avail is the width a picture is scaled down to fit.
-	avail float32
+	// avail is the width a picture is scaled down to fit, and floats are the
+	// boxes met so far that belong beside a line rather than on one.
+	avail  float32
+	floats []pendingFloat
 	// space is a collapsible space owed before the next character, and begun
 	// says whether anything has been written yet.
 	space bool
@@ -292,6 +524,10 @@ type inlineCtx struct {
 }
 
 func (c *inlineCtx) gather(b *box) {
+	if b.floated() {
+		c.floats = append(c.floats, pendingFloat{box: b, at: c.text.Len()})
+		return
+	}
 	switch b.kind {
 	case textBox:
 		c.addText(b.text, b.style)

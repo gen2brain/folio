@@ -46,9 +46,10 @@
 // gfx.Device, which is the seam a PDF page draws through as well.
 //
 // Layout is block and inline formatting with the line breaking of UAX #14:
-// margins, padding, text alignment and indentation, font selection from the
-// base fourteen, line height, colours, list markers, images, and the page
-// breaks a book asks for. Floats, tables and positioning are not in it.
+// margins, padding, borders, floats and clearance, tables with cells that
+// span rows and columns, text alignment and indentation, font selection from
+// the base fourteen, line height, colours, list markers, images, and the page
+// breaks a book asks for. Positioning and generated content are not in it.
 //
 // Pages may be rendered from several goroutines at once. Layout may not run
 // while they are.

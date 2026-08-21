@@ -1410,6 +1410,9 @@ func FuzzLayout(fu *testing.F) {
 	fu.Add("<ul><li>a</li><li>b</li></ul>", "li { list-style-type: decimal }")
 	fu.Add("<p style='font-size:900em'>x</p><h1>y</h1>", "* { width: 1e9px }")
 	fu.Add("<pre>a\nb</pre><br><img src='x.png'/>", "p { text-align: justify }")
+	fu.Add("<table><tr><td colspan='9'>a</td><td rowspan='4'>b</td></tr><tr><td>c</td></tr></table>",
+		"td { border: 1px solid red; width: 40% }")
+	fu.Add("<div class=f>x</div><p>one two</p>", ".f { float: right; width: 1px } p { clear: both }")
 	fu.Fuzz(func(t *testing.T, body, sheet string) {
 		root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
 		if err != nil {
@@ -1459,4 +1462,180 @@ func TestLayoutConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestCSSBorders(t *testing.T) {
+	s := styleOf(t, `#i { border: 2px dashed #f00 }`, `<p id="i">t</p>`, "i")
+	for _, b := range [...]Border{s.BorderTop, s.BorderRight, s.BorderBottom, s.BorderLeft} {
+		if b.Width != 2 || b.Style != BorderDashed || b.Color != (Color{255, 0, 0, 255}) {
+			t.Fatalf("border = %+v", b)
+		}
+	}
+
+	s = styleOf(t, `#i { border-width: 1px 2px 3px 4px; border-style: solid }`, `<p id="i">t</p>`, "i")
+	if s.BorderTop.Width != 1 || s.BorderRight.Width != 2 || s.BorderBottom.Width != 3 || s.BorderLeft.Width != 4 {
+		t.Errorf("widths = %v %v %v %v", s.BorderTop.Width, s.BorderRight.Width, s.BorderBottom.Width, s.BorderLeft.Width)
+	}
+
+	// A border with no colour of its own is the colour of the text, which is
+	// why the cascade computes that one before the rest.
+	s = styleOf(t, `#i { color: green; border: 1px solid }`, `<p id="i">t</p>`, "i")
+	if s.BorderTop.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("border colour = %v, want the text colour", s.BorderTop.Color)
+	}
+	s = styleOf(t, `#i { color: green; border-style: solid }`, `<p id="i">t</p>`, "i")
+	if s.BorderTop.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("border colour = %v, want the text colour", s.BorderTop.Color)
+	}
+
+	// A style of none takes the edge away whatever the width says.
+	s = styleOf(t, `#i { border: 4px solid red; border-top-style: none }`, `<p id="i">t</p>`, "i")
+	if s.BorderTop.Thickness() != 0 || s.BorderLeft.Thickness() != 4 {
+		t.Errorf("thickness = %v %v", s.BorderTop.Thickness(), s.BorderLeft.Thickness())
+	}
+
+	s = styleOf(t, `#i { background: #eee url(x.png) no-repeat }`, `<p id="i">t</p>`, "i")
+	if s.Background != (Color{238, 238, 238, 255}) {
+		t.Errorf("background = %v, want the colour out of the shorthand", s.Background)
+	}
+}
+
+// TestLayoutBorders checks that a border takes room and stops a margin
+// collapsing through the box.
+func TestLayoutBorders(t *testing.T) {
+	lines := func(sheet string) []float32 {
+		d, _ := styledPage(t, sheet, "<div><p>one</p></div><p>two</p>",
+			&LayoutOptions{Width: 400, Height: 800, Margin: 0})
+		defer d.Close()
+		var ys []float32
+		var walk func(*box)
+		walk = func(b *box) {
+			for i := range b.lines {
+				ys = append(ys, b.lines[i].y)
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return ys
+	}
+	plain := lines(`body { margin: 0 } div { margin: 0 } p { margin: 20px 0 }`)
+	bordered := lines(`body { margin: 0 } div { margin: 0; border-top: 5px solid red } p { margin: 20px 0 }`)
+	if plain[0] != 20 {
+		t.Fatalf("first line at %v", plain[0])
+	}
+	if bordered[0] != 25 {
+		t.Errorf("first line at %v, want the border to stop the collapse", bordered[0])
+	}
+}
+
+// TestLayoutFloat checks that a float narrows the lines beside it and that
+// clear moves a box below.
+func TestLayoutFloat(t *testing.T) {
+	d, _ := styledPage(t, `body, p { margin: 0 } .f { float: left; width: 100px; height: 40px }`,
+		`<div class="f"></div><p>`+strings.Repeat("word ", 60)+`</p><p class="c">after</p>`,
+		&LayoutOptions{Width: 400, Height: 900, Margin: 0})
+	defer d.Close()
+	var lines []lineBox
+	var walk func(*box)
+	walk = func(b *box) {
+		lines = append(lines, b.lines...)
+		for _, k := range b.kids {
+			walk(k)
+		}
+	}
+	walk(d.parts[0].root)
+	if len(lines) < 4 {
+		t.Fatalf("%d lines", len(lines))
+	}
+	beside, below := lines[0], lines[len(lines)-1]
+	if beside.frags[0].x < 100 {
+		t.Errorf("the first line starts at %v, want it beside the float", beside.frags[0].x)
+	}
+	if below.frags[0].x != 0 {
+		t.Errorf("the last line starts at %v, want it past the float", below.frags[0].x)
+	}
+
+	// clear moves a box below every float, whatever room is left beside it.
+	d2, _ := styledPage(t, `body, p { margin: 0 } .f { float: left; width: 50px; height: 200px }`,
+		`<div class="f"></div><p class="c" style="clear: both">after</p>`,
+		&LayoutOptions{Width: 400, Height: 900, Margin: 0})
+	defer d2.Close()
+	lines = nil
+	walk(d2.parts[0].root)
+	if len(lines) == 0 || lines[0].y < 200 {
+		t.Fatalf("cleared line at %v, want it below the float", lines)
+	}
+}
+
+// TestLayoutTable checks the grid a table makes: the columns sit side by
+// side, a cell that spans columns covers them, and one that spans rows makes
+// the rows below it start lower.
+func TestLayoutTable(t *testing.T) {
+	d, _ := styledPage(t, `body, table { margin: 0 } td { padding: 0 }`,
+		`<table><tr><td>a</td><td>b</td><td>c</td></tr>`+
+			`<tr><td colspan="2">wide</td><td>d</td></tr>`+
+			`<tr><td rowspan="2">tall one that wraps over two rows of text here</td><td>e</td><td>f</td></tr>`+
+			`<tr><td>g</td><td>h</td></tr></table>`,
+		&LayoutOptions{Width: 400, Height: 900, Margin: 0})
+	defer d.Close()
+
+	var table *box
+	var walk func(*box)
+	walk = func(b *box) {
+		if b.style.Display == DisplayTable && table == nil {
+			table = b
+		}
+		for _, k := range b.kids {
+			walk(k)
+		}
+	}
+	walk(d.parts[0].root)
+	if table == nil {
+		t.Fatal("no table box")
+	}
+	rows := tableRows(table)
+	if len(rows) != 4 {
+		t.Fatalf("%d rows", len(rows))
+	}
+	cells, ncols := buildGrid(rows)
+	if ncols != 3 {
+		t.Fatalf("%d columns, want 3", ncols)
+	}
+	if len(cells) != 10 {
+		t.Fatalf("%d cells, want 10", len(cells))
+	}
+	at := func(r, c int) *cell {
+		for _, x := range cells {
+			if x.row == r && x.col == c {
+				return x
+			}
+		}
+		return nil
+	}
+	if w := at(1, 0); w == nil || w.cols != 2 {
+		t.Fatalf("the spanning cell = %+v", w)
+	}
+	// The cell after the one that spans two columns starts in the third.
+	if c := at(1, 2); c == nil {
+		t.Fatalf("no cell in the third column of the second row")
+	}
+	// The row under the one that spans it has its cells in columns one and
+	// two, not zero.
+	if c := at(3, 0); c != nil {
+		t.Errorf("a cell landed under the one that spans down: %+v", c)
+	}
+	if c := at(3, 1); c == nil {
+		t.Errorf("no cell beside the one that spans down")
+	}
+
+	first := rows[0].kids[0]
+	second := rows[0].kids[1]
+	if first.x+first.w > second.x+0.01 {
+		t.Errorf("cells overlap: %v+%v against %v", first.x, first.w, second.x)
+	}
+	if rows[1].y < rows[0].y+rows[0].h-0.01 {
+		t.Errorf("rows overlap: %v against %v+%v", rows[1].y, rows[0].y, rows[0].h)
+	}
 }

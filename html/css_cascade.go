@@ -122,12 +122,28 @@ func (c *cascader) compute(n *Node, parent *Style) *Style {
 		applyProp(&s, "font-size", v)
 	}
 	v.em = s.FontSize
+	// The colour comes next: a border with none of its own takes it.
+	if w, ok := win["color"]; ok {
+		v.toks = w.toks
+		applyProp(&s, "color", v)
+	}
 	for name, w := range win {
-		if name == "font-size" {
+		if name == "font-size" || name == "color" {
 			continue
 		}
 		v.toks = w.toks
 		applyProp(&s, name, v)
+	}
+	for _, e := range [...]struct {
+		name string
+		b    *Border
+	}{
+		{"border-top-color", &s.BorderTop}, {"border-right-color", &s.BorderRight},
+		{"border-bottom-color", &s.BorderBottom}, {"border-left-color", &s.BorderLeft},
+	} {
+		if _, ok := win[e.name]; !ok {
+			e.b.Color = s.Color
+		}
 	}
 	return &s
 }
@@ -184,7 +200,36 @@ func expand(d *Declaration) []longhand {
 		}
 		return out
 	case "background":
-		return []longhand{{name: "background-color", toks: d.value}}
+		return []longhand{{name: "background-color", toks: backgroundColor(d.value)}}
+	case "border":
+		w, st, c := borderParts(d.value)
+		out := make([]longhand, 0, 12)
+		for _, side := range boxSides {
+			out = append(out,
+				longhand{name: "border" + side + "-width", toks: w},
+				longhand{name: "border" + side + "-style", toks: st},
+				longhand{name: "border" + side + "-color", toks: c})
+		}
+		return out
+	case "border-top", "border-right", "border-bottom", "border-left":
+		w, st, c := borderParts(d.value)
+		side := strings.TrimPrefix(d.Name, "border")
+		return []longhand{
+			{name: "border" + side + "-width", toks: w},
+			{name: "border" + side + "-style", toks: st},
+			{name: "border" + side + "-color", toks: c},
+		}
+	case "border-width", "border-style", "border-color":
+		parts := splitSpace(d.value)
+		if len(parts) == 0 || len(parts) > 4 {
+			return nil
+		}
+		what := strings.TrimPrefix(d.Name, "border")
+		out := make([]longhand, 4)
+		for i := range out {
+			out[i] = longhand{name: "border" + boxSides[i] + what, toks: parts[boxIndex(i, len(parts))]}
+		}
+		return out
 	case "list-style":
 		return []longhand{{name: "list-style-type", toks: d.value}}
 	case "font":
@@ -193,6 +238,67 @@ func expand(d *Declaration) []longhand {
 		return []longhand{{name: "text-decoration-line", toks: d.value}}
 	}
 	return []longhand{{name: d.Name, toks: d.value}}
+}
+
+// borderParts splits a border shorthand into the width, the style and the
+// colour it names, filling in what it leaves out.
+func borderParts(toks []cssToken) (w, st, c []cssToken) {
+	w = []cssToken{{kind: cssIdent, value: "medium"}}
+	st = []cssToken{{kind: cssIdent, value: "none"}}
+	c = []cssToken{{kind: cssIdent, value: "currentcolor"}}
+	for _, p := range splitSpace(toks) {
+		switch {
+		case isBorderStyle(p):
+			st = p
+		case isBorderWidth(p):
+			w = p
+		default:
+			c = p
+		}
+	}
+	return w, st, c
+}
+
+func isBorderStyle(p []cssToken) bool {
+	if len(p) != 1 || p[0].kind != cssIdent {
+		return false
+	}
+	switch strings.ToLower(p[0].value) {
+	case "none", "hidden", "solid", "dashed", "dotted", "double",
+		"groove", "ridge", "inset", "outset":
+		return true
+	}
+	return false
+}
+
+func isBorderWidth(p []cssToken) bool {
+	if len(p) != 1 {
+		return false
+	}
+	switch t := p[0]; t.kind {
+	case cssDimension:
+		return true
+	case cssNumber:
+		return t.num == 0
+	case cssIdent:
+		_, ok := borderWidths[strings.ToLower(t.value)]
+		return ok
+	}
+	return false
+}
+
+// backgroundColor picks the colour out of a background shorthand, which also
+// names an image, a repeat and a position the engine has no use for.
+func backgroundColor(toks []cssToken) []cssToken {
+	parts := splitSpace(toks)
+	for i := len(parts) - 1; i >= 0; i-- {
+		if v := (value{toks: parts[i]}); len(parts[i]) > 0 {
+			if _, ok := v.color(); ok {
+				return parts[i]
+			}
+		}
+	}
+	return toks
 }
 
 // boxIndex is which of one, two, three or four values fills a side.

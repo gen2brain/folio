@@ -12,8 +12,17 @@ const uaCSS = `
 html, body, address, article, aside, blockquote, center, dd, details, dialog,
 dir, div, dl, dt, fieldset, figcaption, figure, footer, form, h1, h2, h3, h4,
 h5, h6, header, hgroup, hr, legend, listing, main, menu, nav, ol, p, plaintext,
-pre, section, summary, ul, xmp, table, caption, thead, tbody, tfoot, tr, td, th
+pre, section, summary, ul, xmp
 	{ display: block }
+
+table { display: table }
+thead { display: table-header-group }
+tbody { display: table-row-group }
+tfoot { display: table-footer-group }
+tr { display: table-row }
+td, th { display: table-cell }
+caption { display: table-caption }
+col, colgroup { display: none }
 
 head, link, meta, script, style, title, base, template, datalist, param,
 source, track, rp { display: none }
@@ -57,7 +66,7 @@ rt { font-size: 50% }
 
 a[href] { color: #0000ee; text-decoration: underline }
 
-hr { display: block; margin: 0.5em auto; height: 1px; background-color: gray }
+hr { display: block; margin: 0.5em auto; border-top: 1px solid gray }
 
 nobr { white-space: nowrap }
 `

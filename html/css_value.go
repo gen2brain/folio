@@ -56,6 +56,11 @@ const (
 	DisplayBlock
 	DisplayInlineBlock
 	DisplayListItem
+	DisplayTable
+	DisplayTableRowGroup
+	DisplayTableRow
+	DisplayTableCell
+	DisplayTableCaption
 	DisplayNone
 )
 
@@ -108,6 +113,27 @@ const (
 	ListUpperRoman
 )
 
+// Float is the side a box is taken out of the flow to.
+type Float uint8
+
+// The float values.
+const (
+	FloatNone Float = iota
+	FloatLeft
+	FloatRight
+)
+
+// Clear is which floats a box must come below.
+type Clear uint8
+
+// The clear values.
+const (
+	ClearNone Clear = iota
+	ClearLeft
+	ClearRight
+	ClearBoth
+)
+
 // PageBreak is what a page break property asks for.
 type PageBreak uint8
 
@@ -141,6 +167,34 @@ const (
 	LineThrough
 )
 
+// BorderStyle is how an edge of a box is drawn.
+type BorderStyle uint8
+
+// The border styles. The three dimensional ones are drawn solid.
+const (
+	BorderNone BorderStyle = iota
+	BorderSolid
+	BorderDashed
+	BorderDotted
+	BorderDouble
+)
+
+// Border is one edge of a box.
+type Border struct {
+	Width float32
+	Style BorderStyle
+	Color Color
+}
+
+// Thickness is how much room the edge takes, which is none when nothing is
+// drawn there.
+func (b Border) Thickness() float32 {
+	if b.Style == BorderNone || b.Width <= 0 {
+		return 0
+	}
+	return b.Width
+}
+
 // Style is the computed value of every property the engine reads. Lengths are
 // in CSS pixels except where a percentage survived the cascade.
 type Style struct {
@@ -148,6 +202,7 @@ type Style struct {
 
 	MarginTop, MarginRight, MarginBottom, MarginLeft     Length
 	PaddingTop, PaddingRight, PaddingBottom, PaddingLeft Length
+	BorderTop, BorderRight, BorderBottom, BorderLeft     Border
 	Width, Height                                        Length
 
 	FontFamily []string
@@ -165,6 +220,9 @@ type Style struct {
 	WhiteSpace    WhiteSpace
 	VerticalAlign VerticalAlign
 	ListStyle     ListStyle
+
+	Float Float
+	Clear Clear
 
 	BreakBefore, BreakAfter PageBreak
 }
@@ -638,6 +696,30 @@ func applyProp(s *Style, name string, v value) bool {
 		setLength(&s.PaddingBottom, v)
 	case "padding-left":
 		setLength(&s.PaddingLeft, v)
+	case "border-top-width":
+		setBorderWidth(&s.BorderTop, v)
+	case "border-right-width":
+		setBorderWidth(&s.BorderRight, v)
+	case "border-bottom-width":
+		setBorderWidth(&s.BorderBottom, v)
+	case "border-left-width":
+		setBorderWidth(&s.BorderLeft, v)
+	case "border-top-style":
+		setBorderStyle(&s.BorderTop, v)
+	case "border-right-style":
+		setBorderStyle(&s.BorderRight, v)
+	case "border-bottom-style":
+		setBorderStyle(&s.BorderBottom, v)
+	case "border-left-style":
+		setBorderStyle(&s.BorderLeft, v)
+	case "border-top-color":
+		setBorderColor(&s.BorderTop, s, v)
+	case "border-right-color":
+		setBorderColor(&s.BorderRight, s, v)
+	case "border-bottom-color":
+		setBorderColor(&s.BorderBottom, s, v)
+	case "border-left-color":
+		setBorderColor(&s.BorderLeft, s, v)
 	case "width":
 		setLength(&s.Width, v)
 	case "height":
@@ -724,6 +806,26 @@ func applyProp(s *Style, name string, v value) bool {
 		if l, ok := v.listStyle(); ok {
 			s.ListStyle = l
 		}
+	case "float":
+		switch v.ident() {
+		case "none":
+			s.Float = FloatNone
+		case "left":
+			s.Float = FloatLeft
+		case "right":
+			s.Float = FloatRight
+		}
+	case "clear":
+		switch v.ident() {
+		case "none":
+			s.Clear = ClearNone
+		case "left":
+			s.Clear = ClearLeft
+		case "right":
+			s.Clear = ClearRight
+		case "both":
+			s.Clear = ClearBoth
+		}
 	case "page-break-before", "break-before":
 		if b, ok := v.pageBreak(); ok {
 			s.BreakBefore = b
@@ -762,6 +864,30 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.PaddingBottom = src.PaddingBottom
 	case "padding-left":
 		dst.PaddingLeft = src.PaddingLeft
+	case "border-top-width":
+		dst.BorderTop.Width = src.BorderTop.Width
+	case "border-right-width":
+		dst.BorderRight.Width = src.BorderRight.Width
+	case "border-bottom-width":
+		dst.BorderBottom.Width = src.BorderBottom.Width
+	case "border-left-width":
+		dst.BorderLeft.Width = src.BorderLeft.Width
+	case "border-top-style":
+		dst.BorderTop.Style = src.BorderTop.Style
+	case "border-right-style":
+		dst.BorderRight.Style = src.BorderRight.Style
+	case "border-bottom-style":
+		dst.BorderBottom.Style = src.BorderBottom.Style
+	case "border-left-style":
+		dst.BorderLeft.Style = src.BorderLeft.Style
+	case "border-top-color":
+		dst.BorderTop.Color = src.BorderTop.Color
+	case "border-right-color":
+		dst.BorderRight.Color = src.BorderRight.Color
+	case "border-bottom-color":
+		dst.BorderBottom.Color = src.BorderBottom.Color
+	case "border-left-color":
+		dst.BorderLeft.Color = src.BorderLeft.Color
 	case "width":
 		dst.Width = src.Width
 	case "height":
@@ -792,6 +918,10 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.VerticalAlign = src.VerticalAlign
 	case "list-style-type":
 		dst.ListStyle = src.ListStyle
+	case "float":
+		dst.Float = src.Float
+	case "clear":
+		dst.Clear = src.Clear
 	case "page-break-before", "break-before":
 		dst.BreakBefore = src.BreakBefore
 	case "page-break-after", "break-after":
@@ -800,6 +930,46 @@ func copyProp(dst, src *Style, name string) bool {
 		return false
 	}
 	return true
+}
+
+// The named border widths of CSS 2.1.
+var borderWidths = map[string]float32{"thin": 1, "medium": 3, "thick": 5}
+
+func setBorderWidth(b *Border, v value) {
+	if w, ok := borderWidths[v.ident()]; ok {
+		b.Width = w
+		return
+	}
+	if l, ok := v.length(); ok && l.Unit == UnitPx {
+		b.Width = max(l.Value, 0)
+	}
+}
+
+func setBorderStyle(b *Border, v value) {
+	switch v.ident() {
+	case "none", "hidden":
+		b.Style = BorderNone
+	case "solid", "groove", "ridge", "inset", "outset":
+		b.Style = BorderSolid
+	case "dashed":
+		b.Style = BorderDashed
+	case "dotted":
+		b.Style = BorderDotted
+	case "double":
+		b.Style = BorderDouble
+	}
+}
+
+// setBorderColor reads a border colour, which by default is the colour of the
+// text and is why the cascade computes that one first.
+func setBorderColor(b *Border, s *Style, v value) {
+	if v.ident() == "currentcolor" {
+		b.Color = s.Color
+		return
+	}
+	if c, ok := v.color(); ok {
+		b.Color = c
+	}
 }
 
 func setLength(dst *Length, v value) {
@@ -816,10 +986,22 @@ func (v value) display() (Display, bool) {
 		return DisplayNone, true
 	case "inline":
 		return DisplayInline, true
-	case "inline-block", "inline-table", "inline-flex", "inline-grid":
+	case "inline-block", "inline-flex", "inline-grid":
 		return DisplayInlineBlock, true
 	case "list-item":
 		return DisplayListItem, true
+	case "table", "inline-table":
+		return DisplayTable, true
+	case "table-row-group", "table-header-group", "table-footer-group":
+		return DisplayTableRowGroup, true
+	case "table-row":
+		return DisplayTableRow, true
+	case "table-cell":
+		return DisplayTableCell, true
+	case "table-caption":
+		return DisplayTableCaption, true
+	case "table-column", "table-column-group":
+		return DisplayNone, true
 	}
 	return DisplayBlock, true
 }

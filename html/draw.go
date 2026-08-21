@@ -28,20 +28,18 @@ func (p *painter) walk(b *box) {
 	if c := b.style.Background; c.A > 0 && b.w > 0 && b.h > 0 {
 		p.rect(b.x, b.y, b.w, b.h, c)
 	}
-	if len(b.lines) > 0 {
-		if b.marker != "" {
-			p.marker(b, &b.lines[0])
-		}
-		for i := range b.lines {
-			p.line(&b.lines[i])
-		}
-		return
-	}
+	p.borders(b)
 	if b.marker != "" {
 		if ln := firstLine(b); ln != nil {
 			p.marker(b, ln)
 		}
 	}
+	for i := range b.lines {
+		p.line(&b.lines[i])
+	}
+	// The children of a block with lines are the inline boxes the lines were
+	// made of and draw nothing of their own, except a float, which was laid
+	// out as a block beside them.
 	for _, k := range b.kids {
 		p.walk(k)
 	}
@@ -125,6 +123,68 @@ func (p *painter) decorate(st *Style, f face, x0, x1, y float32) {
 	if st.Decoration&LineThrough != 0 {
 		p.rect(x0, y-f.size*0.26, x1-x0, t, st.Color)
 	}
+}
+
+// borders paints the four edges of a box. They are drawn as rectangles that
+// overlap at the corners rather than mitred, which shows only where two edges
+// of different colours meet.
+func (p *painter) borders(b *box) {
+	if b.w <= 0 || b.h <= 0 {
+		return
+	}
+	s := b.style
+	t, r := s.BorderTop.Thickness(), s.BorderRight.Thickness()
+	bo, l := s.BorderBottom.Thickness(), s.BorderLeft.Thickness()
+	if t > 0 {
+		p.edge(s.BorderTop, b.x, b.y, b.w, t, true)
+	}
+	if bo > 0 {
+		p.edge(s.BorderBottom, b.x, b.y+b.h-bo, b.w, bo, true)
+	}
+	if l > 0 {
+		p.edge(s.BorderLeft, b.x, b.y, l, b.h, false)
+	}
+	if r > 0 {
+		p.edge(s.BorderRight, b.x+b.w-r, b.y, r, b.h, false)
+	}
+}
+
+func (p *painter) edge(e Border, x, y, w, h float32, horizontal bool) {
+	switch e.Style {
+	case BorderDashed, BorderDotted:
+		p.dashedEdge(e, x, y, w, h, horizontal)
+	case BorderDouble:
+		u := e.Thickness() / 3
+		if horizontal {
+			p.rect(x, y, w, u, e.Color)
+			p.rect(x, y+h-u, w, u, e.Color)
+			return
+		}
+		p.rect(x, y, u, h, e.Color)
+		p.rect(x+w-u, y, u, h, e.Color)
+	default:
+		p.rect(x, y, w, h, e.Color)
+	}
+}
+
+func (p *painter) dashedEdge(e Border, x, y, w, h float32, horizontal bool) {
+	t := e.Thickness()
+	on := t * 3
+	if e.Style == BorderDotted {
+		on = t
+	}
+	p.path.Reset()
+	if horizontal {
+		p.path.MoveTo(x, y+h/2)
+		p.path.LineTo(x+w, y+h/2)
+	} else {
+		p.path.MoveTo(x+w/2, y)
+		p.path.LineTo(x+w/2, y+h)
+	}
+	st := raster.DefaultStroke()
+	st.Width, st.Dash = t, []float32{on, on}
+	col, alpha := colorOf(e.Color)
+	p.dev.StrokePath(&p.path, &st, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
 }
 
 func (p *painter) rect(x, y, w, h float32, c Color) {
