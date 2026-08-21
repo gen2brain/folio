@@ -130,6 +130,7 @@ func parseSFNT(data []byte) (*Font, error) {
 	}
 	f.readHmtx(s)
 	f.readVertical(s)
+	f.readScripts(s)
 	return f, nil
 }
 
@@ -152,6 +153,22 @@ func (f *Font) readVertical(s *sfnt) {
 		return
 	}
 	f.Ascent, f.Descent = float32(asc)/upem, float32(desc)/upem
+}
+
+// readScripts reads what OS/2 says about the size of a lower case x and about
+// where a subscript and a superscript sit, which is what CSS leaves to the
+// reader and every font states for itself.
+func (f *Font) readScripts(s *sfnt) {
+	upem := float32(s.upem)
+	os2 := s.tables["OS/2"]
+	if upem <= 0 || len(os2) < 26 {
+		return
+	}
+	f.SubOffset = float32(int16(be16(os2, 16))) / upem
+	f.SuperOffset = float32(int16(be16(os2, 24))) / upem
+	if be16(os2, 0) >= 2 && len(os2) >= 88 {
+		f.XHeight = float32(int16(be16(os2, 86))) / upem
+	}
 }
 
 // locaGlyphs counts glyphs from the loca table when maxp is unusable.

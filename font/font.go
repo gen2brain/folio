@@ -49,6 +49,11 @@ type Font struct {
 	// Ascent and Descent are how far the em box reaches above and below the
 	// baseline, in text space, and default when the program declares neither.
 	Ascent, Descent float32
+	// XHeight is how tall a lower case x is, and SubOffset and SuperOffset
+	// how far the program puts a subscript below the baseline and a
+	// superscript above it, all in text space. Each is zero when the program
+	// says nothing, which is every program that is not an SFNT.
+	XHeight, SubOffset, SuperOffset float32
 	// CID is true for a CFF font keyed by CID rather than by name.
 	CID bool
 
