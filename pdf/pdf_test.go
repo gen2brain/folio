@@ -2272,6 +2272,40 @@ func TestAnnotationWidgetNoField(t *testing.T) {
 	}
 }
 
+// TestPatternText checks that text filled with a pattern clips to the glyphs
+// and paints the pattern through them, which is the only way a device that
+// knows nothing of patterns can draw one.
+func TestPatternText(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Font << /F 5 0 R >> /Pattern << /P 6 0 R >> >> >>",
+		streamObj("", "/Pattern cs /P scn BT /F 24 Tf 10 40 Td (Hi) Tj ET"),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		streamObj("/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1"+
+			" /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << >>",
+			"1 0 0 rg 0 0 10 10 re f"),
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := p.Run(NewTraceDevice(&buf), p.Matrix(72)); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{"<clip_text ", "<tile ", "<pop_clip/>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the trace has no %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<fill_text ") {
+		t.Errorf("the text was filled with the pattern colour:\n%s", got)
+	}
+}
+
 // textDoc is a page of Helvetica text: two lines, and a third far enough to
 // the right on the second baseline to be a line of its own.
 func textDoc(t *testing.T) *Document {

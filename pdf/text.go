@@ -230,15 +230,21 @@ func (ip *interp) flushText() {
 	if fill || stroke {
 		d = ip.beginDraw(t.Bounds(ctm))
 	}
-	switch {
-	case fill && stroke:
-		ip.dev.FillText(t, ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
-		ip.dev.StrokeText(t, &ip.gs.stroke, ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
-	case fill:
-		ip.dev.FillText(t, ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
-	case stroke:
-		ip.dev.StrokeText(t, &ip.gs.stroke, ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
-	case !clip:
+	if fill {
+		if ip.gs.fill.cs.IsPattern() {
+			ip.textWithPattern(t, ctm, false)
+		} else {
+			ip.dev.FillText(t, ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
+		}
+	}
+	if stroke {
+		if ip.gs.strokeColor.cs.IsPattern() {
+			ip.textWithPattern(t, ctm, true)
+		} else {
+			ip.dev.StrokeText(t, &ip.gs.stroke, ctm, ip.gs.strokeColor.cs, ip.gs.strokeColor.value, ip.gs.strokeAlpha, ip.gs.params)
+		}
+	}
+	if !fill && !stroke && !clip {
 		ip.dev.IgnoreText(t, ctm)
 	}
 	if fill || stroke {

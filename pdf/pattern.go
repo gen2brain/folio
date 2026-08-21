@@ -42,6 +42,22 @@ func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
 	})
 }
 
+// textWithPattern paints a text object with a tiling or shading pattern,
+// which is a clip to the glyphs and the pattern over it.
+func (ip *interp) textWithPattern(t *Text, ctm raster.Matrix, stroke bool) {
+	c, alpha := &ip.gs.fill, ip.gs.fillAlpha
+	if stroke {
+		c, alpha = &ip.gs.strokeColor, ip.gs.strokeAlpha
+	}
+	ip.paintPattern(c, alpha, t.Bounds(ctm), func() {
+		if stroke {
+			ip.dev.ClipStrokeText(t, &ip.gs.stroke, ctm, ip.scissor)
+			return
+		}
+		ip.dev.ClipText(t, ctm, ip.scissor)
+	})
+}
+
 // paintPattern fills whatever clip pushes with the pattern a color names.
 // shape is the device space box of what is being painted, which is what
 // bounds the repetitions of a tiling pattern.
