@@ -153,8 +153,11 @@ func (f *File) firstID() []byte {
 	return f.GetBytes(ids[0])
 }
 
-// key128 is algorithm 2, for /R 2 to 4.
+// key128 is algorithm 2, for /R 2 to 4. The key is an MD5 digest, so a file
+// asking for a longer one than that is asking for the whole digest: a crypt
+// filter may name the 32 bytes AESV3 uses, which only /R 5 and above reach.
 func (f *File) key128(enc *encrypt, password, o, u, id []byte, metadata bool, length int) ([]byte, bool, error) {
+	length = min(max(length, 5), md5.Size)
 	tryKey := func(pw []byte) []byte {
 		h := md5.New()
 		h.Write(padPassword(pw))
@@ -193,10 +196,10 @@ func (f *File) key128(enc *encrypt, password, o, u, id []byte, metadata bool, le
 
 // validUser is algorithm 4 for /R 2 and algorithm 5 for /R 3 and 4.
 func validUser(enc *encrypt, key, u, id []byte) bool {
-	if len(u) < 16 {
-		return false
-	}
 	if enc.r == 2 {
+		if len(u) < 32 {
+			return false
+		}
 		c, err := rc4.NewCipher(key)
 		if err != nil {
 			return false
@@ -204,6 +207,9 @@ func validUser(enc *encrypt, key, u, id []byte) bool {
 		out := make([]byte, 32)
 		c.XORKeyStream(out, pad)
 		return bytes.Equal(out, u[:32])
+	}
+	if len(u) < 16 {
+		return false
 	}
 	h := md5.New()
 	h.Write(pad)

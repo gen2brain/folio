@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("0 0 obj<</Type/Pages endobj 6 0 obj<</Filter/Standard/R 2/U<0000000000000000000000000000000>/V 1Atrailer<</Encrypt 6 0R")

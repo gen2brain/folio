@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("0 0 obj <</Type /Pages endobj 6 0 obj <<0/CF <<0/StdCF <</Length 200>>0>>0/Filter /Standard/StrF/StdCF/V 5Atrailer<</Encrypt 6 0R")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -2581,4 +2582,35 @@ func TestRomanAndLetters(t *testing.T) {
 			t.Fatalf("%s of %d = %q, want %q", tc.style, n, got, tc.want)
 		}
 	}
+}
+
+// FuzzDocument reads a whole file and asks it everything the public API asks:
+// the outline, the metadata, the labels, and the text, links and structure of
+// the first pages. None of it may panic on any input.
+func FuzzDocument(fu *testing.F) {
+	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.pdf"))
+	for _, name := range names {
+		if b, err := os.ReadFile(name); err == nil {
+			fu.Add(b)
+		}
+	}
+	fu.Fuzz(func(t *testing.T, b []byte) {
+		d, err := Load(b, "")
+		if err != nil {
+			return
+		}
+		defer d.Close()
+		d.Outline()
+		d.Metadata()
+		d.PageLabels()
+		for i := 0; i < d.NumPages() && i < 3; i++ {
+			p, err := d.Page(i)
+			if err != nil {
+				continue
+			}
+			p.Links()
+			p.Text()
+			p.WriteSVG(io.Discard)
+		}
+	})
 }
