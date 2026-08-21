@@ -47,9 +47,10 @@
 //
 // Layout is block and inline formatting with the line breaking of UAX #14:
 // margins, padding, borders, floats and clearance, tables with cells that
-// span rows and columns, text alignment and indentation, font selection from
-// the base fourteen, line height, colours, list markers, images, and the page
-// breaks a book asks for. Positioning and generated content are not in it.
+// span rows and columns, relative and absolute positioning, text alignment,
+// indentation, letter spacing, small capitals, font selection from the base
+// fourteen, line height, colours, list markers, images, and the page breaks a
+// book asks for. Generated content and vertical writing are not in it.
 //
 // Pages may be rendered from several goroutines at once. Layout may not run
 // while they are.

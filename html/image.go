@@ -167,6 +167,14 @@ func pictureSize(b *box, p *picture, avail float32) (float32, float32) {
 	if sh.Unit == UnitPx && sw.Unit == UnitPx {
 		h = sh.Value
 	}
+	if m := b.style.MaxWidth; !m.Auto() {
+		if lim := m.Resolve(avail); lim > 0 && w > lim {
+			w, h = lim, lim*ratio
+		}
+	}
+	if m := b.style.MaxHeight; m.Unit == UnitPx && m.Value > 0 && h > m.Value {
+		h, w = m.Value, m.Value/ratio
+	}
 	if avail > 0 && w > avail {
 		w, h = avail, avail*ratio
 	}

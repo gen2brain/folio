@@ -89,6 +89,8 @@ type face struct {
 	prog *font.Font
 	m    *faceMetrics
 	size float32
+	// track is what letter-spacing adds after every character.
+	track float32
 }
 
 // faceMetrics is what a program says about itself, worked out once: the em
@@ -175,19 +177,30 @@ func styleFace(s *Style) face {
 		slot |= 2
 	}
 	prog := font.Standard(base14[kind][slot])
-	return face{prog: prog, m: metricsOf(prog), size: s.FontSize}
+	return face{prog: prog, m: metricsOf(prog), size: s.FontSize, track: s.LetterSpacing}
 }
+
+// smallCapsFace is the face the lower case of a small caps run is drawn with.
+func smallCapsFace(f face) face {
+	f.size *= smallCapsScale
+	return f
+}
+
+// smallCapsScale is how much smaller a synthesised small capital is than the
+// capitals around it.
+const smallCapsScale = 0.8
 
 // width is how much room a run of text takes.
 func (f face) width(s string) float32 {
-	w := float32(0)
+	w, n := float32(0), 0
 	for _, r := range s {
 		w += f.m.advance(r)
+		n++
 	}
-	return w * f.size
+	return w*f.size + float32(n)*f.track
 }
 
-func (f face) advance(r rune) float32 { return f.m.advance(r) * f.size }
+func (f face) advance(r rune) float32 { return f.m.advance(r)*f.size + f.track }
 
 // ascent and descent are how far the face reaches above and below the
 // baseline at its size.

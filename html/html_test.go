@@ -1413,6 +1413,9 @@ func FuzzLayout(fu *testing.F) {
 	fu.Add("<table><tr><td colspan='9'>a</td><td rowspan='4'>b</td></tr><tr><td>c</td></tr></table>",
 		"td { border: 1px solid red; width: 40% }")
 	fu.Add("<div class=f>x</div><p>one two</p>", ".f { float: right; width: 1px } p { clear: both }")
+	fu.Add("<div id=w><span id=a>x</span>y</div>",
+		"#w{position:relative;height:9px}#a{position:absolute;bottom:0;right:0}")
+	fu.Add("<p>Small Caps</p>", "p{font-variant:small-caps;letter-spacing:-9px;text-transform:capitalize}")
 	fu.Fuzz(func(t *testing.T, body, sheet string) {
 		root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
 		if err != nil {
@@ -1637,5 +1640,126 @@ func TestLayoutTable(t *testing.T) {
 	}
 	if rows[1].y < rows[0].y+rows[0].h-0.01 {
 		t.Errorf("rows overlap: %v against %v+%v", rows[1].y, rows[0].y, rows[0].h)
+	}
+}
+
+func TestCSSTypography(t *testing.T) {
+	s := styleOf(t, `#i { font-variant: small-caps; letter-spacing: 2px; text-transform: uppercase }`,
+		`<p id="i">t</p>`, "i")
+	if !s.SmallCaps || s.LetterSpacing != 2 || s.TextTransform != TransformUpper {
+		t.Errorf("style = %+v", *s)
+	}
+	// All three are inherited, which is what makes a run of small capitals
+	// survive the emphasis inside it.
+	s = styleOf(t, `div { font-variant: small-caps; letter-spacing: 2px }`,
+		`<div><em id="i">t</em></div>`, "i")
+	if !s.SmallCaps || s.LetterSpacing != 2 {
+		t.Errorf("inherited = %+v", *s)
+	}
+
+	if got, want := transform("one two", TransformUpper), "ONE TWO"; got != want {
+		t.Errorf("upper = %q", got)
+	}
+	if got, want := transform("one two", TransformCapitalize), "One Two"; got != want {
+		t.Errorf("capitalize = %q", got)
+	}
+}
+
+// TestLayoutTracking checks that letter spacing reaches the measurement, not
+// only the drawing.
+func TestLayoutTracking(t *testing.T) {
+	width := func(sheet string) float32 {
+		d, _ := styledPage(t, sheet, `<p id="i">abcdef</p>`, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		defer d.Close()
+		var w float32
+		var walk func(*box)
+		walk = func(b *box) {
+			for i := range b.lines {
+				w = max(w, b.lines[i].natural)
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return w
+	}
+	plain := width(`body, p { margin: 0 }`)
+	tracked := width(`body, p { margin: 0 } p { letter-spacing: 5px }`)
+	if tracked-plain < 29 || tracked-plain > 31 {
+		t.Errorf("six characters at five pixels added %v, want thirty", tracked-plain)
+	}
+}
+
+// TestLayoutSized checks that min and max hold the used width between them.
+func TestLayoutSized(t *testing.T) {
+	at := func(sheet string) float32 {
+		d, _ := styledPage(t, sheet, `<div id="i">x</div>`, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		defer d.Close()
+		var w float32
+		var walk func(*box)
+		walk = func(b *box) {
+			if b.node != nil && Attr(b.node, "id") == "i" {
+				w = b.w
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return w
+	}
+	if got := at(`body { margin: 0 } #i { max-width: 120px }`); got != 120 {
+		t.Errorf("max-width gave %v", got)
+	}
+	if got := at(`body { margin: 0 } #i { width: 50px; min-width: 300px }`); got != 300 {
+		t.Errorf("min-width gave %v", got)
+	}
+	if got := at(`body { margin: 0 } #i { width: 50px; max-width: 20px }`); got != 20 {
+		t.Errorf("max-width over width gave %v", got)
+	}
+}
+
+// TestLayoutPositioned checks that a relative box moves without moving the
+// flow and that an absolute one is placed against its positioned ancestor.
+func TestLayoutPositioned(t *testing.T) {
+	boxes := func(sheet, body string) map[string]*box {
+		d, _ := styledPage(t, sheet, body, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
+		defer d.Close()
+		out := map[string]*box{}
+		var walk func(*box)
+		walk = func(b *box) {
+			if b.node != nil {
+				if id := Attr(b.node, "id"); id != "" {
+					out[id] = b
+				}
+			}
+			for _, k := range b.kids {
+				walk(k)
+			}
+		}
+		walk(d.parts[0].root)
+		return out
+	}
+	m := boxes(`body, p { margin: 0 } #a { position: relative; left: 30px; top: 10px }`,
+		`<p id="a">one</p><p id="b">two</p>`)
+	if m["a"].x != 30 || m["a"].y != 10 {
+		t.Errorf("the relative box is at %v,%v", m["a"].x, m["a"].y)
+	}
+	if m["b"].y > 30 {
+		t.Errorf("the flow moved with it: the next box is at %v", m["b"].y)
+	}
+
+	m = boxes(`body, p, div { margin: 0 } #w { position: relative; height: 200px; padding: 10px }
+		#a { position: absolute; top: 5px; right: 6px; width: 40px }`,
+		`<div id="w"><p>text</p><span id="a">x</span></div>`)
+	if m["a"] == nil {
+		t.Fatal("the absolute box was not laid out")
+	}
+	if got, want := m["a"].y, float32(15); got != want {
+		t.Errorf("top = %v, want %v", got, want)
+	}
+	if got, want := m["a"].x+m["a"].w, float32(400-10-6); got != want {
+		t.Errorf("right edge = %v, want %v", got, want)
 	}
 }

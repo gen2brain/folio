@@ -101,9 +101,11 @@ func build(n *Node, st Styles) *box {
 		}
 	}
 	b := &box{style: s, node: n}
-	// A float is block level whatever display says, so an inline image can be
-	// floated out of the line it was written in.
-	if n.Type == xhtml.ElementNode && s.Display == DisplayInline && s.Float == FloatNone {
+	// A float and an absolutely placed box are block level whatever display
+	// says, so an inline image can be floated out of the line it was written
+	// in.
+	if n.Type == xhtml.ElementNode && s.Display == DisplayInline &&
+		s.Float == FloatNone && s.Position != PosAbsolute {
 		b.kind = inlineBox
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -121,7 +123,7 @@ func build(n *Node, st Styles) *box {
 // flow of its parent. A float belongs to neither: it is placed where it is
 // written and the lines beside it work around it.
 func (b *box) inlineLevel() bool {
-	if b.floated() {
+	if b.floated() || b.placed() {
 		return true
 	}
 	switch b.kind {
@@ -134,6 +136,9 @@ func (b *box) inlineLevel() bool {
 // floated reports a box taken out of the flow. A text box carries the style
 // of the element around it, so only a box of its own can be one.
 func (b *box) floated() bool { return b.kind != textBox && b.style.Float != FloatNone }
+
+// placed reports a box put somewhere of its own rather than in the flow.
+func (b *box) placed() bool { return b.kind != textBox && b.style.Position == PosAbsolute }
 
 // blank reports a text box that is nothing but collapsible white space, which
 // generates no box between two blocks.

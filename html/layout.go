@@ -3,6 +3,8 @@ package html
 import (
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // layout flows a box tree down a column of a given width. Everything it
@@ -29,6 +31,10 @@ type layout struct {
 	// budget bounds the trial layouts a table and a float measure with,
 	// which nest and would otherwise multiply.
 	budget *int
+	// posX, posY, posW and posH are the box an absolutely placed child is
+	// placed against: the nearest ancestor that is positioned itself. posH is
+	// zero when that box has no height of its own yet.
+	posX, posY, posW, posH float32
 	// root is the tree run laid out.
 	root *box
 }
@@ -39,7 +45,8 @@ const layoutProbes = 1 << 16
 // sub is a layout for a box measured or placed on its own: a float, a table
 // cell, or a trial of either.
 func (l *layout) sub(y float32) *layout {
-	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y}
+	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y,
+		posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH}
 }
 
 // spend takes one trial layout out of the budget.
@@ -128,7 +135,7 @@ func (l *layout) placeFloat(b *box, x, avail float32) {
 		left = max(x1-w, x)
 	}
 	sub := l.sub(top)
-	sub.block(b, left, w)
+	sub.flow(b, left, w)
 	sub.apply()
 	l.spans = append(l.spans, sub.spans...)
 	l.errs = append(l.errs, sub.errs...)
@@ -152,7 +159,7 @@ func (l *layout) floatWidth(b *box, avail float32) float32 {
 		return avail
 	}
 	probe := l.sub(0)
-	probe.block(b, 0, avail)
+	probe.flow(b, 0, avail)
 	w := widest(b)
 	reset(b)
 	return min(w+frame, avail)
@@ -216,8 +223,18 @@ func (l *layout) run(b *box, w float32) {
 	sort.Slice(l.spans, func(i, j int) bool { return l.spans[i].top < l.spans[j].top })
 }
 
-// block places one block level box and everything under it.
+// block places one block level box and everything under it, or puts it where
+// it asked to be put instead.
 func (l *layout) block(b *box, x, avail float32) {
+	if b.style.Position == PosAbsolute {
+		l.absolute(b, x, avail)
+		return
+	}
+	l.flow(b, x, avail)
+}
+
+// flow places a box in the block flow.
+func (l *layout) flow(b *box, x, avail float32) {
 	s := b.style
 	ml, mr := s.MarginLeft.Resolve(avail), s.MarginRight.Resolve(avail)
 	pl, pr := s.PaddingLeft.Resolve(avail), s.PaddingRight.Resolve(avail)
@@ -234,7 +251,7 @@ func (l *layout) block(b *box, x, avail float32) {
 			ml = max((avail-w-frame)/2, 0)
 		}
 	}
-	w = max(w, 0)
+	w = clampLength(w, s.MinWidth, s.MaxWidth, avail)
 
 	if s.BreakBefore == BreakAlways {
 		l.next = true
@@ -253,6 +270,13 @@ func (l *layout) block(b *box, x, avail float32) {
 	}
 	l.y += bt + pt
 	top := l.y
+	savedX, savedY, savedW, savedH := l.posX, l.posY, l.posW, l.posH
+	if s.Position != PosStatic {
+		l.posX, l.posY, l.posW, l.posH = b.x+bl+pl, top, w, 0
+		if s.Height.Unit == UnitPx {
+			l.posH = s.Height.Value
+		}
+	}
 
 	switch {
 	case s.Display == DisplayTable:
@@ -267,9 +291,13 @@ func (l *layout) block(b *box, x, avail float32) {
 		}
 	}
 
-	if s.Height.Unit == UnitPx {
+	l.posX, l.posY, l.posW, l.posH = savedX, savedY, savedW, savedH
+	if h := clampLength(l.y-top, s.Height, s.MaxHeight, avail); h > l.y-top {
 		l.apply()
-		l.y = max(l.y, top+s.Height.Value)
+		l.y = top + h
+	} else if s.MinHeight.Unit == UnitPx && s.MinHeight.Value > l.y-top {
+		l.apply()
+		l.y = top + s.MinHeight.Value
 	}
 	if pb+bb > 0 {
 		l.apply()
@@ -280,6 +308,91 @@ func (l *layout) block(b *box, x, avail float32) {
 	if s.BreakAfter == BreakAlways {
 		l.next = true
 	}
+	if s.Position == PosRelative {
+		dx, dy := offsets(s, avail)
+		if dx != 0 || dy != 0 {
+			shift(b, dx, dy)
+		}
+	}
+}
+
+// clampLength holds a length between what min and max ask for, treating a
+// length there is none of as no bound at all.
+func clampLength(v float32, lo, hi Length, against float32) float32 {
+	if !hi.Auto() {
+		v = min(v, hi.Resolve(against))
+	}
+	if !lo.Auto() {
+		v = max(v, lo.Resolve(against))
+	}
+	return max(v, 0)
+}
+
+// offsets is how far a relatively placed box moves from where the flow put
+// it.
+func offsets(s *Style, avail float32) (float32, float32) {
+	dx, dy := float32(0), float32(0)
+	switch {
+	case !s.LeftPos.Auto():
+		dx = s.LeftPos.Resolve(avail)
+	case !s.Right.Auto():
+		dx = -s.Right.Resolve(avail)
+	}
+	switch {
+	case !s.Top.Auto():
+		dy = s.Top.Resolve(avail)
+	case !s.Bottom.Auto():
+		dy = -s.Bottom.Resolve(avail)
+	}
+	return dx, dy
+}
+
+// absolute places a box against its positioned ancestor and leaves the flow
+// where it was.
+func (l *layout) absolute(b *box, x, avail float32) {
+	s := b.style
+	cx, cy, cw := l.posX, l.posY, l.posW
+	if cw <= 0 {
+		cx, cy, cw = x, l.y, avail
+	}
+	w := cw
+	switch {
+	case !s.Width.Auto():
+		w = s.Width.Resolve(cw) + frameWidth(s)
+	case !s.LeftPos.Auto() && !s.Right.Auto():
+		w = cw - s.LeftPos.Resolve(cw) - s.Right.Resolve(cw)
+	default:
+		w = l.floatWidth(b, cw)
+	}
+	w = clampLength(w, s.MinWidth, s.MaxWidth, cw)
+
+	bx, by := cx, l.y
+	if !s.LeftPos.Auto() {
+		bx = cx + s.LeftPos.Resolve(cw)
+	} else if !s.Right.Auto() {
+		bx = cx + cw - s.Right.Resolve(cw) - w
+	}
+	if !s.Top.Auto() {
+		by = cy + s.Top.Resolve(cw)
+	}
+	sub := l.sub(by)
+	sub.posX, sub.posY, sub.posW = bx, by, w
+	sub.flow(b, bx, w)
+	sub.apply()
+	// A box placed from the bottom needs its own height, which is only known
+	// once it is laid out, and its container's, which is only known when the
+	// container was given one.
+	if s.Top.Auto() && !s.Bottom.Auto() && l.posH > 0 {
+		if dy := cy + l.posH - s.Bottom.Resolve(cw) - (sub.y - by) - by; dy != 0 {
+			shift(b, 0, dy)
+			for i := range sub.spans {
+				sub.spans[i].top += dy
+				sub.spans[i].bottom += dy
+			}
+		}
+	}
+	l.spans = append(l.spans, sub.spans...)
+	l.errs = append(l.errs, sub.errs...)
 }
 
 // inline fills the line boxes of a block whose children are all inline.
@@ -289,6 +402,11 @@ func (l *layout) inline(b *box, x, w float32) {
 		c.gather(k)
 	}
 	c.str = c.text.String()
+	defer func() {
+		for _, k := range c.placed {
+			l.absolute(k, x, w)
+		}
+	}()
 	if c.str == "" || len(c.items) == 0 {
 		l.release(c, x, w, 0)
 		return
@@ -299,7 +417,7 @@ func (l *layout) inline(b *box, x, w float32) {
 	indent := b.style.TextIndent.Resolve(w)
 	start, prev := 0, -1
 	first := true
-	for _, br := range lineBreaks(c.str) {
+	for _, br := range c.breaks() {
 		l.release(c, x, w, start)
 		x0, x1 := l.lineBand(x, w, above+below)
 		avail := x1 - x0
@@ -494,6 +612,32 @@ type inlineItem struct {
 	iw, ih float32
 }
 
+// breaks are the places a line may end: the opportunities of UAX #14, less
+// the ones inside a run the style says must not wrap.
+func (c *inlineCtx) breaks() []lineBreak {
+	brs := lineBreaks(c.str)
+	if len(c.nowrap) == 0 {
+		return brs
+	}
+	out := brs[:0]
+	for _, br := range brs {
+		if !br.mandatory && c.inNowrap(br.pos) {
+			continue
+		}
+		out = append(out, br)
+	}
+	return out
+}
+
+func (c *inlineCtx) inNowrap(pos int) bool {
+	for _, r := range c.nowrap {
+		if pos > r[0] && pos < r[1] {
+			return true
+		}
+	}
+	return false
+}
+
 // pendingFloat is a float and the point in the text it was written at.
 type pendingFloat struct {
 	box *box
@@ -513,10 +657,13 @@ type inlineCtx struct {
 	text  strings.Builder
 	str   string
 	items []inlineItem
-	// avail is the width a picture is scaled down to fit, and floats are the
-	// boxes met so far that belong beside a line rather than on one.
+	// avail is the width a picture is scaled down to fit, floats are the
+	// boxes met so far that belong beside a line rather than on one, and
+	// nowrap the ranges of the text no line may break inside.
 	avail  float32
 	floats []pendingFloat
+	placed []*box
+	nowrap [][2]int
 	// space is a collapsible space owed before the next character, and begun
 	// says whether anything has been written yet.
 	space bool
@@ -524,7 +671,11 @@ type inlineCtx struct {
 }
 
 func (c *inlineCtx) gather(b *box) {
-	if b.floated() {
+	switch {
+	case b.placed():
+		c.placed = append(c.placed, b)
+		return
+	case b.floated():
 		c.floats = append(c.floats, pendingFloat{box: b, at: c.text.Len()})
 		return
 	}
@@ -542,12 +693,14 @@ func (c *inlineCtx) gather(b *box) {
 	}
 }
 
-// open starts an item unless the last one is already the same element.
-func (c *inlineCtx) open(s *Style, img *picture) {
-	if n := len(c.items); img == nil && n > 0 && c.items[n-1].style == s && c.items[n-1].img == nil {
+// open starts an item unless the last one is already the same element drawn
+// with the same face.
+func (c *inlineCtx) open(s *Style, f face, img *picture) {
+	if n := len(c.items); img == nil && n > 0 &&
+		c.items[n-1].style == s && c.items[n-1].face == f && c.items[n-1].img == nil {
 		return
 	}
-	c.items = append(c.items, inlineItem{start: c.text.Len(), style: s, face: styleFace(s), img: img})
+	c.items = append(c.items, inlineItem{start: c.text.Len(), style: s, face: f, img: img})
 }
 
 func (c *inlineCtx) flushSpace() {
@@ -561,36 +714,98 @@ func (c *inlineCtx) addText(s string, st *Style) {
 	if s == "" {
 		return
 	}
-	c.open(st, nil)
-	if st.WhiteSpace == WhitePre || st.WhiteSpace == WhitePreWrap {
+	s = transform(s, st.TextTransform)
+	f := styleFace(st)
+	first := -1
+	put := func(run string) {
+		c.open(st, f, nil)
 		c.flushSpace()
-		c.text.WriteString(s)
-		c.begun = true
-		return
+		if first < 0 {
+			first = c.text.Len()
+		}
+		c.write(run, st, f)
 	}
-	for i := 0; i < len(s); {
-		j := i
-		for j < len(s) && !isSpaceByte(s[j]) {
-			j++
+	if st.WhiteSpace == WhitePre || st.WhiteSpace == WhitePreWrap {
+		put(s)
+	} else {
+		for i := 0; i < len(s); {
+			j := i
+			for j < len(s) && !isSpaceByte(s[j]) {
+				j++
+			}
+			if j > i {
+				put(s[i:j])
+			}
+			k := j
+			for k < len(s) && isSpaceByte(s[k]) {
+				k++
+			}
+			if k > j && c.begun {
+				c.space = true
+			}
+			i = k
 		}
-		if j > i {
-			c.flushSpace()
-			c.text.WriteString(s[i:j])
-			c.begun = true
-		}
-		k := j
-		for k < len(s) && isSpaceByte(s[k]) {
-			k++
-		}
-		if k > j && c.begun {
-			c.space = true
-		}
-		i = k
+	}
+	if st.WhiteSpace == WhiteNowrap && first >= 0 {
+		c.nowrap = append(c.nowrap, [2]int{first, c.text.Len()})
 	}
 }
 
+// write puts one run of text in, splitting it where small capitals need a
+// face of their own.
+func (c *inlineCtx) write(s string, st *Style, f face) {
+	c.begun = true
+	if !st.SmallCaps {
+		c.text.WriteString(s)
+		return
+	}
+	small := smallCapsFace(f)
+	for len(s) > 0 {
+		r, n := utf8.DecodeRuneInString(s)
+		lower := unicode.IsLower(r)
+		i := n
+		for i < len(s) {
+			r2, n2 := utf8.DecodeRuneInString(s[i:])
+			if unicode.IsLower(r2) != lower {
+				break
+			}
+			i += n2
+		}
+		run := s[:i]
+		if lower {
+			c.open(st, small, nil)
+			c.text.WriteString(strings.ToUpper(run))
+		} else {
+			c.open(st, f, nil)
+			c.text.WriteString(run)
+		}
+		s = s[i:]
+	}
+}
+
+// transform is what text-transform asks for.
+func transform(s string, t TextTransform) string {
+	switch t {
+	case TransformUpper:
+		return strings.ToUpper(s)
+	case TransformLower:
+		return strings.ToLower(s)
+	case TransformCapitalize:
+		prev := ' '
+		return strings.Map(func(r rune) rune {
+			was := prev
+			prev = r
+			if unicode.IsSpace(was) {
+				return unicode.ToTitle(r)
+			}
+			return r
+		}, s)
+	}
+	return s
+}
+
 func (c *inlineCtx) addBreak(s *Style) {
-	c.open(s, nil)
+	c.open(s, styleFace(s), nil)
 	c.space = false
 	c.text.WriteByte('\n')
 	c.begun = true
@@ -606,7 +821,7 @@ func (c *inlineCtx) addImage(b *box) {
 		return
 	}
 	c.flushSpace()
-	c.open(b.style, pic)
+	c.open(b.style, styleFace(b.style), pic)
 	c.text.WriteString(objectChar)
 	c.begun = true
 	n := len(c.items) - 1

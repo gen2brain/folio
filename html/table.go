@@ -154,7 +154,7 @@ func (l *layout) table(b *box, x, avail float32) {
 			}
 			for r := last; r < len(rows); r++ {
 				for _, k := range byRow[r] {
-					shift(k.box, grow)
+					shift(k.box, 0, grow)
 				}
 			}
 		}
@@ -270,7 +270,7 @@ func (l *layout) probe(b *box, avail float32) float32 {
 		return 0
 	}
 	p := l.sub(0)
-	p.block(b, 0, avail)
+	p.flow(b, 0, avail)
 	w := widest(b) + frameWidth(b.style)
 	reset(b)
 	return w
@@ -282,13 +282,17 @@ func frameWidth(s *Style) float32 {
 		s.BorderLeft.Thickness() + s.BorderRight.Thickness()
 }
 
-// shift moves a laid out subtree down the column.
-func shift(b *box, dy float32) {
+// shift moves a laid out subtree.
+func shift(b *box, dx, dy float32) {
+	b.x += dx
 	b.y += dy
 	for i := range b.lines {
 		b.lines[i].y += dy
+		for j := range b.lines[i].frags {
+			b.lines[i].frags[j].x += dx
+		}
 	}
 	for _, k := range b.kids {
-		shift(k, dy)
+		shift(k, dx, dy)
 	}
 }

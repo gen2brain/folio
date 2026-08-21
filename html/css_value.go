@@ -85,6 +85,17 @@ const (
 	StyleOblique
 )
 
+// TextTransform is the case a run of text is drawn in.
+type TextTransform uint8
+
+// The text transforms.
+const (
+	TransformNone TextTransform = iota
+	TransformUpper
+	TransformLower
+	TransformCapitalize
+)
+
 // WhiteSpace is how the white space of the source is collapsed.
 type WhiteSpace uint8
 
@@ -111,6 +122,17 @@ const (
 	ListUpperAlpha
 	ListLowerRoman
 	ListUpperRoman
+)
+
+// Position is how a box is placed against the flow.
+type Position uint8
+
+// The position values. A fixed box is placed like an absolute one: a book has
+// no viewport to fix it to.
+const (
+	PosStatic Position = iota
+	PosRelative
+	PosAbsolute
 )
 
 // Float is the side a box is taken out of the flow to.
@@ -204,18 +226,26 @@ type Style struct {
 	PaddingTop, PaddingRight, PaddingBottom, PaddingLeft Length
 	BorderTop, BorderRight, BorderBottom, BorderLeft     Border
 	Width, Height                                        Length
+	MinWidth, MaxWidth, MinHeight, MaxHeight             Length
+
+	Position                    Position
+	Top, Right, Bottom, LeftPos Length
 
 	FontFamily []string
 	FontSize   float32
 	FontStyle  FontStyle
 	FontWeight int
 	LineHeight Length
+	// SmallCaps draws the lower case of a run as capitals of a smaller size.
+	SmallCaps bool
 
 	Color      Color
 	Background Color
 
 	TextAlign     TextAlign
 	TextIndent    Length
+	TextTransform TextTransform
+	LetterSpacing float32
 	Decoration    Decoration
 	WhiteSpace    WhiteSpace
 	VerticalAlign VerticalAlign
@@ -249,9 +279,12 @@ func (s *Style) inherit() Style {
 	c.FontStyle = s.FontStyle
 	c.FontWeight = s.FontWeight
 	c.LineHeight = s.LineHeight
+	c.SmallCaps = s.SmallCaps
 	c.Color = s.Color
 	c.TextAlign = s.TextAlign
 	c.TextIndent = s.TextIndent
+	c.TextTransform = s.TextTransform
+	c.LetterSpacing = s.LetterSpacing
 	c.Decoration = s.Decoration
 	c.WhiteSpace = s.WhiteSpace
 	c.ListStyle = s.ListStyle
@@ -652,6 +685,9 @@ var inheritedProps = map[string]bool{
 	"font-style":           true,
 	"font-weight":          true,
 	"line-height":          true,
+	"font-variant":         true,
+	"text-transform":       true,
+	"letter-spacing":       true,
 	"list-style-type":      true,
 	"text-align":           true,
 	"text-indent":          true,
@@ -724,6 +760,31 @@ func applyProp(s *Style, name string, v value) bool {
 		setLength(&s.Width, v)
 	case "height":
 		setLength(&s.Height, v)
+	case "min-width":
+		setLength(&s.MinWidth, v)
+	case "max-width":
+		setLength(&s.MaxWidth, v)
+	case "min-height":
+		setLength(&s.MinHeight, v)
+	case "max-height":
+		setLength(&s.MaxHeight, v)
+	case "position":
+		switch v.ident() {
+		case "static":
+			s.Position = PosStatic
+		case "relative":
+			s.Position = PosRelative
+		case "absolute", "fixed":
+			s.Position = PosAbsolute
+		}
+	case "top":
+		setLength(&s.Top, v)
+	case "right":
+		setLength(&s.Right, v)
+	case "bottom":
+		setLength(&s.Bottom, v)
+	case "left":
+		setLength(&s.LeftPos, v)
 	case "text-indent":
 		setLength(&s.TextIndent, v)
 	case "font-family":
@@ -750,6 +811,30 @@ func applyProp(s *Style, name string, v value) bool {
 	case "line-height":
 		if l, ok := v.lineHeight(); ok {
 			s.LineHeight = l
+		}
+	case "font-variant":
+		switch v.ident() {
+		case "small-caps", "all-small-caps":
+			s.SmallCaps = true
+		case "normal", "none":
+			s.SmallCaps = false
+		}
+	case "text-transform":
+		switch v.ident() {
+		case "none":
+			s.TextTransform = TransformNone
+		case "uppercase":
+			s.TextTransform = TransformUpper
+		case "lowercase":
+			s.TextTransform = TransformLower
+		case "capitalize":
+			s.TextTransform = TransformCapitalize
+		}
+	case "letter-spacing":
+		if v.ident() == "normal" {
+			s.LetterSpacing = 0
+		} else if l, ok := v.length(); ok && l.Unit == UnitPx {
+			s.LetterSpacing = l.Value
 		}
 	case "color":
 		if c, ok := v.color(); ok {
@@ -892,6 +977,24 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.Width = src.Width
 	case "height":
 		dst.Height = src.Height
+	case "min-width":
+		dst.MinWidth = src.MinWidth
+	case "max-width":
+		dst.MaxWidth = src.MaxWidth
+	case "min-height":
+		dst.MinHeight = src.MinHeight
+	case "max-height":
+		dst.MaxHeight = src.MaxHeight
+	case "position":
+		dst.Position = src.Position
+	case "top":
+		dst.Top = src.Top
+	case "right":
+		dst.Right = src.Right
+	case "bottom":
+		dst.Bottom = src.Bottom
+	case "left":
+		dst.LeftPos = src.LeftPos
 	case "text-indent":
 		dst.TextIndent = src.TextIndent
 	case "font-family":
@@ -904,6 +1007,12 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.FontWeight = src.FontWeight
 	case "line-height":
 		dst.LineHeight = src.LineHeight
+	case "font-variant":
+		dst.SmallCaps = src.SmallCaps
+	case "text-transform":
+		dst.TextTransform = src.TextTransform
+	case "letter-spacing":
+		dst.LetterSpacing = src.LetterSpacing
 	case "color":
 		dst.Color = src.Color
 	case "background-color":
