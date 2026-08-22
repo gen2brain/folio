@@ -3246,6 +3246,203 @@ func TestLZXRaw(t *testing.T) {
 	}
 }
 
+// buildOffice writes the parts into the zip an office document is.
+func buildOffice(t *testing.T, parts map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	names := make([]string, 0, len(parts))
+	for n := range parts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		w, err := z.Create(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(parts[n])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+const docxNS = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+	`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`
+
+// TestDOCX covers what a word processing document turns into: headings from
+// the styles it declares, a list from the numbering it names, a table, a run
+// with type of its own, a link, and the page the section asks for.
+func TestDOCX(t *testing.T) {
+	doc := `<w:document ` + docxNS + `><w:body>` +
+		`<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A Heading</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>Bold red.</w:t></w:r>` +
+		`<w:hyperlink r:id="rId1"><w:r><w:t>A link</w:t></w:r></w:hyperlink></w:p>` +
+		`<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>` +
+		`<w:r><w:t>Item one</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr>` +
+		`<w:r><w:t>Item two</w:t></w:r></w:p>` +
+		`<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc>` +
+		`<w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Wide</w:t></w:r></w:p></w:tc>` +
+		`</w:tr></w:tbl>` +
+		`<w:p><w:r><w:t>A note.</w:t><w:footnoteReference w:id="2"/></w:r></w:p>` +
+		`<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:left="1440"/></w:sectPr>` +
+		`</w:body></w:document>`
+	raw := buildOffice(t, map[string]string{
+		"word/document.xml": doc,
+		"word/styles.xml": `<w:styles ` + docxNS + `>` +
+			`<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>` +
+			`<w:rPr><w:b/><w:sz w:val="48"/></w:rPr></w:style></w:styles>`,
+		"word/numbering.xml": `<w:numbering ` + docxNS + `>` +
+			`<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl>` +
+			`<w:lvl w:ilvl="1"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>` +
+			`<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`,
+		"word/footnotes.xml": `<w:footnotes ` + docxNS + `>` +
+			`<w:footnote w:id="2"><w:p><w:r><w:t>The note.</w:t></w:r></w:p></w:footnote>` +
+			`<w:footnote w:id="0" w:type="separator"><w:p><w:r><w:t>NOPE</w:t></w:r></w:p></w:footnote>` +
+			`</w:footnotes>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rId1" Type="x/hyperlink" Target="https://example.com" TargetMode="External"/>` +
+			`</Relationships>`,
+		"docProps/core.xml": `<coreProperties xmlns="x"><title>A Title</title><creator>An Author</creator></coreProperties>`,
+	})
+
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Kind() != KindDOCX {
+		t.Fatalf("opened as %s", d.Kind())
+	}
+	if d.Metadata().Title != "A Title" || d.Metadata().Author != "An Author" {
+		t.Errorf("the metadata is %+v", d.Metadata())
+	}
+	body, err := d.Read(docxBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<h1", "A Heading",
+		`<ol style="list-style-type:decimal"`, "<li", "Item one", "<ul", "Item two",
+		"<table>", `colspan="2"`, "Wide",
+		`<a href="https://example.com">`,
+		"font-weight:bold", "color:#ff0000",
+		"The note.",
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("the body has no %q", want)
+		}
+	}
+	if bytes.Contains(body, []byte("NOPE")) {
+		t.Error("a separator footnote reached the body")
+	}
+	// A US Letter section, in CSS pixels.
+	if n, err := d.Layout(nil); err != nil || n == 0 {
+		t.Fatalf("laid out %d pages, %v", n, err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := p.Bounds(); b.X1-b.X0 != 612 || b.Y1-b.Y0 != 792 {
+		t.Errorf("the page is %v, want the letter the section asks for", b)
+	}
+	// What the caller asks for wins over what the document says.
+	if _, err := d.Layout(&LayoutOptions{Width: 400, Height: 600}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := d.Page(0); err == nil {
+		if b := p.Bounds(); b.X1-b.X0 != 300 {
+			t.Errorf("the page is %v, want the caller's 400 pixels", b)
+		}
+	}
+}
+
+// TestPPTX covers a presentation: one page per slide, at the size the deck
+// declares, with a shape placed where the layout under it says.
+func TestPPTX(t *testing.T) {
+	const aNS = `xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
+		`xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ` +
+		`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`
+	slide := func(text string, own bool) string {
+		frame := ""
+		if own {
+			frame = `<p:spPr><a:xfrm><a:off x="914400" y="914400"/>` +
+				`<a:ext cx="1828800" cy="914400"/></a:xfrm></p:spPr>`
+		}
+		return `<p:sld ` + aNS + `><p:cSld><p:spTree><p:sp>` +
+			`<p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>` + frame +
+			`<p:txBody><a:p><a:r><a:t>` + text + `</a:t></a:r></a:p></p:txBody>` +
+			`</p:sp></p:spTree></p:cSld></p:sld>`
+	}
+	raw := buildOffice(t, map[string]string{
+		"ppt/presentation.xml": `<p:presentation ` + aNS + `>` +
+			`<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>` +
+			`<p:sldSz cx="9144000" cy="6858000"/></p:presentation>`,
+		"ppt/_rels/presentation.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rId1" Type="x/slide" Target="slides/slide1.xml"/>` +
+			`<Relationship Id="rId2" Type="x/slide" Target="slides/slide2.xml"/></Relationships>`,
+		"ppt/slides/slide1.xml": slide("First slide", true),
+		"ppt/slides/slide2.xml": slide("Second slide", false),
+		"ppt/slides/_rels/slide2.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rId1" Type="x/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`,
+		"ppt/slideLayouts/slideLayout1.xml": `<p:sldLayout ` + aNS + `><p:cSld><p:spTree><p:sp>` +
+			`<p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>` +
+			`<p:spPr><a:xfrm><a:off x="457200" y="1600200"/><a:ext cx="8229600" cy="1143000"/></a:xfrm></p:spPr>` +
+			`<p:txBody><a:lstStyle><a:lvl1pPr algn="ctr"><a:defRPr sz="4400" b="1"/></a:lvl1pPr></a:lstStyle>` +
+			`</p:txBody></p:sp></p:spTree></p:cSld></p:sldLayout>`,
+	})
+
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Kind() != KindPPTX {
+		t.Fatalf("opened as %s", d.Kind())
+	}
+	if len(d.Spine()) != 2 {
+		t.Fatalf("%d slides in the spine", len(d.Spine()))
+	}
+	toc := d.Outline()
+	if len(toc) != 2 || toc[0].Title != "First slide" || toc[1].Title != "Second slide" {
+		t.Errorf("the outline is %+v", toc)
+	}
+	one, err := d.Read("slide1.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(one, []byte("left:96px;top:96px;width:192px;height:96px")) {
+		t.Errorf("the shape is not where it says: %s", one)
+	}
+	// The second slide carries no geometry of its own and takes the layout's,
+	// along with the type it sets for the text.
+	two, err := d.Read("slide2.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"left:48px;top:168px;width:864px", "text-align:center",
+		"font-size:58.67px", "font-weight:bold"} {
+		if !bytes.Contains(two, []byte(want)) {
+			t.Errorf("the inherited slide has no %q: %s", want, two)
+		}
+	}
+	n, err := d.Layout(nil)
+	if err != nil || n != 2 {
+		t.Fatalf("laid out %d pages, %v", n, err)
+	}
+	if p, err := d.Page(0); err == nil {
+		if b := p.Bounds(); b.X1-b.X0 != 720 || b.Y1-b.Y0 != 540 {
+			t.Errorf("the slide is %v, want 720 by 540 points", b)
+		}
+	}
+}
+
 // TestBidiLayout covers what the algorithm does to a line: the pieces are
 // placed in the order they are drawn, kept in the order they were written,
 // and a run that goes right to left is drawn backwards and mirrored.

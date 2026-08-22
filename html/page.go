@@ -20,7 +20,8 @@ const pxPerPoint = 72.0 / 96.0
 // LayoutOptions is the page a book is laid out onto.
 type LayoutOptions struct {
 	// Width and Height are the page in CSS pixels, 96 to the inch. Zero is
-	// 800 by 1200, which is a page of about eight inches by twelve.
+	// the size the document asks for, and 800 by 1200 for one that asks for
+	// none, which is a page of about eight inches by twelve.
 	Width, Height float32
 	// Margin is what is left blank around the text, in CSS pixels.
 	Margin float32
@@ -36,6 +37,15 @@ func (o *LayoutOptions) or(def *LayoutOptions) LayoutOptions {
 	v := *def
 	if o != nil {
 		v = *o
+		if v.Width <= 0 {
+			v.Width = def.Width
+		}
+		if v.Height <= 0 {
+			v.Height = def.Height
+		}
+		if v.FontSize <= 0 {
+			v.FontSize = def.FontSize
+		}
 	}
 	if v.Width <= 0 {
 		v.Width = 800
@@ -81,7 +91,7 @@ type Page struct {
 // another size lays the book out afresh. Pages may then be rendered from
 // several goroutines at once, but not while another Layout is running.
 func (d *Document) Layout(o *LayoutOptions) (int, error) {
-	opt := o.or(&LayoutOptions{Margin: 24})
+	opt := o.or(&d.natural)
 	cw := opt.Width - 2*opt.Margin
 	ch := opt.Height - 2*opt.Margin
 	if cw <= 0 || ch <= 0 {

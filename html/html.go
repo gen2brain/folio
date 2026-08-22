@@ -1,4 +1,5 @@
-// Package html reads reflowable documents: EPUB, MOBI, CHM and plain text.
+// Package html reads reflowable documents: EPUB, MOBI, CHM, DOCX, PPTX and
+// plain text.
 //
 // A reflowable document has no pages until it is laid out, so a container
 // hands over the parts a book is made of and the order to read them in:
@@ -94,6 +95,8 @@ const (
 	KindMOBI
 	KindText
 	KindCHM
+	KindDOCX
+	KindPPTX
 )
 
 // String returns the name of the container.
@@ -107,6 +110,10 @@ func (k Kind) String() string {
 		return "text"
 	case KindCHM:
 		return "CHM"
+	case KindDOCX:
+		return "DOCX"
+	case KindPPTX:
+		return "PPTX"
 	}
 	return "unknown"
 }
@@ -175,6 +182,9 @@ type Document struct {
 	filepos []int
 	// chmHome is the page a CHM opens at.
 	chmHome string
+	// natural is the page the document itself asks for, which a caller may
+	// take by leaving the size out of LayoutOptions.
+	natural LayoutOptions
 
 	// fontMu guards the font programs the book carries, read once each.
 	fontMu sync.Mutex
@@ -213,7 +223,7 @@ func NewReader(r io.ReaderAt, size int64) (*Document, error) {
 	n, _ := r.ReadAt(head[:], 0)
 	switch {
 	case n >= 4 && string(head[:4]) == "PK\x03\x04":
-		return openEPUB(r, size)
+		return openZip(r, size)
 	case n >= 68 && (string(head[60:68]) == "BOOKMOBI" || string(head[60:68]) == "TEXtREAd"):
 		return openMOBI(r, size)
 	case n >= 4 && string(head[:4]) == "ITSF":

@@ -15,17 +15,7 @@ import (
 )
 
 // openEPUB reads the container and the package document it points at.
-func openEPUB(r io.ReaderAt, size int64) (*Document, error) {
-	z, err := zip.NewReader(r, size)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	files := make(map[string]*zip.File, len(z.File))
-	for _, f := range z.File {
-		if _, dup := files[f.Name]; !dup {
-			files[f.Name] = f
-		}
-	}
+func openEPUB(z *zip.Reader, files map[string]*zip.File) (*Document, error) {
 	d := &Document{kind: KindEPUB}
 	d.read = func(p string) ([]byte, error) {
 		f, ok := files[p]
