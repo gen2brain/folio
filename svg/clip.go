@@ -48,7 +48,7 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 		if km != raster.Identity {
 			sub = sub.Transform(km)
 		}
-		if strings.TrimSpace(r.prop(k, "clip-rule")) == "evenodd" {
+		if strings.TrimSpace(r.ancestral(k, "clip-rule")) == "evenodd" {
 			even = true
 		}
 		p.Append(sub)
@@ -64,6 +64,14 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 // clipShape is the outline one child of a clipPath contributes, which is a
 // shape or the shape a use refers to.
 func (r *runner) clipShape(n *node, st state) *raster.Path {
+	switch strings.TrimSpace(r.prop(n, "display")) {
+	case "none":
+		return nil
+	}
+	switch strings.TrimSpace(r.prop(n, "visibility")) {
+	case "hidden", "collapse":
+		return nil
+	}
 	switch n.name {
 	case "path":
 		return pathData(n.attr["d"])

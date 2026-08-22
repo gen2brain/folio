@@ -45,6 +45,9 @@ type textCursor struct {
 
 // text draws a text element and the tspans under it.
 func (r *runner) text(n *node, ctm raster.Matrix, st state) {
+	if st.invisible {
+		return
+	}
 	c := &textCursor{}
 	r.textRun(n, st, c, 0)
 	c.glyphs = trimTrailing(c.glyphs)

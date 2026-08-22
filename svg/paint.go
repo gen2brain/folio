@@ -21,8 +21,9 @@ type paint struct {
 
 var (
 	black = paint{color: [3]float32{0, 0, 0}, alpha: 1}
-	// noPaint is what none means: the shape is not drawn at all.
-	noPaint = paint{none: true}
+	// noPaint is what none means: the shape is not drawn at all. Its opacity
+	// is one so that a server that resolves beside it is not faded away.
+	noPaint = paint{none: true, alpha: 1}
 )
 
 // parsePaint reads a paint value. current is what currentColor stands for,
@@ -79,6 +80,9 @@ func parseColor(s string, current paint) (paint, bool) {
 	}
 	if low == "currentcolor" {
 		return current, true
+	}
+	if low == "transparent" {
+		return paint{}, true
 	}
 	r, g, b, ok := gfx.NamedColor(low)
 	if !ok {
@@ -140,6 +144,12 @@ func funcColor(name, args string) (paint, bool) {
 	for i := range 3 {
 		s := strings.TrimSpace(f[i])
 		pct := strings.HasSuffix(s, "%")
+		// rgb takes three numbers or three percentages and not a mixture of
+		// them; hsl takes an angle and two percentages.
+		if i > 0 && strings.HasPrefix(name, "rgb") &&
+			pct != strings.HasSuffix(strings.TrimSpace(f[0]), "%") {
+			return paint{}, false
+		}
 		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
 		if err != nil {
 			return paint{}, false

@@ -168,8 +168,6 @@ func length(s string, ref, em float32) (float32, bool) {
 		return v * 96 / 2.54, true
 	case "mm":
 		return v * 96 / 25.4, true
-	case "q":
-		return v * 96 / 101.6, true
 	case "em":
 		return v * em, true
 	case "ex":

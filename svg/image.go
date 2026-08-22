@@ -15,6 +15,9 @@ import (
 // image draws an image element, which is a picture or a drawing of its own
 // fitted into the box the element gives the way preserveAspectRatio asks.
 func (r *runner) image(n *node, ctm raster.Matrix, st state) {
+	if st.invisible {
+		return
+	}
 	href := n.attr["href"]
 	if art := r.drawing(href); art != nil {
 		r.drawn(n, art, ctm, st)

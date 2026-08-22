@@ -25,8 +25,10 @@ type state struct {
 	join                     raster.Join
 	dash                     []float32
 	phase                    float32
-	// hidden is display: none, which drops the element and everything in it.
-	hidden bool
+	// hidden is display: none, which drops the element and everything in it,
+	// and invisible visibility: hidden, which a child may turn back on.
+	hidden    bool
+	invisible bool
 	// em is the font size a relative length is measured against, and family,
 	// bold, italic and anchor the rest of what a text element is drawn with.
 	em     float32
@@ -77,8 +79,10 @@ type runner struct {
 	faces map[faceKey]*font.Font
 	pics  map[string]gfx.Image
 	// arts are the drawings an image element referred to, which are
-	// documents of their own.
-	arts map[string]*Page
+	// documents of their own, and masking the masks being drawn, which one
+	// naming itself must not re-enter.
+	arts    map[string]*Page
+	masking map[*node]bool
 	// fbs are the faces a character the chosen one cannot draw has fallen
 	// back to, which is the same answer for every element that asks.
 	fbs map[fallbackKey]*font.Font
@@ -124,6 +128,12 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	alpha := float32(1)
 	if v, ok := opacity(r.prop(d.root, "opacity")); ok {
 		alpha = v
+	}
+	if r.clip(d.root, m, st) {
+		defer r.dev.PopClip()
+	}
+	if r.mask(d.root, m, st) {
+		defer r.dev.PopClip()
 	}
 	if !r.filterWith(d.root, m, st, alpha, r.children) {
 		if alpha < 1 {
@@ -183,10 +193,12 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	if r.mask(n, ctm, st) {
 		defer r.dev.PopClip()
 	}
-	// An element that blends with what is under it is a group of its own,
-	// which is what carries the mode to the device.
-	if b, ok := blendMode(r.prop(n, "mix-blend-mode")); ok {
-		r.dev.BeginGroup(raster.InfiniteRect, nil, false, false, b, 1)
+	// An element that blends with what is under it, or that isolates what is
+	// under it from its children, is a group of its own.
+	b, blend := blendMode(r.cssProp(n, "mix-blend-mode"))
+	iso := strings.TrimSpace(r.cssProp(n, "isolation")) == "isolate"
+	if blend || iso {
+		r.dev.BeginGroup(raster.InfiniteRect, nil, iso, false, b, 1)
 		defer r.dev.EndGroup()
 	}
 	// Opacity applies to what the element draws as a whole, after the filter.
@@ -392,12 +404,12 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 // shape fills and then strokes one path, which is the order SVG 1.1 11.3
 // paints them in.
 func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
-	if p == nil || p.IsEmpty() {
+	if p == nil || p.IsEmpty() || st.invisible {
 		return
 	}
 	fillAlpha := st.fillOpacity * st.fill.alpha
 	strokeAlpha := st.strokeOpacity * st.stroke.alpha
-	if !st.fill.none {
+	if !st.fill.none || st.fillServer != "" {
 		box := p.Bounds(raster.Identity)
 		g, empty := r.server(st.fillServer, box, st)
 		switch {
@@ -406,23 +418,31 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 			r.dev.FillShade(g, ctm, fillAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
 		case empty:
-		case st.fillServer != "" && r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, st):
+		case st.fillServer != "" && r.faded(fillAlpha, func() bool {
+			return r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, st)
+		}):
+		case st.fill.none:
 		default:
 			c := st.fill.color
 			r.dev.FillPath(p, st.fillEvenOdd, ctm, gfx.DeviceRGB, c[:], fillAlpha, gfx.ColorParams{})
 		}
 	}
-	if !st.stroke.none && st.width > 0 {
+	if (!st.stroke.none || st.strokeServer != "") && st.width > 0 {
 		s := r.strokeOf(st)
 		// The box a gradient in objectBoundingBox units is a fraction of is
 		// the shape's own, which SVG 1.1 7.11 says the stroke is not part of.
-		g, empty := r.server(st.strokeServer, p.Bounds(raster.Identity), st)
+		box := p.Bounds(raster.Identity)
+		g, empty := r.server(st.strokeServer, box, st)
 		switch {
 		case g != nil:
 			r.dev.ClipStrokePath(p, s, ctm, raster.InfiniteRect)
 			r.dev.FillShade(g, ctm, strokeAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
 		case empty:
+		case st.strokeServer != "" && r.faded(strokeAlpha, func() bool {
+			return r.tiledStroke(st.strokeServer, p, s, box, ctm, st)
+		}):
+		case st.stroke.none:
 		default:
 			c := st.stroke.color
 			r.dev.StrokePath(p, s, ctm, gfx.DeviceRGB, c[:], strokeAlpha, gfx.ColorParams{})
@@ -443,6 +463,27 @@ func (r *runner) marked(p *raster.Path, ctm raster.Matrix, st state) {
 func (r *runner) tiled(server string, p *raster.Path, even bool, box raster.Rect,
 	ctm raster.Matrix, st state) bool {
 	r.dev.ClipPath(p, even, ctm, raster.InfiniteRect)
+	ok := r.pattern(server, box, ctm, st)
+	r.dev.PopClip()
+	return ok
+}
+
+// faded draws through a transparency group when the paint is not opaque,
+// which is what an opacity on a pattern means: the tiles fade as a whole.
+func (r *runner) faded(alpha float32, draw func() bool) bool {
+	if alpha >= 1 {
+		return draw()
+	}
+	r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)
+	ok := draw()
+	r.dev.EndGroup()
+	return ok
+}
+
+// tiledStroke paints a stroke with a pattern, clipped to it.
+func (r *runner) tiledStroke(server string, p *raster.Path, s *raster.Stroke,
+	box raster.Rect, ctm raster.Matrix, st state) bool {
+	r.dev.ClipStrokePath(p, s, ctm, raster.InfiniteRect)
 	ok := r.pattern(server, box, ctm, st)
 	r.dev.PopClip()
 	return ok
@@ -474,6 +515,18 @@ func (r *runner) prop(n *node, name string) string {
 	return n.attr[name]
 }
 
+// cssProp reads a property only a style attribute or a stylesheet may set.
+// SVG 2 gives mix-blend-mode and isolation no presentation attribute.
+func (r *runner) cssProp(n *node, name string) string {
+	if v, ok := styleProp(n.attr["style"], name); ok {
+		return v
+	}
+	if v, ok := r.sheetProp(n, name); ok {
+		return v
+	}
+	return ""
+}
+
 // styleProp picks one declaration out of a style attribute.
 func styleProp(style, name string) (string, bool) {
 	if style == "" {
@@ -498,30 +551,18 @@ func (r *runner) style(n *node, st state) state {
 		st.hidden = true
 		return st
 	}
-	if v := strings.TrimSpace(r.prop(n, "visibility")); v == "hidden" || v == "collapse" {
-		st.hidden = true
-		return st
+	switch strings.TrimSpace(r.prop(n, "visibility")) {
+	case "hidden", "collapse":
+		st.invisible = true
+	case "visible":
+		st.invisible = false
 	}
 	// color is read first: currentColor in any other property means this one.
 	if c, ok := parseColor(r.prop(n, "color"), st.color); ok {
 		st.color = c
 	}
-	if p := r.prop(n, "fill"); strings.TrimSpace(p) != "" {
-		if v, ok := parsePaint(p, st.color); ok {
-			st.fill, st.fillServer = v, ""
-		}
-		if id := serverID(p); id != "" {
-			st.fill, st.fillServer = black, p
-		}
-	}
-	if p := r.prop(n, "stroke"); strings.TrimSpace(p) != "" {
-		if v, ok := parsePaint(p, st.color); ok {
-			st.stroke, st.strokeServer = v, ""
-		}
-		if id := serverID(p); id != "" {
-			st.stroke, st.strokeServer = black, p
-		}
-	}
+	st.fill, st.fillServer = paintOf(r.prop(n, "fill"), st.fill, st.fillServer, st.color)
+	st.stroke, st.strokeServer = paintOf(r.prop(n, "stroke"), st.stroke, st.strokeServer, st.color)
 	if v, ok := opacity(r.prop(n, "fill-opacity")); ok {
 		st.fillOpacity = v
 	}
@@ -615,6 +656,28 @@ func (r *runner) style(n *node, st state) state {
 	}
 
 	return st
+}
+
+// paintOf reads a fill or a stroke. A value that names a server keeps what it
+// said to fall back to, and falls back to nothing when it said nothing:
+// SVG 1.1 11.3 draws neither when the reference resolves to no server. A
+// value written but not understood is ignored, so the paint stays what was
+// inherited, which is what CSS does with any property it cannot read.
+func paintOf(v string, was paint, wasServer string, current paint) (paint, string) {
+	if strings.TrimSpace(v) == "" {
+		return was, wasServer
+	}
+	p, ok := parsePaint(v, current)
+	if id := serverID(v); id != "" {
+		if !ok {
+			p = noPaint
+		}
+		return p, v
+	}
+	if !ok {
+		return was, wasServer
+	}
+	return p, ""
 }
 
 // blendMode is the mode mix-blend-mode names, and false for the one that
