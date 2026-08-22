@@ -1214,6 +1214,46 @@ func TestContextPaint(t *testing.T) {
 	}
 }
 
+// TestDocumentRules covers three things a reader has to get right before it
+// draws anything: an element of another vocabulary is not part of the
+// drawing, an entity the document declares for itself is expanded, and a
+// position may be written as a length rather than a number.
+func TestDocumentRules(t *testing.T) {
+	d, err := Load([]byte(`<!DOCTYPE svg [<!ENTITY Green "<rect id='r' width='10' height='10' fill='#00ff00'/>">]>` +
+		`<svg width="20" height="20" xmlns="http://www.w3.org/2000/svg"` +
+		` xmlns:s="http://www.w3.org/2000/svg" xmlns:x="http://example.org/x">` +
+		`<g>&Green;</g>` +
+		`<x:g><rect width="20" height="20" fill="#ff0000"/></x:g>` +
+		`<s:rect x="10" y="10" width="10" height="10" fill="#0000ff"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(x, y int) (uint8, uint8, uint8) {
+		o := y*img.Stride + x*4
+		return img.Pix[o], img.Pix[o+1], img.Pix[o+2]
+	}
+	if r, g, b := at(5, 5); r > 8 || g < 240 || b > 8 {
+		t.Errorf("the entity drew %d,%d,%d, want the green rect it stands for", r, g, b)
+	}
+	if r, g, b := at(15, 15); r > 8 || g > 8 || b < 240 {
+		t.Errorf("the prefixed svg element drew %d,%d,%d, want blue", r, g, b)
+	}
+	if r, g, b := at(5, 15); r < 248 || g < 248 || b < 248 {
+		t.Errorf("an element of another vocabulary drew %d,%d,%d", r, g, b)
+	}
+
+	// A position is a length, so a percentage is of the viewport.
+	if v := lengths("10% 20", 200, 16); len(v) != 2 || v[0] != 20 || v[1] != 20 {
+		t.Errorf("lengths read %v, want a percentage of the viewport and a number", v)
+	}
+}
+
 // TestFilterUnderRotation holds the coordinate system a filter runs in: the
 // user's own, not the device's. A quarter turn between the element and the
 // page sends an offset along x down the page instead of across it.

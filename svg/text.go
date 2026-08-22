@@ -63,9 +63,6 @@ func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 	if len(c.glyphs) == 0 {
 		return
 	}
-	if v, ok := length(r.prop(n, "textLength"), st.vw, st.em); ok && v > 0 {
-		fitLength(c.glyphs, v)
-	}
 	r.anchorChunks(c.glyphs)
 	shiftBaseline(c.glyphs)
 	c.glyphs = onPath(c.glyphs)
@@ -119,6 +116,7 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 	}
 
 	face := r.face(st)
+	first := len(c.glyphs)
 	i := 0
 	for _, k := range n.kids {
 		switch k.name {
@@ -129,6 +127,11 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 		case "textPath":
 			r.textPath(k, st, c, depth+1)
 		}
+	}
+	// textLength stretches what the element itself holds, so a tspan with one
+	// of its own is fitted before the text around it is.
+	if v, ok := length(r.prop(n, "textLength"), st.vw, st.em); ok && v > 0 {
+		fitLength(c.glyphs[first:], v)
 	}
 }
 

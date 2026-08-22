@@ -147,16 +147,26 @@ func (g *gradient) axisRange(box raster.Rect) (lo, hi float32) {
 		{X: box.X0, Y: box.Y0}, {X: box.X1, Y: box.Y0},
 		{X: box.X0, Y: box.Y1}, {X: box.X1, Y: box.Y1},
 	}
+	if g.radial {
+		if g.r1 <= 0 {
+			return 0, 1
+		}
+		// A circle runs out from its center in every direction, so the
+		// shortest reach is to the nearest point of the box and is nothing
+		// at all when the center is inside it.
+		nx := min(max(g.c1.X, box.X0), box.X1)
+		ny := min(max(g.c1.Y, box.Y0), box.Y1)
+		lo = float32(math.Hypot(float64(nx-g.c1.X), float64(ny-g.c1.Y))) / g.r1
+		for _, p := range corners {
+			t := float32(math.Hypot(float64(p.X-g.c1.X), float64(p.Y-g.c1.Y))) / g.r1
+			hi = max(hi, t)
+		}
+		return lo, hi
+	}
 	first := true
 	for _, p := range corners {
 		var t float32
-		if g.radial {
-			if g.r1 <= 0 {
-				return 0, 1
-			}
-			dx, dy := p.X-g.c1.X, p.Y-g.c1.Y
-			t = float32(math.Hypot(float64(dx), float64(dy))) / g.r1
-		} else {
+		{
 			dx, dy := g.c1.X-g.c0.X, g.c1.Y-g.c0.Y
 			l2 := dx*dx + dy*dy
 			if l2 == 0 {
