@@ -1,6 +1,6 @@
 ## folio
 
-Document rendering in pure Go, no cgo: **PDF**, **SVG**, **EPUB**, **MOBI** and plain text.
+Document rendering in pure Go, no cgo: **PDF**, **SVG**, **EPUB**, **MOBI**, **CHM**, **DOCX**, **PPTX** and plain text.
 
 ### Rendering
 
@@ -16,18 +16,21 @@ txt, err := p.Text()
 A book has no pages until it is given a size to reflow into:
 
 ```go
-doc, err := html.Open("book.epub")
+doc, err := html.Open("book.epub")     // or .mobi, .chm, .docx, .pptx, .txt
 n, err := doc.Layout(&html.LayoutOptions{Width: 800, Height: 1200, Margin: 40})
 p, err := doc.Page(0)
 ```
 
+Leaving the size out takes the page the document asks for, which is what a Word section or a slide deck has one of.
+
 ### Supported
 
- |                      |                                                                                                                             |
- |----------------------|-----------------------------------------------------------------------------------------------------------------------------|
- | **PDF**              | paths, text, images, shadings, patterns, transparency, annotations, layers; damaged files repaired, encrypted files opened   |
- | **SVG**              | the drawing model end to end: filters, paint servers, clipping, masking, text along a path and down the page                 |
- | **EPUB, MOBI, text** | container, HTML, CSS cascade and layout: floats, tables, pagination, writing modes, embedded fonts                           |
+ |                           |                                                                                                                            |
+ |---------------------------|----------------------------------------------------------------------------------------------------------------------------|
+ | **PDF**                   | paths, text, images, shadings, patterns, transparency, annotations, layers; damaged files repaired, encrypted files opened |
+ | **SVG**                   | the drawing model end to end: filters, paint servers, clipping, masking, text along a path and down the page               |
+ | **EPUB, MOBI, CHM, text** | container, HTML, CSS cascade and layout: floats, tables, pagination, writing modes, embedded fonts                         |
+ | **DOCX, PPTX**            | styles, lists, tables, pictures and footnotes; a slide is a page, with its shapes where they were put                      |
 
 A page also comes back as structured text with the box every character occupies, as plain text, as its links, and as SVG. A document comes back with its outline, metadata and page labels.
 
@@ -35,15 +38,15 @@ Not in scope: writing or editing documents, form field values, JavaScript, XFA, 
 
 ### Packages
 
- |                                                                |                                                          |
- |----------------------------------------------------------------|----------------------------------------------------------|
- | [pdf](https://pkg.go.dev/github.com/gen2brain/folio/pdf)       | the content interpreter and the public API               |
- | [svg](https://pkg.go.dev/github.com/gen2brain/folio/svg)       | a drawing as a document of its own                       |
- | [html](https://pkg.go.dev/github.com/gen2brain/folio/html)     | reflowable books, and the HTML, CSS and layout over them |
- | [gfx](https://pkg.go.dev/github.com/gen2brain/folio/gfx)       | the device interface and the devices behind it           |
- | [raster](https://pkg.go.dev/github.com/gen2brain/folio/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes   |
- | [font](https://pkg.go.dev/github.com/gen2brain/folio/font)     | font programs in, outlines and metrics out               |
- | [syntax](https://pkg.go.dev/github.com/gen2brain/folio/syntax) | the file format: objects, filters, encryption, repair    |
+ |                                                                |                                                           |
+ |----------------------------------------------------------------|-----------------------------------------------------------|
+ | [pdf](https://pkg.go.dev/github.com/gen2brain/folio/pdf)       | the content interpreter and the public API                |
+ | [svg](https://pkg.go.dev/github.com/gen2brain/folio/svg)       | a drawing as a document of its own                        |
+ | [html](https://pkg.go.dev/github.com/gen2brain/folio/html)     | reflowable and office documents, and the layout over them |
+ | [gfx](https://pkg.go.dev/github.com/gen2brain/folio/gfx)       | the device interface and the devices behind it            |
+ | [raster](https://pkg.go.dev/github.com/gen2brain/folio/raster) | the 2D engine: paths, rasterizer, pixmaps, blend modes    |
+ | [font](https://pkg.go.dev/github.com/gen2brain/folio/font)     | font programs in, outlines and metrics out                |
+ | [syntax](https://pkg.go.dev/github.com/gen2brain/folio/syntax) | the file format: objects, filters, encryption, repair     |
 
 Every format renders through one `gfx.Device`, so a caller can drive something other than the rasterizer.
 `raster` and `font` know nothing about PDF, `gfx` knows no file format, and `syntax` has no graphics in it.
@@ -52,7 +55,8 @@ Every format renders through one `gfx.Device`, so a caller can drive something o
 
 The object layer is checked against MuPDF, poppler and qpdf; the interpreter against `mutool trace`, call for call; the font engine against `mutool draw -F svg`, glyph for glyph;
 text extraction against `mutool draw -F txt`, line for line. The 2D engine is byte-exact against AGG and the JPEG 2000 decoder against OpenJPEG.
-Rendered PDF pages are scored against MuPDF, poppler, cairo and Ghostscript, drawings against librsvg, resvg and a browser, and books against MuPDF's own extraction.
+Rendered PDF pages are scored against MuPDF, poppler, cairo and Ghostscript, drawings against librsvg, resvg and a browser, and books, help files and office documents against MuPDF's own extraction.
+Every file of a CHM comes out byte for byte what 7z extracts.
 
 ### License
 
