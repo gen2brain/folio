@@ -345,7 +345,7 @@ func buildMOBI(text []byte, trailing []byte, image []byte) []byte {
 	be32(rec0[0x58:], uint32(len("A Title")))
 	be32(rec0[0x80:], 0x40) // EXTH is there
 	if len(trailing) > 0 {
-		be32(rec0[0xf0:], 2)
+		be16(rec0[0xf2:], 2)
 	}
 
 	var exth []byte
@@ -2804,5 +2804,268 @@ func TestSVGInSpine(t *testing.T) {
 	}
 	if blue < 40*20/2 {
 		t.Errorf("the drawing an img named covers %d pixels, want about %d", blue, 40*20)
+	}
+}
+
+// palmDB wraps records into the smallest PalmDB that holds them.
+func palmDB(kind string, recs [][]byte) []byte {
+	head := make([]byte, 78+8*len(recs))
+	copy(head, "A Book")
+	copy(head[60:], kind)
+	be16(head[76:], uint16(len(recs)))
+	off := len(head)
+	for i, r := range recs {
+		be32(head[78+8*i:], uint32(off))
+		off += len(r)
+	}
+	out := head
+	for _, r := range recs {
+		out = append(out, r...)
+	}
+	return out
+}
+
+// TestMOBIHuffcdic covers the compression a MOBI may carry instead of LZ77:
+// a HUFF record of code tables and a CDIC record of the phrases they name.
+func TestMOBIHuffcdic(t *testing.T) {
+	// Every top byte is a whole eight bit code, and each is arranged to name
+	// phrase zero: the index is the maximum for the code less the code, and
+	// the maximum is written as the byte itself.
+	huff := make([]byte, huffMinSize)
+	copy(huff, "HUFF")
+	be32(huff[4:], huffHeader)
+	be32(huff[8:], 24)
+	be32(huff[12:], 24+256*4)
+	for i := 0; i < 256; i++ {
+		be32(huff[24+4*i:], uint32(i)<<8|0x80|8)
+	}
+
+	cdic := make([]byte, 16+2)
+	copy(cdic, "CDIC")
+	be32(cdic[4:], cdicHeader)
+	be32(cdic[8:], 1)  // one phrase in the book
+	be32(cdic[12:], 1) // one bit of an index names it within this record
+	be16(cdic[16:], 2) // the phrase sits just past this table
+	phrase := make([]byte, 2)
+	be16(phrase, 0x8000|uint16(len("hello")))
+	cdic = append(cdic, append(phrase, "hello"...)...)
+
+	h := readHuffcdic([][]byte{nil, huff, cdic}, 1, 2)
+	if h == nil {
+		t.Fatal("the dictionary did not read")
+	}
+	if got := string(h.unpack(nil, []byte{0}, 0)); got != "hello" {
+		t.Fatalf("unpacked %q, want hello", got)
+	}
+	// A record of two bytes is two codes, so the phrase comes out twice.
+	if got := string(h.unpack(nil, []byte{0, 0}, 0)); got != "hellohello" {
+		t.Fatalf("unpacked %q, want it twice", got)
+	}
+}
+
+// TestMOBIMarkup covers the tags and the links MOBI writes that HTML has no
+// idea about.
+func TestMOBIMarkup(t *testing.T) {
+	head := `<html><body><a filepos=0000000042 >go</a>` +
+		`<mbp:pagebreak/><idx:entry/>`
+	in := []byte(head + `<p>x</p><img recindex="00003"/>` +
+		`<img src="kindle:embed:0002?mime=image/jpeg"/></body></html>`)
+	// The place a link names is where the paragraph starts, which is where
+	// the anchor for it has to go.
+	at := len(head)
+	got := string(mobiMarkup(in, []int{at}))
+	for _, want := range []string{
+		`href="#filepos0000000042"`,
+		`<a id="` + filepos(at) + `"></a>`,
+		`page-break-after:always`,
+		`<img src="00003"/>`,
+		`<img src="00002"/>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("markup has no %s:\n%s", want, got)
+		}
+	}
+	// A tag of its own that closes nothing is dropped, or the tree it opens
+	// would run to the end of the book.
+	if strings.Contains(got, "idx:entry") || strings.Contains(got, "mbp:") {
+		t.Errorf("a tag of its own survived:\n%s", got)
+	}
+	// The anchor goes where the offset says, which is at the paragraph.
+	if i := strings.Index(got, `<a id="`+filepos(at)+`">`); i < 0 ||
+		!strings.HasPrefix(got[i:], `<a id="`+filepos(at)+`"></a><p>x</p>`) {
+		t.Errorf("the anchor landed in the wrong place:\n%s", got)
+	}
+}
+
+// TestMOBIIndex covers the index a book keeps its table of contents in: a
+// record naming the tags, a record of entries, and a record of the strings
+// they point at.
+func TestMOBIIndex(t *testing.T) {
+	// The master record: one record of entries follows it, then one of
+	// strings. TAGX says an entry may carry a place, a label and a level,
+	// each named by one bit of one control byte.
+	master := make([]byte, 192)
+	copy(master, "INDX")
+	be32(master[4:], 192)
+	be32(master[24:], 1) // one record of entries
+	be32(master[36:], 2) // two entries in all
+	be32(master[52:], 1) // one record of strings
+	tagx := make([]byte, 12+4*4)
+	copy(tagx, "TAGX")
+	be32(tagx[4:], uint32(len(tagx)))
+	be32(tagx[8:], 1) // one control byte
+	copy(tagx[12:], []byte{ncxFilepos, 1, 0x01, 0})
+	copy(tagx[16:], []byte{ncxLabel, 1, 0x02, 0})
+	copy(tagx[20:], []byte{ncxLevel, 1, 0x04, 0})
+	copy(tagx[24:], []byte{0, 0, 0, 1})
+	master = append(master, tagx...)
+
+	entry := func(at, label, level int) []byte {
+		b := []byte{0, 0x07}
+		for _, v := range []int{at, label, level} {
+			b = append(b, varint(v)...)
+		}
+		return b
+	}
+	body := make([]byte, 56)
+	copy(body, "INDX")
+	be32(body[4:], 56)
+	one, two := entry(100, 0, 0), entry(200, 4, 1)
+	off1, off2 := len(body), len(body)+len(one)
+	body = append(body, one...)
+	body = append(body, two...)
+	be32(body[20:], uint32(len(body))) // the table sits after the entries
+	be32(body[24:], 2)
+	idxt := make([]byte, 4+2*2)
+	copy(idxt, "IDXT")
+	be16(idxt[4:], uint16(off1))
+	be16(idxt[6:], uint16(off2))
+	body = append(body, idxt...)
+
+	var cncx []byte
+	for _, s := range []string{"One", "Two"} {
+		cncx = append(cncx, byte(0x80|len(s)))
+		cncx = append(cncx, s...)
+	}
+
+	out, pos := mobiOutline([][]byte{nil, master, body, cncx}, 1)
+	if len(out) != 1 || out[0].Title != "One" || len(out[0].Children) != 1 {
+		t.Fatalf("outline = %+v", out)
+	}
+	if out[0].Children[0].Title != "Two" {
+		t.Fatalf("child = %+v", out[0].Children[0])
+	}
+	if out[0].Fragment != filepos(100) || out[0].Children[0].Fragment != filepos(200) {
+		t.Fatalf("fragments = %q, %q", out[0].Fragment, out[0].Children[0].Fragment)
+	}
+	if len(pos) != 2 || pos[0] != 100 || pos[1] != 200 {
+		t.Fatalf("places = %v", pos)
+	}
+}
+
+// varint writes a number the way an index entry carries one: seven bits at a
+// time, most significant first, with the top bit ending it.
+func varint(v int) []byte {
+	var b []byte
+	for {
+		b = append([]byte{byte(v & 0x7f)}, b...)
+		v >>= 7
+		if v == 0 {
+			break
+		}
+	}
+	b[len(b)-1] |= 0x80
+	return b
+}
+
+// TestMOBIHybrid covers a file holding a KF7 book and a KF8 one, which is
+// what a converter writes: the newer half is the book, and the records of the
+// older one are not part of it.
+func TestMOBIHybrid(t *testing.T) {
+	old := buildMOBI([]byte("<html><body><p>Old</p></body></html>"), nil, nil)
+	recs := [][]byte{}
+	n := int(old[76])<<8 | int(old[77])
+	for i := 0; i < n; i++ {
+		off := int(be32of(old[78+8*i:]))
+		end := len(old)
+		if i+1 < n {
+			end = int(be32of(old[78+8*(i+1):]))
+		}
+		recs = append(recs, old[off:end])
+	}
+	// The older half says where the newer one starts, and the record before
+	// it says so too.
+	exth := make([]byte, 12+12)
+	copy(exth, "EXTH")
+	be32(exth[4:], uint32(len(exth)))
+	be32(exth[8:], 1)
+	be32(exth[12:], exthBoundary)
+	be32(exth[16:], 12)
+	be32(exth[20:], uint32(len(recs)+1))
+	rec0 := append(append([]byte(nil), recs[0][:16+232]...), exth...)
+	be32(rec0[0x80:], 0x40)
+	recs[0] = rec0
+
+	newer := buildMOBI([]byte("<html><body><p>New</p></body></html>"), nil, nil)
+	m := int(newer[76])<<8 | int(newer[77])
+	recs = append(recs, []byte("BOUNDARY"))
+	for i := 0; i < m; i++ {
+		off := int(be32of(newer[78+8*i:]))
+		end := len(newer)
+		if i+1 < m {
+			end = int(be32of(newer[78+8*(i+1):]))
+		}
+		recs = append(recs, newer[off:end])
+	}
+
+	d, err := Load(palmDB("BOOKMOBI", recs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	b, _ := d.Read("index.html")
+	if !strings.Contains(string(b), "New") || strings.Contains(string(b), "Old") {
+		t.Fatalf("the book reads %q, want the newer half", b)
+	}
+}
+
+func be32of(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+// TestMOBIEncrypted checks that a book nobody may read says so rather than
+// handing back what the compression made of the cipher.
+func TestMOBIEncrypted(t *testing.T) {
+	b := buildMOBI([]byte("<html><body><p>Hello</p></body></html>"), nil, nil)
+	off := int(be32of(b[78:]))
+	be16(b[off+12:], 2)
+	if _, err := Load(b); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("an encrypted book opened with %v", err)
+	}
+}
+
+// TestPlainTextBook covers a file that is text rather than markup, which is a
+// book of one part and has to lay out like any other.
+func TestPlainTextBook(t *testing.T) {
+	d, err := Load([]byte("One line.\n\nAnother line.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	s, err := d.Text()
+	if err != nil || !strings.Contains(s, "Another line.") {
+		t.Fatalf("Text = %q, %v", s, err)
+	}
+	n, err := d.Layout(&LayoutOptions{Width: 400, Height: 600, Margin: 20})
+	if err != nil || n != 1 {
+		t.Fatalf("Layout = %d, %v", n, err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The lines of a text file are kept, which is what pre asks for.
+	if got := p.Text(); !strings.Contains(got, "One line.\n") {
+		t.Fatalf("the page reads %q", got)
 	}
 }

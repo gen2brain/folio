@@ -24,7 +24,30 @@ func (d *Document) ParsePart(path string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	if d.typeOf(path) == "text/plain" {
+		return Parse(plainMarkup(b))
+	}
+	if d.kind == KindMOBI {
+		b = mobiMarkup(b, d.filepos)
+	}
 	return Parse(b)
+}
+
+// typeOf is the media type the container declares for a part.
+func (d *Document) typeOf(path string) string {
+	for _, it := range d.manifest {
+		if it.Path == path {
+			return it.Type
+		}
+	}
+	return ""
+}
+
+// plainMarkup wraps a part that is text rather than markup, which is what a
+// plain file and an older MOBI hold. The user agent sheet gives pre the white
+// space handling the lines of a text file need.
+func plainMarkup(b []byte) []byte {
+	return []byte("<html><body><pre>" + xhtml.EscapeString(string(b)) + "</pre></body></html>")
 }
 
 // Text returns what the whole book says, a blank line between blocks, which

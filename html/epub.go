@@ -303,7 +303,7 @@ func (d *Document) readPackage(root string) error {
 // isChapter reports a media type laid out as a chapter.
 func isChapter(t string) bool {
 	switch t {
-	case "application/xhtml+xml", "text/html", "application/x-dtbook+xml":
+	case "application/xhtml+xml", "text/html", "application/x-dtbook+xml", "text/plain":
 		return true
 	}
 	return false

@@ -167,6 +167,9 @@ type Document struct {
 	obfuscated map[string][]byte
 	tocID      string
 	headings   sync.Once
+	// filepos are the byte offsets a MOBI names its own places by, which
+	// become anchors when the markup is read.
+	filepos []int
 
 	// fontMu guards the font programs the book carries, read once each.
 	fontMu sync.Mutex

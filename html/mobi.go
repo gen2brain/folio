@@ -1,9 +1,12 @@
 package html
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -36,7 +39,13 @@ func openMOBI(r io.ReaderAt, size int64) (*Document, error) {
 		return nil, fmt.Errorf("%w: no records", ErrInvalid)
 	}
 
+	all := recs
 	m := mobiHeader(recs[0])
+	first := m.image
+	recs, m = kf8(recs, m)
+	if m.encryption != 0 {
+		return nil, fmt.Errorf("%w: the book is encrypted", ErrUnsupported)
+	}
 	text, next := m.text(recs)
 	if len(text) == 0 {
 		return nil, fmt.Errorf("%w: no text", ErrInvalid)
@@ -57,16 +66,25 @@ func openMOBI(r io.ReaderAt, size int64) (*Document, error) {
 		meta:     m.meta,
 	}
 	// The pictures are numbered from one, which is what a recindex holds.
+	// They belong to the file rather than to either half of a hybrid one, so
+	// they are counted from the record the first header names and over every
+	// record there is.
+	if first <= 0 || first >= len(all) {
+		first, all = next, recs
+	}
 	n := 1
-	for i := next; i < len(recs); i++ {
-		t := imageType(recs[i])
+	for i := first; i < len(all); i++ {
+		t := imageType(all[i])
 		if t == "" {
 			continue
 		}
-		path := fmt.Sprintf("%05d", n)
-		parts[path] = recs[i]
+		path := mobiPicture(n)
+		parts[path] = all[i]
 		d.manifest = append(d.manifest, Item{Path: path, Type: t})
 		n++
+	}
+	if m.ncx > 0 {
+		d.outline, d.filepos = mobiOutline(recs, m.ncx)
 	}
 	d.read = func(p string) ([]byte, error) {
 		if v, ok := parts[p]; ok {
@@ -77,33 +95,62 @@ func openMOBI(r io.ReaderAt, size int64) (*Document, error) {
 	return d, nil
 }
 
+// kf8 picks the KF8 half of a hybrid file, which is a whole second book after
+// a record saying BOUNDARY. The record numbers a KF8 header holds count from
+// there, so the records before it are dropped rather than skipped.
+func kf8(recs [][]byte, m mobi) ([][]byte, mobi) {
+	b := m.boundary
+	if b <= 1 || b >= len(recs) || string(recs[b-1][:min(8, len(recs[b-1]))]) != "BOUNDARY" {
+		return recs, m
+	}
+	k := mobiHeader(recs[b])
+	if k.textLength <= 0 {
+		return recs, m
+	}
+	return recs[b:], k
+}
+
 // maxBookBytes bounds a PalmDB, which is read whole.
 const maxBookBytes = 1 << 30
 
-// mobiRecords cuts the file into its records, dropping every offset that does
-// not move forward and stay inside the file.
+// notSet is what a MOBI header holds where it names no record.
+const notSet = 0xffffffff
+
+// mobiRecords cuts the file into its records. An offset that does not stay
+// inside the file leaves that record empty rather than dropping it: the
+// header names the records it cares about by number, so the numbering has to
+// survive a broken entry.
 func mobiRecords(b []byte) [][]byte {
 	n := int(binary.BigEndian.Uint16(b[76:]))
 	if n <= 0 || 78+8*n > len(b) {
 		return nil
 	}
-	low := 78 + 8*n - 1
-	var offs []int
-	for i := 0; i < n; i++ {
-		off := int(binary.BigEndian.Uint32(b[78+8*i:]))
-		if off <= low || off >= len(b) {
-			continue
+	offs := make([]int, n)
+	for i := range offs {
+		offs[i] = int(binary.BigEndian.Uint32(b[78+8*i:]))
+	}
+	// The list ends before the first record, which is what bounds it when
+	// the count is larger than the file can hold.
+	if m := (offs[0] - 78) / 8; m > 0 && m < n {
+		n, offs = m, offs[:m]
+	}
+	low := 78 + 8*n
+	ends := make([]int, n)
+	end := len(b)
+	for i := n - 1; i >= 0; i-- {
+		ends[i] = end
+		if offs[i] >= low && offs[i] <= len(b) {
+			end = offs[i]
 		}
-		low = off
-		offs = append(offs, off)
 	}
-	if len(offs) == 0 {
-		return nil
-	}
-	offs = append(offs, len(b))
-	out := make([][]byte, len(offs)-1)
+	out := make([][]byte, n)
 	for i := range out {
-		out[i] = b[offs[i]:offs[i+1]]
+		if offs[i] >= low && offs[i] <= ends[i] && ends[i] <= len(b) {
+			out[i] = b[offs[i]:ends[i]]
+		}
+	}
+	if len(out[0]) == 0 {
+		return nil
 	}
 	return out
 }
@@ -115,7 +162,13 @@ type mobi struct {
 	records     int
 	trailing    uint32
 	encoding    int
-	meta        Metadata
+	ncx         int
+	image       int
+	huff, nhuf  int
+	encryption  int
+	// boundary is the record the KF8 half of a hybrid file starts at.
+	boundary int
+	meta     Metadata
 }
 
 // mobiHeader reads the PalmDOC header and the MOBI header after it.
@@ -127,6 +180,7 @@ func mobiHeader(rec []byte) mobi {
 	m.compression = int(binary.BigEndian.Uint16(rec[0:]))
 	m.textLength = int(binary.BigEndian.Uint32(rec[4:]))
 	m.records = int(binary.BigEndian.Uint16(rec[8:]))
+	m.encryption = int(binary.BigEndian.Uint16(rec[12:]))
 	// Every field below is inside the fixed part of the MOBI header, so one
 	// bound covers them all.
 	if len(rec) < 0x84 || string(rec[16:20]) != "MOBI" {
@@ -136,8 +190,24 @@ func mobiHeader(rec []byte) mobi {
 	if v := int32(binary.BigEndian.Uint32(rec[28:])); v > 0 {
 		m.encoding = int(v)
 	}
+	if hdr >= 0x6c && len(rec) >= 0x70 {
+		if v := binary.BigEndian.Uint32(rec[0x6c:]); v != notSet {
+			m.image = int(v)
+		}
+	}
+	if hdr >= 0x74 && len(rec) >= 0x78 {
+		m.huff = int(binary.BigEndian.Uint32(rec[0x70:]))
+		m.nhuf = int(binary.BigEndian.Uint32(rec[0x74:]))
+	}
+	// The extra flags are two bytes at 242, the NCX index the four at 244,
+	// and a header may stop between them.
 	if hdr >= 0xe4 && len(rec) >= 0xf4 {
-		m.trailing = binary.BigEndian.Uint32(rec[0xf0:])
+		m.trailing = uint32(binary.BigEndian.Uint16(rec[0xf2:]))
+	}
+	if hdr >= 0xe8 && len(rec) >= 0xf8 {
+		if v := binary.BigEndian.Uint32(rec[0xf4:]); v != notSet {
+			m.ncx = int(v)
+		}
 	}
 	off := int64(binary.BigEndian.Uint32(rec[0x54:]))
 	n := int64(binary.BigEndian.Uint32(rec[0x58:]))
@@ -157,6 +227,7 @@ const (
 	exthDescription = 103
 	exthSubject     = 105
 	exthDate        = 106
+	exthBoundary    = 121
 	exthTitle       = 503
 	exthLanguage    = 524
 )
@@ -176,6 +247,8 @@ func (m *mobi) readEXTH(rec []byte, at int) {
 		}
 		v := strings.TrimSpace(string(rec[p+8 : p+size]))
 		switch kind {
+		case exthBoundary:
+			m.boundary = int(exthNumber(rec[p+8 : p+size]))
 		case exthAuthor:
 			m.meta.Author = join(m.meta.Author, v)
 		case exthPublisher:
@@ -218,6 +291,12 @@ func (m mobi) text(recs [][]byte) ([]byte, int) {
 	if n <= 0 || n >= len(recs) {
 		n = len(recs) - 1
 	}
+	var h *huffcdic
+	if m.compression == 17480 {
+		if h = readHuffcdic(recs, m.huff, m.nhuf); h == nil {
+			return nil, n + 1
+		}
+	}
 	var out []byte
 	for i := 1; i <= n; i++ {
 		rec := trimTrailing(recs[i], m.trailing)
@@ -226,8 +305,12 @@ func (m mobi) text(recs [][]byte) ([]byte, int) {
 			out = append(out, rec...)
 		case 2:
 			out = palmDoc(out, rec)
+		case 17480:
+			if h == nil {
+				return out, n + 1
+			}
+			out = h.unpack(out, rec, 0)
 		default:
-			// 17480 is HUFF/CDIC, which is not read yet.
 			return out, n + 1
 		}
 		if m.textLength > 0 && len(out) >= m.textLength {
@@ -355,3 +438,219 @@ func fromCP1252(b []byte) []byte {
 	}
 	return out
 }
+
+// exthNumber reads a numeric EXTH record, written in as many bytes as it
+// needs.
+func exthNumber(b []byte) uint32 {
+	if len(b) == 0 || len(b) > 4 {
+		return 0
+	}
+	var v uint32
+	for _, c := range b {
+		v = v<<8 | uint32(c)
+	}
+	return v
+}
+
+// mobiMarkup rewrites the markup MOBI carries into HTML. A page break is the
+// only one of its own tags that means anything to layout; the rest are
+// dropped because HTML5 closes no tag it does not know, so a self closing one
+// would hold the tree open to the end of the book. A place named by a byte
+// offset becomes an anchor, and a link to one an href.
+func mobiMarkup(b []byte, want []int) []byte {
+	marks := mobiMarks(b, want)
+	if len(marks) == 0 && !bytes.Contains(b, []byte("<mbp:")) && !bytes.Contains(b, []byte("<idx:")) {
+		return b
+	}
+	out := make([]byte, 0, len(b)+len(b)/8)
+	for i := 0; i < len(b); {
+		for len(marks) > 0 && marks[0] <= i {
+			if marks[0] == i {
+				out = append(out, `<a id="`...)
+				out = append(out, filepos(i)...)
+				out = append(out, `"></a>`...)
+			}
+			marks = marks[1:]
+		}
+		if b[i] != '<' {
+			out = append(out, b[i])
+			i++
+			continue
+		}
+		end := bytes.IndexByte(b[i:], '>')
+		if end < 0 {
+			return append(out, b[i:]...)
+		}
+		tag := b[i : i+end+1]
+		i += end + 1
+		switch {
+		case mobiOwnTag(tag):
+			if bytes.HasPrefix(tag, []byte("<mbp:pagebreak")) {
+				out = append(out, `<div style="page-break-after:always"></div>`...)
+			} else if !bytes.HasSuffix(tag, []byte("/>")) {
+				out = append(out, tag...)
+			}
+		default:
+			out = append(out, mobiLink(tag)...)
+		}
+	}
+	return out
+}
+
+// mobiMarks is where an anchor has to go: every offset the index named, and
+// every one a link in the markup points at, in order and without repeats.
+func mobiMarks(b []byte, want []int) []int {
+	marks := append([]int(nil), want...)
+	for i := 0; i+7 < len(b); {
+		j := bytes.Index(b[i:], []byte("filepos="))
+		if j < 0 {
+			break
+		}
+		i += j + 8
+		v, n := 0, 0
+		for ; i+n < len(b) && b[i+n] >= '0' && b[i+n] <= '9' && n < 10; n++ {
+			v = v*10 + int(b[i+n]-'0')
+		}
+		if n > 0 && v < len(b) {
+			marks = append(marks, v)
+		}
+	}
+	slices.Sort(marks)
+	return slices.Compact(marks)
+}
+
+// mobiLink rewrites the three ways MOBI names something into the two HTML
+// has: the offset an anchor points at becomes a fragment, and a picture named
+// by its record number, either way the format writes one, becomes a source.
+func mobiLink(tag []byte) []byte {
+	if i := bytes.Index(tag, []byte("filepos=")); i >= 0 {
+		j := i + 8
+		for j < len(tag) && tag[j] >= '0' && tag[j] <= '9' {
+			j++
+		}
+		if v, err := strconv.Atoi(string(tag[i+8 : j])); err == nil {
+			out := append([]byte(nil), tag[:i]...)
+			out = append(out, `href="#`...)
+			out = append(out, filepos(v)...)
+			out = append(out, '"')
+			tag = append(out, tag[j:]...)
+		}
+	}
+	if i := bytes.Index(tag, []byte("recindex=")); i >= 0 {
+		j := i + 9
+		for j < len(tag) && (tag[j] == '"' || tag[j] == '\'') {
+			j++
+		}
+		k := j
+		for k < len(tag) && tag[k] >= '0' && tag[k] <= '9' {
+			k++
+		}
+		if v, err := strconv.Atoi(string(tag[j:k])); err == nil && v > 0 {
+			for k < len(tag) && (tag[k] == '"' || tag[k] == '\'') {
+				k++
+			}
+			out := append([]byte(nil), tag[:i]...)
+			out = append(out, `src="`...)
+			out = append(out, mobiPicture(v)...)
+			out = append(out, '"')
+			tag = append(out, tag[k:]...)
+		}
+	}
+	if i := bytes.Index(tag, []byte("kindle:embed:")); i >= 0 {
+		j := i + 13
+		k := j
+		for k < len(tag) && tag[k] != '"' && tag[k] != '\'' && tag[k] != '?' {
+			k++
+		}
+		e := k
+		for e < len(tag) && tag[e] != '"' && tag[e] != '\'' {
+			e++
+		}
+		if v, ok := base32Number(tag[j:k]); ok && v > 0 {
+			out := append([]byte(nil), tag[:i]...)
+			out = append(out, mobiPicture(int(v))...)
+			tag = append(out, tag[e:]...)
+		}
+	}
+	return tag
+}
+
+// base32Number reads the number KF8 names a resource by, whose digits run 0
+// to 9 and then A to V.
+func base32Number(b []byte) (uint32, bool) {
+	if len(b) == 0 || len(b) > 6 {
+		return 0, false
+	}
+	var v uint32
+	for _, c := range b {
+		switch {
+		case c >= '0' && c <= '9':
+			v = v*32 + uint32(c-'0')
+		case c >= 'A' && c <= 'V':
+			v = v*32 + uint32(c-'A'+10)
+		default:
+			return 0, false
+		}
+	}
+	return v, true
+}
+
+// mobiOwnTag reports a tag in one of the namespaces MOBI puts its own
+// elements in.
+func mobiOwnTag(tag []byte) bool {
+	name := tag[1:]
+	if len(name) > 0 && name[0] == '/' {
+		name = name[1:]
+	}
+	for _, ns := range [][]byte{[]byte("mbp:"), []byte("idx:")} {
+		if bytes.HasPrefix(name, ns) {
+			return true
+		}
+	}
+	return false
+}
+
+// mobiOutline builds the table of contents from the index the header names,
+// and returns the places it points at.
+func mobiOutline(recs [][]byte, at int) ([]Outline, []int) {
+	entries, cncx := readIndex(recs, at)
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	var flat []Outline
+	var level []int
+	var pos []int
+	for i := range entries {
+		e := &entries[i]
+		title := e.label
+		if v, ok := e.value(ncxLabel, 0); ok {
+			if s := cncxString(cncx, v); s != "" {
+				title = s
+			}
+		}
+		title = squash(title)
+		if title == "" {
+			continue
+		}
+		out := Outline{Title: title, Path: mobiIndex}
+		if v, ok := e.value(ncxFilepos, 0); ok {
+			out.Fragment = filepos(int(v))
+			pos = append(pos, int(v))
+		}
+		l := 0
+		if v, ok := e.value(ncxLevel, 0); ok && v < 16 {
+			l = int(v)
+		}
+		flat = append(flat, out)
+		level = append(level, l+1)
+	}
+	return nest(flat, level), pos
+}
+
+// filepos is the anchor a byte offset into the text is named by, which is how
+// MOBI writes a link to a place in the book.
+func filepos(at int) string { return fmt.Sprintf("filepos%010d", at) }
+
+// mobiPicture is what a picture record is called, which is its number among
+// them counting from one.
+func mobiPicture(n int) string { return fmt.Sprintf("%05d", n) }
