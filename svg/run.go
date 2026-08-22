@@ -15,16 +15,20 @@ type state struct {
 	// fillServer and strokeServer are the paint that named a gradient, kept
 	// so that the shape it paints can be measured before it is resolved.
 	fillServer, strokeServer string
-	color                    paint
-	fillOpacity              float32
-	strokeOpacity            float32
-	fillEvenOdd              bool
-	width                    float32
-	miter                    float32
-	cap                      raster.Cap
-	join                     raster.Join
-	dash                     []float32
-	phase                    float32
+	// ctxFill and ctxStroke are what context-fill and context-stroke stand
+	// for: the paint of the element that referred to this one, SVG 2 13.2.
+	ctxFill, ctxStroke             paint
+	ctxFillServer, ctxStrokeServer string
+	color                          paint
+	fillOpacity                    float32
+	strokeOpacity                  float32
+	fillEvenOdd                    bool
+	width                          float32
+	miter                          float32
+	cap                            raster.Cap
+	join                           raster.Join
+	dash                           []float32
+	phase                          float32
 	// hidden is display: none, which drops the element and everything in it,
 	// and invisible visibility: hidden, which a child may turn back on.
 	hidden    bool
@@ -63,6 +67,8 @@ func initialState(w, h float32) state {
 		color:         black,
 		fillOpacity:   1,
 		strokeOpacity: 1,
+		ctxFill:       noPaint,
+		ctxStroke:     noPaint,
 		width:         1,
 		miter:         4,
 		em:            defFontSize,
@@ -311,6 +317,15 @@ func speaks(v string) bool {
 	return false
 }
 
+// inContext hands the element's own paint down as what context-fill and
+// context-stroke stand for, which is what a use and a marker do for what they
+// draw.
+func (st state) inContext() state {
+	st.ctxFill, st.ctxFillServer = st.fill, st.fillServer
+	st.ctxStroke, st.ctxStrokeServer = st.stroke, st.strokeServer
+	return st
+}
+
 // opened reports an element the runner is inside of.
 func (r *runner) opened(n *node) bool {
 	for _, o := range r.open {
@@ -391,6 +406,7 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 
 	r.depth++
 	defer func() { r.depth-- }()
+	st = st.inContext()
 
 	if target.name == "symbol" || target.name == "svg" {
 		w, wok := r.length(n, "width", st.vw, st)
@@ -590,8 +606,8 @@ func (r *runner) style(n *node, st state) state {
 	if c, ok := parseColor(r.prop(n, "color"), st.color); ok {
 		st.color = c
 	}
-	st.fill, st.fillServer = paintOf(r.prop(n, "fill"), st.fill, st.fillServer, st.color)
-	st.stroke, st.strokeServer = paintOf(r.prop(n, "stroke"), st.stroke, st.strokeServer, st.color)
+	st.fill, st.fillServer = st.paintOf(r.prop(n, "fill"), st.fill, st.fillServer)
+	st.stroke, st.strokeServer = st.paintOf(r.prop(n, "stroke"), st.stroke, st.strokeServer)
 	st.fill = st.fill.follow(st.color)
 	st.stroke = st.stroke.follow(st.color)
 	if v, ok := opacity(r.prop(n, "fill-opacity")); ok {
@@ -703,11 +719,16 @@ func (r *runner) style(n *node, st state) state {
 // SVG 1.1 11.3 draws neither when the reference resolves to no server. A
 // value written but not understood is ignored, so the paint stays what was
 // inherited, which is what CSS does with any property it cannot read.
-func paintOf(v string, was paint, wasServer string, current paint) (paint, string) {
-	if strings.TrimSpace(v) == "" {
+func (st state) paintOf(v string, was paint, wasServer string) (paint, string) {
+	switch strings.TrimSpace(v) {
+	case "":
 		return was, wasServer
+	case "context-fill":
+		return st.ctxFill, st.ctxFillServer
+	case "context-stroke":
+		return st.ctxStroke, st.ctxStrokeServer
 	}
-	p, ok := parsePaint(v, current)
+	p, ok := parsePaint(v, st.color)
 	if id := serverID(v); id != "" {
 		if !ok {
 			p = noPaint

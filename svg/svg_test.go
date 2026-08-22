@@ -1174,6 +1174,46 @@ func TestVerticalText(t *testing.T) {
 	}
 }
 
+// TestContextPaint covers what context-fill and context-stroke stand for:
+// the paint of the element that referred to the one drawing them, and none
+// where nothing referred to it.
+func TestContextPaint(t *testing.T) {
+	d, err := Load([]byte(`<svg width="30" height="30">` +
+		`<path id="p" fill="context-stroke" d="M 0 0 h 30 v 30 h -30 Z"/>` +
+		`<use href="#p" fill="#ff0000" stroke="#00ff00"/>` +
+		`</svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := 15*img.Stride + 15*4
+	if r, g, b := img.Pix[o], img.Pix[o+1], img.Pix[o+2]; r > 8 || g < 240 || b > 8 {
+		t.Errorf("context-stroke drew %d,%d,%d, want the use's stroke", r, g, b)
+	}
+
+	// With nothing referring to it the paint is none, so the shape is not
+	// drawn at all.
+	d2, err := Load([]byte(`<svg width="30" height="30">` +
+		`<path fill="context-fill" d="M 0 0 h 30 v 30 h -30 Z"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+	p2, _ := d2.Page(0)
+	img2, err := p2.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := img2.Pix[o]; v < 248 {
+		t.Errorf("context-fill with no context drew %d, want the page", v)
+	}
+}
+
 // TestFilterUnderRotation holds the coordinate system a filter runs in: the
 // user's own, not the device's. A quarter turn between the element and the
 // page sends an offset along x down the page instead of across it.
