@@ -1,6 +1,7 @@
 package svg
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -11,12 +12,15 @@ import (
 // left out, which is not the same as painting nothing: none means nothing is
 // drawn, and an unset paint is inherited.
 type paint struct {
-	none  bool
+	none bool
+	// alpha is the fourth component of an rgba or an hsla, which multiplies
+	// the opacity property that applies.
 	color [3]float32
+	alpha float32
 }
 
 var (
-	black = paint{color: [3]float32{0, 0, 0}}
+	black = paint{color: [3]float32{0, 0, 0}, alpha: 1}
 	// noPaint is what none means: the shape is not drawn at all.
 	noPaint = paint{none: true}
 )
@@ -64,13 +68,14 @@ func parseColor(s string, current paint) (paint, bool) {
 		return hexColor(s[1:])
 	}
 	low := strings.ToLower(s)
-	if strings.HasPrefix(low, "rgb(") || strings.HasPrefix(low, "rgba(") {
+	if strings.HasPrefix(low, "rgb(") || strings.HasPrefix(low, "rgba(") ||
+		strings.HasPrefix(low, "hsl(") || strings.HasPrefix(low, "hsla(") {
 		i := strings.IndexByte(s, '(')
 		j := strings.LastIndexByte(s, ')')
 		if j < i {
 			return paint{}, false
 		}
-		return rgbColor(s[i+1 : j])
+		return funcColor(low[:i], s[i+1:j])
 	}
 	if low == "currentcolor" {
 		return current, true
@@ -79,11 +84,12 @@ func parseColor(s string, current paint) (paint, bool) {
 	if !ok {
 		return paint{}, false
 	}
-	return paint{color: [3]float32{float32(r) / 255, float32(g) / 255, float32(b) / 255}}, true
+	return paint{color: [3]float32{float32(r) / 255, float32(g) / 255, float32(b) / 255}, alpha: 1}, true
 }
 
 func hexColor(s string) (paint, bool) {
 	var v [3]float32
+	a := float32(1)
 	switch len(s) {
 	case 3, 4:
 		for i := 0; i < 3; i++ {
@@ -93,6 +99,13 @@ func hexColor(s string) (paint, bool) {
 			}
 			v[i] = float32(n*17) / 255
 		}
+		if len(s) == 4 {
+			n, err := strconv.ParseUint(s[3:4], 16, 8)
+			if err != nil {
+				return paint{}, false
+			}
+			a = float32(n*17) / 255
+		}
 	case 6, 8:
 		for i := 0; i < 3; i++ {
 			n, err := strconv.ParseUint(s[i*2:i*2+2], 16, 8)
@@ -101,33 +114,74 @@ func hexColor(s string) (paint, bool) {
 			}
 			v[i] = float32(n) / 255
 		}
+		if len(s) == 8 {
+			n, err := strconv.ParseUint(s[6:8], 16, 8)
+			if err != nil {
+				return paint{}, false
+			}
+			a = float32(n) / 255
+		}
 	default:
 		return paint{}, false
 	}
-	return paint{color: v}, true
+	return paint{color: v, alpha: a}, true
 }
 
-func rgbColor(args string) (paint, bool) {
+// funcColor reads the four functional forms, rgb and hsl with or without the
+// fourth component.
+func funcColor(name, args string) (paint, bool) {
 	f := strings.FieldsFunc(args, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '/'
 	})
 	if len(f) < 3 {
 		return paint{}, false
 	}
-	var v [3]float32
-	for i := 0; i < 3; i++ {
+	var n [3]float64
+	for i := range 3 {
 		s := strings.TrimSpace(f[i])
 		pct := strings.HasSuffix(s, "%")
-		n, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 32)
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		if err != nil {
+			return paint{}, false
+		}
+		if pct && strings.HasPrefix(name, "rgb") {
+			v = v * 255 / 100
+		}
+		n[i] = v
+	}
+	a := float32(1)
+	if len(f) > 3 {
+		s := strings.TrimSpace(f[3])
+		pct := strings.HasSuffix(s, "%")
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
 		if err != nil {
 			return paint{}, false
 		}
 		if pct {
-			n = n * 255 / 100
+			v /= 100
 		}
-		v[i] = float32(min(max(n, 0), 255)) / 255
+		a = float32(min(max(v, 0), 1))
 	}
-	return paint{color: v}, true
+	var v [3]float32
+	if strings.HasPrefix(name, "hsl") {
+		v = hslRGB(n[0], min(max(n[1], 0), 100)/100, min(max(n[2], 0), 100)/100)
+	} else {
+		for i := range 3 {
+			v[i] = float32(min(max(n[i], 0), 255)) / 255
+		}
+	}
+	return paint{color: v, alpha: a}, true
+}
+
+// hslRGB is CSS Color 4 7.1: a hue in degrees and two fractions.
+func hslRGB(h, s, l float64) [3]float32 {
+	h = math.Mod(math.Mod(h, 360)+360, 360) / 30
+	f := func(n float64) float32 {
+		k := math.Mod(n+h, 12)
+		a := s * min(l, 1-l)
+		return float32(l - a*max(-1, min(min(k-3, 9-k), 1)))
+	}
+	return [3]float32{f(0), f(8), f(4)}
 }
 
 // opacity reads a number or a percentage clamped to the unit interval, which

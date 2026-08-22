@@ -58,9 +58,12 @@ func (b *shaderBlitter) BlitCover(x, y int, cover []uint8) {
 
 func (b *shaderBlitter) blit(x, y, w int, flat uint8, cover []uint8) {
 	if cover == nil && flat == 255 && b.clip == nil {
-		if rs, ok := b.sh.(RowShader); ok {
-			rs.ShadeRow(b.dst, x, y, w)
-			return
+		// The row form overwrites, so only an opaque shader may take it.
+		if o, ok := b.sh.(interface{ Opaque() bool }); !ok || o.Opaque() {
+			if rs, ok := b.sh.(RowShader); ok {
+				rs.ShadeRow(b.dst, x, y, w)
+				return
+			}
 		}
 	}
 	sn := b.dst.N + 1
@@ -135,8 +138,11 @@ func (b *shaderBlitter) opaque(row, span []uint8, w, sn, n int) {
 // the transform from its own space to the device, and whether it paints on
 // past each end.
 type GradientSpec struct {
-	Matrix     Matrix
-	LUT        []uint8
+	Matrix Matrix
+	LUT    []uint8
+	// A is one opacity per entry of the table, and nil for a gradient that
+	// is opaque throughout. LUT is premultiplied by it.
+	A          []uint8
 	N          int
 	C0, C1     Point
 	R0, R1     float32
@@ -148,6 +154,7 @@ type GradientSpec struct {
 // and an SVG linearGradient or radialGradient all evaluate to.
 type Gradient struct {
 	lut    []uint8
+	a      []uint8
 	n      int
 	p      gradParams
 	radial bool
@@ -186,7 +193,7 @@ func NewGradient(s GradientSpec) *Gradient {
 		return nil
 	}
 	g := &Gradient{
-		lut: s.LUT, n: s.N,
+		lut: s.LUT, a: s.A, n: s.N,
 		radial: s.Radial,
 		ext0:   s.Ext0, ext1: s.Ext1,
 		p: gradParams{
@@ -228,6 +235,9 @@ func NewGradient(s GradientSpec) *Gradient {
 	return g
 }
 
+// Opaque reports that every entry of the table is fully opaque.
+func (g *Gradient) Opaque() bool { return g.a == nil }
+
 // Shade writes one color per pixel of the span, opaque where the gradient
 // covers the point and clear where it does not.
 func (g *Gradient) Shade(x, y, w int, span []uint8) {
@@ -263,7 +273,11 @@ func (g *Gradient) shade(x, y, w int, out []uint8, n, m, ai int, blank bool) {
 					p[c] = v
 				}
 				if ai >= 0 {
-					p[ai] = 255
+					if g.a != nil {
+						p[ai] = g.a[e]
+					} else {
+						p[ai] = 255
+					}
 				}
 			case blank:
 				for c := range p {

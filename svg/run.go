@@ -82,6 +82,9 @@ type runner struct {
 	// open is the elements being drawn, outermost first, which is what a
 	// descendant selector is matched against.
 	open []*node
+	// canvas is the page in device pixels, which bounds what a filter has to
+	// render off to one side.
+	canvas raster.Rect
 }
 
 // maxOps bounds the elements one drawing may draw, so that a use that
@@ -92,6 +95,7 @@ const maxOps = 1 << 20
 func (p *Page) Run(dev Device, ctm raster.Matrix) error {
 	r := &runner{doc: p.doc, dev: dev}
 	d := p.doc
+	r.canvas = ctm.ApplyRect(p.Bounds())
 	// The root's viewBox maps the coordinates the file draws in onto the size
 	// it asked to be drawn at.
 	m := ctm
@@ -162,7 +166,29 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 		r.dev.BeginGroup(raster.InfiniteRect, nil, false, false, b, 1)
 		defer r.dev.EndGroup()
 	}
+	// Opacity applies to what the element draws as a whole, after the filter.
+	alpha := float32(1)
+	if v, ok := opacity(r.prop(n, "opacity")); ok {
+		alpha = v
+	}
+	if r.filtered(n, ctm, st, alpha) {
+		return
+	}
+	if alpha < 1 {
+		if isGroup(n.name) {
+			r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)
+			defer r.dev.EndGroup()
+		} else {
+			st.fillOpacity *= alpha
+			st.strokeOpacity *= alpha
+		}
+	}
+	r.paint(n, ctm, st)
+}
 
+// paint draws the element itself, which is what a filter renders off to one
+// side rather than onto the page.
+func (r *runner) paint(n *node, ctm raster.Matrix, st state) {
 	switch n.name {
 	case "g", "a":
 		r.group(n, ctm, st)
@@ -191,21 +217,8 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	}
 }
 
-// group draws a group, which is a transparency group of its own when it is
-// not fully opaque: opacity on a group applies to what it draws as a whole
-// rather than to each shape in it.
 func (r *runner) group(n *node, ctm raster.Matrix, st state) {
-	alpha := float32(1)
-	if v, ok := opacity(r.prop(n, "opacity")); ok {
-		alpha = v
-	}
-	if alpha >= 1 {
-		r.children(n, ctm, st)
-		return
-	}
-	r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)
 	r.children(n, ctm, st)
-	r.dev.EndGroup()
 }
 
 // nested is an svg element inside another, which is a viewport of its own.
@@ -287,16 +300,18 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	if p == nil || p.IsEmpty() {
 		return
 	}
+	fillAlpha := st.fillOpacity * st.fill.alpha
+	strokeAlpha := st.strokeOpacity * st.stroke.alpha
 	if !st.fill.none {
 		box := p.Bounds(raster.Identity)
 		if g := r.server(st.fillServer, box, st); g != nil {
 			r.dev.ClipPath(p, st.fillEvenOdd, ctm, raster.InfiniteRect)
-			r.dev.FillShade(g, ctm, st.fillOpacity*g.alpha(), gfx.ColorParams{})
+			r.dev.FillShade(g, ctm, fillAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
 		} else if st.fillServer != "" && r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, st) {
 		} else {
 			c := st.fill.color
-			r.dev.FillPath(p, st.fillEvenOdd, ctm, gfx.DeviceRGB, c[:], st.fillOpacity, gfx.ColorParams{})
+			r.dev.FillPath(p, st.fillEvenOdd, ctm, gfx.DeviceRGB, c[:], fillAlpha, gfx.ColorParams{})
 		}
 	}
 	if !st.stroke.none && st.width > 0 {
@@ -305,11 +320,11 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 		// the shape's own, which SVG 1.1 7.11 says the stroke is not part of.
 		if g := r.server(st.strokeServer, p.Bounds(raster.Identity), st); g != nil {
 			r.dev.ClipStrokePath(p, s, ctm, raster.InfiniteRect)
-			r.dev.FillShade(g, ctm, st.strokeOpacity*g.alpha(), gfx.ColorParams{})
+			r.dev.FillShade(g, ctm, strokeAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
 		} else {
 			c := st.stroke.color
-			r.dev.StrokePath(p, s, ctm, gfx.DeviceRGB, c[:], st.strokeOpacity, gfx.ColorParams{})
+			r.dev.StrokePath(p, s, ctm, gfx.DeviceRGB, c[:], strokeAlpha, gfx.ColorParams{})
 		}
 	}
 }
@@ -498,12 +513,6 @@ func (r *runner) style(n *node, st state) state {
 		st.preserve = false
 	}
 
-	// The opacity of a shape is the opacity of each of its paints; a group
-	// takes it as a whole instead, which group handles.
-	if v, ok := opacity(r.prop(n, "opacity")); ok && !isGroup(n.name) {
-		st.fillOpacity *= v
-		st.strokeOpacity *= v
-	}
 	return st
 }
 

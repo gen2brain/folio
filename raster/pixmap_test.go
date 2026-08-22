@@ -471,3 +471,127 @@ func TestGradientRowMatchesSpan(t *testing.T) {
 		}
 	}
 }
+
+// TestBlurBoxWidths holds the two things the width of the boxes decides: how
+// far a deviation spreads, and that three of them are what SVG 1.1 15.17
+// asks for. The variance of the cascade is what a Gaussian of that deviation
+// would have, to within the coarseness of an integer box.
+func TestBlurBoxWidths(t *testing.T) {
+	for _, c := range []struct {
+		sigma float32
+		d     int
+		want  float64
+	}{
+		{2, 4, 2.121},
+		{2.5, 5, 2.449},
+		{3, 6, 3.136},
+		{4, 8, 4.143},
+		{5, 9, 4.472},
+	} {
+		if d := boxWidth(c.sigma); d != c.d {
+			t.Errorf("boxWidth(%g) = %d, want %d", c.sigma, d, c.d)
+			continue
+		}
+		v := 0.0
+		for _, w := range boxPasses(c.d) {
+			n := float64(w[0] + w[1] + 1)
+			v += (n*n - 1) / 12
+		}
+		if got := math.Sqrt(v); math.Abs(got-c.want) > 0.001 {
+			t.Errorf("sigma %g spreads by %.3f, want %.3f", c.sigma, got, c.want)
+		}
+	}
+}
+
+// TestBlurEdge blurs a step and checks that the result is what a Gaussian
+// does to one: it conserves the whole, it is symmetric about the edge, and
+// nothing reaches further than the kernel.
+func TestBlurEdge(t *testing.T) {
+	for _, sigma := range []float32{0.8, 1.5, 3, 6} {
+		// Wide enough that the far side of the step is saturated well before
+		// the edge of the pixmap, which the blur erodes.
+		const w, h = 128, 3
+		p := NewPixmap(ModelRGB, w, h, true)
+		for y := range h {
+			for x := w / 2; x < w; x++ {
+				o := y*p.Stride + x*4
+				p.Samples[o], p.Samples[o+1], p.Samples[o+2], p.Samples[o+3] = 0, 0, 0, 255
+			}
+		}
+		Blur(p, sigma, 0)
+		var sum, m1, m2 float64
+		for x := w/2 - 30; x < w/2+30; x++ {
+			k := float64(p.Samples[p.Stride+x*4+3]) - float64(p.Samples[p.Stride+(x-1)*4+3])
+			off := float64(x) - w/2
+			sum += k
+			m1 += k * off
+			m2 += k * off * off
+		}
+		if math.Abs(sum-255) > 1 {
+			t.Errorf("sigma %g: the step lost %g of 255", sigma, 255-sum)
+		}
+		mean := m1 / sum
+		if math.Abs(mean) > 0.05 {
+			t.Errorf("sigma %g: the edge moved to %.3f", sigma, mean)
+		}
+		if got := math.Sqrt(m2/sum - mean*mean); math.Abs(got-float64(sigma))/float64(sigma) > 0.12 {
+			t.Errorf("sigma %g came out as %.3f", sigma, got)
+		}
+	}
+}
+
+// TestBlurFlat covers what must not change: a deviation of zero, and a field
+// with nothing in it to spread.
+func TestBlurFlat(t *testing.T) {
+	p := NewPixmap(ModelRGB, 64, 64, true)
+	for i := range p.Samples {
+		p.Samples[i] = 200
+	}
+	before := append([]uint8(nil), p.Samples...)
+	Blur(p, 0, 0)
+	for i, v := range p.Samples {
+		if v != before[i] {
+			t.Fatalf("a deviation of zero changed sample %d from %d to %d", i, before[i], v)
+		}
+	}
+	Blur(p, 4, 4)
+	for x := 31; x < 33; x++ {
+		if v := p.Samples[32*p.Stride+x*4]; v != 200 {
+			t.Errorf("the middle of a flat field blurred to %d, want 200", v)
+		}
+	}
+}
+
+// TestGradientAlphaTable covers a ramp whose stops differ in opacity, which
+// is the one case the color table alone cannot carry.
+func TestGradientAlphaTable(t *testing.T) {
+	lut := make([]uint8, 256*3)
+	a := make([]uint8, 256)
+	for i := range 256 {
+		a[i] = uint8(i)
+		for c := range 3 {
+			lut[i*3+c] = uint8(uint32(255) * uint32(i) / 255)
+		}
+	}
+	g := NewGradient(GradientSpec{
+		Matrix: Identity, LUT: lut, A: a, N: 3,
+		C0: Point{}, C1: Point{X: 256}, Ext0: true, Ext1: true,
+	})
+	if g.Opaque() {
+		t.Fatal("a gradient with an alpha table reports itself opaque")
+	}
+	span := make([]uint8, 4*4)
+	g.Shade(0, 0, 4, span)
+	for i := range 4 {
+		if got := span[i*4+3]; got != a[i] {
+			t.Errorf("pixel %d has alpha %d, want %d", i, got, a[i])
+		}
+	}
+	plain := NewGradient(GradientSpec{
+		Matrix: Identity, LUT: lut, N: 3,
+		C0: Point{}, C1: Point{X: 256}, Ext0: true, Ext1: true,
+	})
+	if !plain.Opaque() {
+		t.Error("a gradient with no alpha table is not opaque")
+	}
+}

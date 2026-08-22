@@ -32,6 +32,15 @@ type Picture struct {
 	alt map[raster.Model]*raster.Pixmap
 }
 
+// NewPicture wraps a rendered pixmap as an image a device can draw. Its
+// samples are premultiplied and are not copied.
+func NewPicture(px *raster.Pixmap) *Picture {
+	if px == nil {
+		return nil
+	}
+	return &Picture{pix: px, W: px.W, H: px.H}
+}
+
 // Size implements gfx.Image.
 func (p *Picture) Size() (int, int) { return p.W, p.H }
 

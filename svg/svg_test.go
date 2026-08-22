@@ -1,6 +1,7 @@
 package svg
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -876,5 +877,115 @@ func TestPageText(t *testing.T) {
 	}
 	if !strings.Contains(s, "Hello") {
 		t.Errorf("the drawing reads %q, want Hello in it", s)
+	}
+}
+
+// TestFilter covers the pipeline: the region a filter renders into, the
+// primitives that make a picture out of nothing, the two color spaces and the
+// chain one primitive's result reaches the next through.
+func TestFilter(t *testing.T) {
+	pixels := func(src string) func(x, y int) (uint8, uint8, uint8, uint8) {
+		t.Helper()
+		d, err := Load([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		p, _ := d.Page(0)
+		img, err := p.ImageDPI(96)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return func(x, y int) (uint8, uint8, uint8, uint8) {
+			o := y*img.Stride + x*4
+			return img.Pix[o], img.Pix[o+1], img.Pix[o+2], img.Pix[o+3]
+		}
+	}
+
+	// A flood fills the whole region, which reaches past the box by a tenth
+	// of it at each edge.
+	at := pixels(`<svg width="40" height="40">` +
+		`<filter id="f"><feFlood flood-color="#00ff00"/></filter>` +
+		`<rect x="10" y="10" width="20" height="20" fill="red" filter="url(#f)"/></svg>`)
+	if r, g, b, _ := at(20, 20); r > 8 || g < 240 || b > 8 {
+		t.Errorf("the flood is %d,%d,%d, want green", r, g, b)
+	}
+	if r, g, b, _ := at(9, 20); r > 8 || g < 240 || b > 8 {
+		t.Errorf("two units outside the box is %d,%d,%d, want the region", r, g, b)
+	}
+	if r, g, b, _ := at(5, 20); r < 248 || g < 248 || b < 248 {
+		t.Errorf("outside the region is %d,%d,%d, want the page", r, g, b)
+	}
+
+	// A subregion cuts the flood down, and what it leaves is transparent.
+	at = pixels(`<svg width="40" height="40">` +
+		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40">` +
+		`<feFlood flood-color="#00ff00" x="0" y="0" width="20" height="40"/></filter>` +
+		`<rect x="10" y="10" width="20" height="20" fill="red" filter="url(#f)"/></svg>`)
+	if r, g, b, _ := at(5, 20); r > 8 || g < 240 || b > 8 {
+		t.Errorf("inside the subregion is %d,%d,%d, want green", r, g, b)
+	}
+	if r, g, b, _ := at(30, 20); r < 248 || g < 248 || b < 248 {
+		t.Errorf("outside the subregion is %d,%d,%d, want the page", r, g, b)
+	}
+
+	// An offset moves the source and leaves nothing behind it.
+	at = pixels(`<svg width="40" height="40">` +
+		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40">` +
+		`<feOffset dx="10" dy="0"/></filter>` +
+		`<rect x="5" y="5" width="10" height="30" fill="black" filter="url(#f)"/></svg>`)
+	if r, _, _, _ := at(20, 20); r > 8 {
+		t.Errorf("where the offset put it is %d, want black", r)
+	}
+	if r, _, _, _ := at(8, 20); r < 248 {
+		t.Errorf("where it came from is %d, want the page", r)
+	}
+
+	// A color matrix works in linear light unless the drawing says otherwise,
+	// so the same matrix gives two different answers.
+	const half = `<svg width="20" height="20"><filter id="f" %s>` +
+		`<feColorMatrix values="0.5 0 0 0 0  0 0.5 0 0 0  0 0 0.5 0 0  0 0 0 1 0"/></filter>` +
+		`<rect width="20" height="20" fill="white" filter="url(#f)"/></svg>`
+	lin, _, _, _ := pixels(fmt.Sprintf(half, ""))(10, 10)
+	srgb, _, _, _ := pixels(fmt.Sprintf(half, `color-interpolation-filters="sRGB"`))(10, 10)
+	if srgb != 128 {
+		t.Errorf("half of white in sRGB is %d, want 128", srgb)
+	}
+	if lin <= srgb+20 {
+		t.Errorf("half of white in linear light is %d, want well above %d", lin, srgb)
+	}
+
+	// A chain: the flood is blurred, so the middle stays and the edge softens.
+	at = pixels(`<svg width="60" height="60">` +
+		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="60" height="60">` +
+		`<feFlood flood-color="black" x="20" y="20" width="20" height="20" result="a"/>` +
+		`<feGaussianBlur in="a" stdDeviation="3"/></filter>` +
+		`<rect width="1" height="1" fill="red" filter="url(#f)"/></svg>`)
+	mid, _, _, _ := at(30, 30)
+	edge, _, _, _ := at(20, 30)
+	out, _, _, _ := at(14, 30)
+	if mid > 8 {
+		t.Errorf("the middle of the blur is %d, want black", mid)
+	}
+	if edge < 60 || edge > 200 {
+		t.Errorf("the edge of the blur is %d, want it part way", edge)
+	}
+	if out < 240 {
+		t.Errorf("well outside the blur is %d, want the page", out)
+	}
+
+	// A filter that names nothing takes the element off the page.
+	at = pixels(`<svg width="20" height="20">` +
+		`<rect width="20" height="20" fill="red" filter="url(#missing)"/></svg>`)
+	if r, g, b, _ := at(10, 10); r < 248 || g < 248 || b < 248 {
+		t.Errorf("an element with an unresolved filter is %d,%d,%d, want the page", r, g, b)
+	}
+
+	// The shorthand of Filter Effects 1 chains without a filter element.
+	at = pixels(`<svg width="20" height="20">` +
+		`<rect width="20" height="20" fill="#ff0000" filter="grayscale(1)"/></svg>`)
+	r, g, b, _ := at(10, 10)
+	if r != g || g != b || r == 0 || r == 255 {
+		t.Errorf("grayscale(1) of red is %d,%d,%d, want one grey", r, g, b)
 	}
 }

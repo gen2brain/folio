@@ -119,15 +119,38 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 		p = polyPath(n, false)
 	case "polygon":
 		p = polyPath(n, true)
+	case "image":
+		x, _ := r.length(n, "x", st.vw, st)
+		y, _ := r.length(n, "y", st.vh, st)
+		w, _ := r.length(n, "width", st.vw, st)
+		h, _ := r.length(n, "height", st.vh, st)
+		if w <= 0 || h <= 0 {
+			return raster.Rect{}
+		}
+		return raster.Rect{X0: x, Y0: y, X1: x + w, Y1: y + h}
+	case "use":
+		t := r.doc.byID[fragment(n.attr["href"])]
+		if t == nil || t == n || r.depth >= maxNesting {
+			return raster.Rect{}
+		}
+		r.depth++
+		b := r.shapeBounds(t, st)
+		r.depth--
+		if b.IsEmpty() {
+			return b
+		}
+		x, _ := r.length(n, "x", st.vw, st)
+		y, _ := r.length(n, "y", st.vh, st)
+		return raster.Concat(transform(t.attr["transform"]), raster.Translate(x, y)).ApplyRect(b)
 	default:
-		// A group's box is everything under it, which is what a clip on a
-		// group is a fraction of.
+		// A group's box is everything under it, in the group's own space.
 		out := raster.EmptyRect
 		for _, k := range n.kids {
 			b := r.shapeBounds(k, st)
 			if b.IsEmpty() {
 				continue
 			}
+			b = transform(k.attr["transform"]).ApplyRect(b)
 			out = out.AddPoint(raster.Point{X: b.X0, Y: b.Y0})
 			out = out.AddPoint(raster.Point{X: b.X1, Y: b.Y1})
 		}

@@ -50,16 +50,30 @@ func (g *gradient) Shader(model raster.Model, ctm raster.Matrix, box raster.Rect
 	n := model.Components()
 	lut := make([]uint8, 256*n)
 	rgb := make([]uint8, 3)
+	var alpha []uint8
+	if g.varies() {
+		alpha = make([]uint8, 256)
+	}
 	for i := 0; i < 256; i++ {
-		c := g.at(g.ramp(float32(i) / 255))
+		t := g.ramp(float32(i) / 255)
+		c := g.at(t)
 		for k := 0; k < 3; k++ {
 			rgb[k] = uint8(min(max(c[k], 0), 1)*255 + 0.5)
 		}
 		model.FromRGB(lut[i*n:(i+1)*n], rgb)
+		if alpha == nil {
+			continue
+		}
+		a := uint8(min(max(g.opacityAt(t), 0), 1)*255 + 0.5)
+		alpha[i] = a
+		for k := range lut[i*n : (i+1)*n] {
+			lut[i*n+k] = uint8((uint32(lut[i*n+k])*uint32(a) + 127) / 255)
+		}
 	}
 	return raster.NewGradient(raster.GradientSpec{
 		Matrix: ctm,
 		LUT:    lut,
+		A:      alpha,
 		N:      n,
 		C0:     g.c0,
 		C1:     g.c1,
@@ -192,14 +206,42 @@ func (g *gradient) at(t float32) [3]float32 {
 	return last.color
 }
 
-// alpha is the one opacity a gradient is drawn at. A ramp whose stops differ
-// in opacity needs an alpha per entry of the table, which the shader has no
-// room for, so the first stop stands for all of them.
+// alpha is the one opacity a gradient whose stops agree is drawn at. A ramp
+// that varies carries its own table and is drawn at one.
 func (g *gradient) alpha() float32 {
-	if len(g.stops) == 0 {
+	if len(g.stops) == 0 || g.varies() {
 		return 1
 	}
 	return g.stops[0].alpha
+}
+
+// varies reports stops that do not all have the same opacity.
+func (g *gradient) varies() bool {
+	for _, s := range g.stops[1:] {
+		if s.alpha != g.stops[0].alpha {
+			return true
+		}
+	}
+	return false
+}
+
+// opacityAt is the ramp read for opacity.
+func (g *gradient) opacityAt(t float32) float32 {
+	last := g.stops[0]
+	if t <= last.offset {
+		return last.alpha
+	}
+	for _, s := range g.stops[1:] {
+		if t <= s.offset {
+			if s.offset == last.offset {
+				return s.alpha
+			}
+			u := (t - last.offset) / (s.offset - last.offset)
+			return last.alpha + u*(s.alpha-last.alpha)
+		}
+		last = s
+	}
+	return last.alpha
 }
 
 // server resolves a paint that names a gradient, and is nil for one that
