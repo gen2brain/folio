@@ -43,10 +43,10 @@ type state struct {
 	// vertical is writing-mode: the characters run down the page and each one
 	// either stands upright or turns a quarter with the line, UAX #50.
 	vertical bool
-	// shift is how far baseline-shift moved the baseline. It is not
-	// inherited: it moves the characters the element holds itself and
-	// nothing a child of it holds.
-	shift float32
+	// shift is how far baseline-shift has moved the baseline of the
+	// characters an element holds, and chain what a tspan inside it shifts
+	// from.
+	shift, chain float32
 	// baseline is what dominant-baseline moved the text off, letter and word
 	// what is added after a character and after a space, and preserve
 	// whether the white space is kept as it was written.
@@ -703,7 +703,20 @@ func (r *runner) style(n *node, st state) state {
 	if v := strings.TrimSpace(r.prop(n, "alignment-baseline")); v != "" {
 		st.baseline = v
 	}
-	st.shift = baselineShift(strings.TrimSpace(r.prop(n, "baseline-shift")), st.em)
+	// baseline-shift moves the characters the element holds itself. One
+	// tspan inside another shifts from the baseline the outer one moved to;
+	// a text element starts a baseline rather than shifting from one, so
+	// what it says reaches its own characters and no tspan of its.
+	shift := baselineShift(strings.TrimSpace(r.prop(n, "baseline-shift")), st.em)
+	switch n.name {
+	case "tspan", "textPath", "tref", "altGlyph":
+		st.shift = st.chain + shift
+		st.chain = st.shift
+	case "text":
+		st.shift, st.chain = shift, 0
+	default:
+		st.shift, st.chain = 0, 0
+	}
 	switch strings.TrimSpace(r.prop(n, "writing-mode")) {
 	case "tb", "tb-rl", "vertical-rl", "vertical-lr":
 		st.vertical = true

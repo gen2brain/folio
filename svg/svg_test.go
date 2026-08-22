@@ -1254,6 +1254,43 @@ func TestDocumentRules(t *testing.T) {
 	}
 }
 
+// TestBaselineShift covers where a shifted baseline reaches: one tspan inside
+// another shifts from the baseline the outer one moved to, and a text element
+// starts a baseline rather than shifting from one, so what it declares does
+// not reach a tspan of its.
+func TestBaselineShift(t *testing.T) {
+	d, err := Load([]byte(`<svg width="200" height="60" font-size="10">` +
+		`<text x="10" y="40"><tspan baseline-shift="20%"><tspan baseline-shift="20%">a</tspan></tspan></text>` +
+		`<text x="10" y="40" baseline-shift="20%"><tspan>b</tspan></text>` +
+		`<text x="10" y="40" baseline-shift="20%">c</text></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	r := &runner{doc: d}
+	base := r.style(d.root, initialState(200, 60))
+	ys := make([]float32, 0, 3)
+	for _, n := range d.root.kids {
+		c := &textCursor{}
+		r.textRun(n, r.style(n, base), c, 0, true)
+		if len(c.glyphs) != 1 {
+			t.Fatalf("placed %d glyphs, want one", len(c.glyphs))
+		}
+		ys = append(ys, c.glyphs[0].y)
+	}
+	// Two nested shifts of a fifth of the em raise the character by two of
+	// them; the one on the text reaches its own character and not its tspan.
+	if ys[0] != 40-4 {
+		t.Errorf("two nested shifts put the character at %v, want 36", ys[0])
+	}
+	if ys[1] != 40 {
+		t.Errorf("a text's shift reached its tspan, putting it at %v", ys[1])
+	}
+	if ys[2] != 40-2 {
+		t.Errorf("a text's shift missed its own character, putting it at %v", ys[2])
+	}
+}
+
 // TestFilterUnderRotation holds the coordinate system a filter runs in: the
 // user's own, not the device's. A quarter turn between the element and the
 // page sends an offset along x down the page instead of across it.
