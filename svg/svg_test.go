@@ -1086,6 +1086,55 @@ func TestViewportAndConditions(t *testing.T) {
 	}
 }
 
+// TestTextPath covers a run of characters laid along a path: each one sits
+// where its middle falls, turns with the direction of travel, and one that
+// runs off the end is not drawn.
+func TestTextPath(t *testing.T) {
+	// A quarter circle from (0,50) up to (50,0), so a character a quarter of
+	// the way along it is turned by about a quarter turn.
+	d, err := Load([]byte(`<svg width="60" height="60" font-size="10">` +
+		`<path id="p" d="M 0 50 L 50 50"/>` +
+		`<path id="q" d="M 50 0 L 50 50"/>` +
+		`<text><textPath href="#p">ab</textPath></text>` +
+		`<text><textPath href="#q">cd</textPath></text>` +
+		`<text><textPath href="#missing">ef</textPath></text></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	r := &runner{doc: d}
+	st := initialState(60, 60)
+	var flat, down []glyph
+	for i, want := range []*[]glyph{&flat, &down, nil} {
+		c := &textCursor{}
+		r.textRun(d.root.kids[i+2], st, c, 0, false)
+		c.glyphs = onPath(c.glyphs)
+		if want == nil {
+			if len(c.glyphs) != 0 {
+				t.Errorf("a textPath naming nothing placed %d glyphs", len(c.glyphs))
+			}
+			continue
+		}
+		*want = c.glyphs
+	}
+	if len(flat) != 2 || len(down) != 2 {
+		t.Fatalf("placed %d and %d glyphs, want two each", len(flat), len(down))
+	}
+	// Along a path that runs to the right, the characters are where ordinary
+	// text would put them and are not turned.
+	if flat[0].y != 50 || flat[0].turn != 0 || flat[1].x <= flat[0].x {
+		t.Errorf("along a horizontal path the glyphs are %v", flat)
+	}
+	// Along one that runs down the page they are turned a quarter and walk
+	// down rather than across.
+	if got := down[0].turn; got < 89 || got > 91 {
+		t.Errorf("down a vertical path the turn is %v, want a quarter", got)
+	}
+	if down[1].y <= down[0].y || down[0].x < 49 || down[0].x > 51 {
+		t.Errorf("down a vertical path the glyphs are %v", down)
+	}
+}
+
 // TestFilterUnderRotation holds the coordinate system a filter runs in: the
 // user's own, not the device's. A quarter turn between the element and the
 // page sends an offset along x down the page instead of across it.

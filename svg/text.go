@@ -25,6 +25,9 @@ type glyph struct {
 	// turn is how far the rotate attribute turns the character, in degrees
 	// clockwise about where it sits.
 	turn float32
+	// path is the one a textPath lays the character along, on which x is the
+	// distance travelled and y the offset from it.
+	path *pathWalk
 	st   state
 }
 
@@ -33,6 +36,8 @@ type textCursor struct {
 	x, y   float32
 	chunk  int
 	glyphs []glyph
+	// path is the textPath the characters are being laid along, if any.
+	path *pathWalk
 	// space says a collapsible space is owed before the next character.
 	space bool
 	begun bool
@@ -61,6 +66,7 @@ func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 	}
 	r.anchorChunks(c.glyphs)
 	shiftBaseline(c.glyphs)
+	c.glyphs = onPath(c.glyphs)
 	r.drawGlyphs(c.glyphs, ctm)
 	r.decorate(c.glyphs, ctm)
 }
@@ -122,8 +128,10 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 		switch k.name {
 		case "":
 			i = r.place(c, k.chars, st, face, xs, ys, dxs, dys, i)
-		case "tspan", "textPath", "a":
+		case "tspan", "a":
 			r.textRun(k, st, c, depth+1, false)
+		case "textPath":
+			r.textPath(k, st, c, depth+1)
 		}
 	}
 }
@@ -168,7 +176,7 @@ func (r *runner) place(c *textCursor, s string, st state, face *font.Font, xs, y
 		}
 		c.glyphs = append(c.glyphs, glyph{
 			r: ch, gid: gid, face: f, size: st.em, adv: adv,
-			x: c.x, y: c.y, chunk: c.chunk, turn: turn, st: st,
+			x: c.x, y: c.y + st.shift, chunk: c.chunk, turn: turn, path: c.path, st: st,
 		})
 		c.x += adv
 		i++

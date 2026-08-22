@@ -36,6 +36,10 @@ type state struct {
 	bold   bool
 	italic bool
 	anchor string
+	// shift is how far baseline-shift moved the baseline. It is not
+	// inherited: it moves the characters the element holds itself and
+	// nothing a child of it holds.
+	shift float32
 	// baseline is what dominant-baseline moved the text off, letter and word
 	// what is added after a character and after a space, and preserve
 	// whether the white space is kept as it was written.
@@ -668,6 +672,7 @@ func (r *runner) style(n *node, st state) state {
 	if v := strings.TrimSpace(r.prop(n, "alignment-baseline")); v != "" {
 		st.baseline = v
 	}
+	st.shift = baselineShift(strings.TrimSpace(r.prop(n, "baseline-shift")), st.em)
 	if v, ok := length(r.prop(n, "letter-spacing"), 0, st.em); ok {
 		st.letter = v
 	}
@@ -705,6 +710,32 @@ func paintOf(v string, was paint, wasServer string, current paint) (paint, strin
 	}
 	return p, ""
 }
+
+// baselineShift is how far down the page baseline-shift moves a character.
+// A raised baseline is a smaller y, so a positive shift comes back negative.
+// The two words are answered from the em rather than the font: the face a
+// character lands in is not known this early.
+func baselineShift(v string, em float32) float32 {
+	switch v {
+	case "", "baseline":
+		return 0
+	case "sub":
+		return subShift * em
+	case "super":
+		return -superShift * em
+	}
+	if d, ok := length(v, em, em); ok {
+		return -d
+	}
+	return 0
+}
+
+// subShift and superShift are what a program that says nothing puts a
+// subscript and a superscript at.
+const (
+	subShift   = 0.2
+	superShift = 0.4
+)
 
 // namedSize is one of the seven absolute sizes CSS Fonts 3 names, on the
 // scale a medium of sixteen pixels sets.
