@@ -709,3 +709,33 @@ func TestRootProperties(t *testing.T) {
 		t.Errorf("the middle is %d, want fill none to have been inherited", v)
 	}
 }
+
+// TestImageSize covers rendering at a size the caller has room for rather
+// than at the one the drawing asks for, which is what an icon wants.
+func TestImageSize(t *testing.T) {
+	d, err := Load([]byte(`<svg width="40" height="20"><rect width="40" height="20" fill="black"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	// A square asked of a drawing twice as wide keeps the aspect ratio.
+	img, err := p.ImageSize(80, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() != 80 || b.Dy() != 40 {
+		t.Errorf("the image is %v, want 80x40", b)
+	}
+	// One side alone takes the other from the drawing.
+	img, err = p.ImageSize(0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() != 20 || b.Dy() != 10 {
+		t.Errorf("the image is %v, want 20x10", b)
+	}
+	if _, err := p.ImageSize(0, 0); err == nil {
+		t.Error("no size at all rendered")
+	}
+}

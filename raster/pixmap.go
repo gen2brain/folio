@@ -86,6 +86,8 @@ func (p *Pixmap) Coverage() *Pixmap {
 	return out
 }
 
+// Comps is how many bytes one pixel takes, which is the color components
+// and the alpha channel when there is one.
 func (p *Pixmap) Comps() int {
 	if p.Alpha {
 		return p.N + 1

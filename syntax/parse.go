@@ -33,6 +33,9 @@ func (p *Parser) Lexer() *Lexer { return p.lex }
 // appear.
 func (p *Parser) AllowStreams(ok bool) { p.allowStreams = ok }
 
+// NewParser reads objects from a lexer. The file is what an indirect
+// reference is resolved against, and may be nil for a stream of objects that
+// refers to nothing.
 func NewParser(l *Lexer, f *File) *Parser {
 	p := &Parser{lex: l, doc: f, allowStreams: true}
 	p.refill()

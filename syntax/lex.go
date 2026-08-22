@@ -17,6 +17,8 @@ type Lexer struct {
 	errs []error
 }
 
+// NewLexer reads the tokens of a PDF out of a buffer. The content stream
+// interpreter tokenizes with the same code, which is why this is exported.
 func NewLexer(buf []byte) *Lexer { return &Lexer{buf: buf} }
 
 // PDF white space and delimiters, ISO 32000-1 table 1 and 2.

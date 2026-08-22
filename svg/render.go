@@ -121,3 +121,29 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		Height:     int(d.height + 0.5),
 	}, nil
 }
+
+// ImageSize renders the drawing into an image of exactly w by h pixels,
+// scaling it to fit and keeping its aspect ratio, which is what an icon drawn
+// at the size a caller has room for wants. A zero for either takes that side
+// from the other.
+func (p *Page) ImageSize(w, h int) (*image.RGBA, error) {
+	b := p.Bounds()
+	if b.X1 <= 0 || b.Y1 <= 0 || (w <= 0 && h <= 0) {
+		return nil, fmt.Errorf("%w: no size to draw at", ErrInvalid)
+	}
+	sx, sy := float32(w)/b.X1, float32(h)/b.Y1
+	switch {
+	case w <= 0:
+		sx = sy
+	case h <= 0:
+		sy = sx
+	default:
+		s := min(sx, sy)
+		sx, sy = s, s
+	}
+	px, err := p.Render(raster.Scale(sx, sy), nil)
+	if px == nil {
+		return nil, err
+	}
+	return gfx.ToRGBA(px), err
+}
