@@ -179,6 +179,15 @@ func (c *cascader) compute(n *Node, parent *Style, p PseudoElement) *Style {
 	}
 
 	s := parent.inherit()
+	// The dir attribute is a hint any declaration overrides.
+	if p == PseudoNone {
+		switch strings.ToLower(Attr(n, "dir")) {
+		case "ltr":
+			s.Direction = DirLTR
+		case "rtl":
+			s.Direction = DirRTL
+		}
+	}
 	v := value{em: parent.FontSize, rm: c.rem, medium: c.medium, parent: parent}
 	if w, ok := win["font-size"]; ok {
 		v.toks = w.toks

@@ -69,13 +69,34 @@ const (
 // TextAlign is how a line box sits in its containing block.
 type TextAlign uint8
 
-// The alignments.
+// The alignments. Start is the initial value and End its opposite, which are
+// the two edges of the direction the text runs in.
 const (
-	AlignLeft TextAlign = iota
+	AlignStart TextAlign = iota
+	AlignLeft
 	AlignRight
 	AlignCenter
 	AlignJustify
+	AlignEnd
 )
+
+// Resolve turns the two alignments that depend on the direction into the two
+// that do not.
+func (a TextAlign) Resolve(d Direction) TextAlign {
+	switch a {
+	case AlignStart:
+		if d.RTL() {
+			return AlignRight
+		}
+		return AlignLeft
+	case AlignEnd:
+		if d.RTL() {
+			return AlignLeft
+		}
+		return AlignRight
+	}
+	return a
+}
 
 // FontStyle is the slant of a face.
 type FontStyle uint8
@@ -220,6 +241,18 @@ const (
 	RepeatNone
 )
 
+// Direction is which way the characters of a box run, CSS 2.1 9.10.
+type Direction uint8
+
+// The two directions.
+const (
+	DirLTR Direction = iota
+	DirRTL
+)
+
+// RTL reports a direction that runs right to left.
+func (d Direction) RTL() bool { return d == DirRTL }
+
 // Writing is the direction the lines of a box run in.
 type Writing uint8
 
@@ -305,10 +338,12 @@ type Style struct {
 	Float Float
 	Clear Clear
 
-	// Writing is the direction the lines run in, and Orient how a character
-	// is turned when they run down the page.
-	Writing Writing
-	Orient  Orientation
+	// Writing is the direction the lines run in, Orient how a character is
+	// turned when they run down the page, and Direction which way the
+	// characters of a line run.
+	Writing   Writing
+	Orient    Orientation
+	Direction Direction
 
 	// Collapse is whether the cells of a table share the borders between
 	// them, and Spacing the gap between them when they do not.
@@ -363,6 +398,7 @@ func (s *Style) inherit() Style {
 	c.WhiteSpace = s.WhiteSpace
 	c.ListStyle = s.ListStyle
 	c.Writing, c.Orient = s.Writing, s.Orient
+	c.Direction = s.Direction
 	c.Collapse = s.Collapse
 	c.SpacingX, c.SpacingY = s.SpacingX, s.SpacingY
 	return c
@@ -1105,10 +1141,14 @@ func applyProp(s *Style, name string, v value) bool {
 		}
 	case "text-align":
 		switch v.ident() {
-		case "left", "start":
+		case "left":
 			s.TextAlign = AlignLeft
-		case "right", "end":
+		case "start":
+			s.TextAlign = AlignStart
+		case "right":
 			s.TextAlign = AlignRight
+		case "end":
+			s.TextAlign = AlignEnd
 		case "center":
 			s.TextAlign = AlignCenter
 		case "justify":
@@ -1189,6 +1229,13 @@ func applyProp(s *Style, name string, v value) bool {
 	case "background-size":
 		if w, h, ok := v.size(); ok {
 			s.BackgroundW, s.BackgroundH = w, h
+		}
+	case "direction":
+		switch v.ident() {
+		case "ltr":
+			s.Direction = DirLTR
+		case "rtl":
+			s.Direction = DirRTL
 		}
 	case "writing-mode", "-epub-writing-mode", "-webkit-writing-mode", "-ms-writing-mode":
 		switch v.ident() {
@@ -1363,6 +1410,8 @@ func copyProp(dst, src *Style, name string) bool {
 		dst.BackgroundX, dst.BackgroundY = src.BackgroundX, src.BackgroundY
 	case "background-size":
 		dst.BackgroundW, dst.BackgroundH = src.BackgroundW, src.BackgroundH
+	case "direction":
+		dst.Direction = src.Direction
 	case "writing-mode", "-epub-writing-mode", "-webkit-writing-mode", "-ms-writing-mode":
 		dst.Writing = src.Writing
 	case "text-orientation", "-epub-text-orientation", "-webkit-text-orientation":

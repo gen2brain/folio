@@ -22,9 +22,8 @@ const (
 	ncxParent  = 21
 )
 
-// indxTag is one row of the TAGX table: which tag it names, how many values
-// one of them holds, the bit of the control byte that says it is present, and
-// whether the row only ends a control byte.
+// indxTag is one row of the TAGX table: the tag, its value count, the bit of
+// the control byte marking it present, and whether the row ends that byte.
 type indxTag struct{ id, values, mask, control byte }
 
 // indxEntry is one row of an index: its label and the tags it carries.
@@ -155,9 +154,8 @@ func readEntry(b []byte, tags []indxTag, ctrl int) (indxEntry, bool) {
 	control := b[1+n : 1+n+ctrl]
 	p := 1 + n + ctrl
 
-	// A tag is present when its bits of the control byte are set. All of
-	// them set and more than one bit wide means the count is written in the
-	// entry rather than in the byte.
+	// All the bits of a mask wider than one set means the count is in the
+	// entry, not in the byte.
 	type pending struct {
 		tag   indxTag
 		count uint32
@@ -231,8 +229,7 @@ func bits8(v byte) int {
 }
 
 // varlen reads the integer written seven bits at a time, most significant
-// first, ending at the byte with its top bit set. It returns how many bytes
-// it took, and zero when there is no end within four.
+// first, ending at the byte with its top bit set. Zero bytes is no end.
 func varlen(b []byte, at int) (uint32, int) {
 	var v uint32
 	for i := 0; i < 4; i++ {

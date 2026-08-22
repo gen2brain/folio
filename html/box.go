@@ -87,6 +87,8 @@ type frag struct {
 	// vis is set for a picture or a drawing, and h its height.
 	vis *visual
 	h   float32
+	// rtl is a run drawn right to left.
+	rtl bool
 }
 
 // buildBoxes turns a styled tree into the boxes that lay out.

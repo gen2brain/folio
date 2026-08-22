@@ -81,7 +81,7 @@ func (p *painter) line(ln *lineBox) {
 			p.visual(f.vis, f.x, base-f.dy-f.h, f.w, f.h)
 			continue
 		}
-		p.text(f.text, f.face, f.style, f.x, base-f.dy, mid, f.extra)
+		p.text(drawText(f), f.face, f.style, f.x, base-f.dy, mid, f.extra)
 	}
 }
 
@@ -94,6 +94,22 @@ func (p *painter) marker(b *box, ln *lineBox) {
 	}
 	w := f.width(b.marker)
 	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, ln.y+ln.h/2, 0)
+}
+
+// drawText is a fragment in the order it is drawn: a right to left run is
+// reversed and mirrored, L2 and L4. The fragment keeps the text as written.
+func drawText(f *frag) string {
+	if !f.rtl {
+		return f.text
+	}
+	r := []rune(f.text)
+	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+		r[i], r[j] = bidiMirror(r[j]), bidiMirror(r[i])
+	}
+	if len(r)&1 != 0 {
+		r[len(r)/2] = bidiMirror(r[len(r)/2])
+	}
+	return string(r)
 }
 
 func (p *painter) text(s string, f face, st *Style, x, y, mid, extra float32) {

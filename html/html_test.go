@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1466,6 +1467,7 @@ func FuzzLayout(fu *testing.F) {
 	fu.Add("<div id=w><span id=a>x</span>y</div>",
 		"#w{position:relative;height:9px}#a{position:absolute;bottom:0;right:0}")
 	fu.Add("<p>Small Caps</p>", "p{font-variant:small-caps;letter-spacing:-9px;text-transform:capitalize}")
+	fu.Add("<p dir=rtl>\u05d0\u05d1 (a\u0661b) \u202e\u05d2\u202c\u2066c\u2069</p>", "p{direction:rtl;text-align:end}")
 	fu.Add("<div class=c><i class=f>f</i></div>",
 		".f{float:left;width:9px}.c::after{content:'';display:table;clear:both}i::before{content:'x'}")
 	fu.Fuzz(func(t *testing.T, body, sheet string) {
@@ -3067,5 +3069,290 @@ func TestPlainTextBook(t *testing.T) {
 	// The lines of a text file are kept, which is what pre asks for.
 	if got := p.Text(); !strings.Contains(got, "One line.\n") {
 		t.Fatalf("the page reads %q", got)
+	}
+}
+
+// TestBidiCharacterConformance runs the Unicode bidirectional character test,
+// which gives the levels and the visual order of real character sequences. It
+// needs the reference directory tools/fetch.sh fills.
+func TestBidiCharacterConformance(t *testing.T) {
+	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), "/temp/pdf"), "specs/BidiCharacterTest.txt")
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Skipf("no %s", name)
+	}
+	total, bad := 0, 0
+	for n, line := range strings.Split(string(b), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		f := strings.Split(line, ";")
+		if len(f) != 5 {
+			t.Fatalf("line %d: %d fields", n+1, len(f))
+		}
+		var text []rune
+		for _, s := range strings.Fields(f[0]) {
+			v, err := strconv.ParseInt(s, 16, 32)
+			if err != nil {
+				t.Fatalf("line %d: %v", n+1, err)
+			}
+			text = append(text, rune(v))
+		}
+		// The second field is the direction asked for: 0 and 1 are the two
+		// directions, 2 is the one the text decides.
+		base := -1
+		switch f[1] {
+		case "0":
+			base = 0
+		case "1":
+			base = 1
+		}
+		total++
+
+		res := bidiResolve(text, base)
+		if got, want := int(res.para), atoiOr(f[2], -1); got != want {
+			if bad++; bad <= 10 {
+				t.Errorf("line %d: paragraph level %d, want %d", n+1, got, want)
+			}
+			continue
+		}
+		levels := res.line(0, len(text))
+		wantLevels := strings.Fields(f[3])
+		if len(wantLevels) != len(levels) {
+			t.Fatalf("line %d: %d levels, want %d", n+1, len(levels), len(wantLevels))
+		}
+		fail := false
+		for i, w := range wantLevels {
+			// An x is a character the algorithm removed, which has no level.
+			if w == "x" {
+				if !res.gone[i] {
+					fail = true
+				}
+				continue
+			}
+			if res.gone[i] || int(levels[i]) != atoiOr(w, -1) {
+				fail = true
+			}
+		}
+		if fail {
+			if bad++; bad <= 10 {
+				t.Errorf("line %d: levels %v, want %v (%q)", n+1, levels, wantLevels, f[0])
+			}
+			continue
+		}
+		// The last field is what is drawn, left to right, with the removed
+		// characters left out.
+		var order []int
+		for _, i := range bidiOrder(levels) {
+			if !res.gone[i] {
+				order = append(order, i)
+			}
+		}
+		var want []int
+		for _, s := range strings.Fields(f[4]) {
+			want = append(want, atoiOr(s, -1))
+		}
+		if !slices.Equal(order, want) {
+			if bad++; bad <= 10 {
+				t.Errorf("line %d: order %v, want %v (%q)", n+1, order, want, f[0])
+			}
+		}
+	}
+	if bad > 0 {
+		t.Fatalf("%d of %d bidi cases wrong", bad, total)
+	}
+	t.Logf("%d bidi character cases", total)
+}
+
+func atoiOr(s string, or int) int {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return or
+	}
+	return v
+}
+
+// bidiSample is a character of each class, which the class based conformance
+// test is run on. None of them is a bracket, so rule N0 does not fire.
+var bidiSample = map[string]rune{
+	"L": 'A', "R": 0x05d0, "AL": 0x0627, "EN": '0', "ES": '+', "ET": '#',
+	"AN": 0x0660, "CS": ',', "NSM": 0x0300, "BN": 0x00ad, "B": 0x2029,
+	"S": '\t', "WS": ' ', "ON": '!', "LRE": 0x202a, "RLE": 0x202b,
+	"PDF": 0x202c, "LRO": 0x202d, "RLO": 0x202e, "LRI": 0x2066,
+	"RLI": 0x2067, "FSI": 0x2068, "PDI": 0x2069,
+}
+
+// TestBidiConformance runs the Unicode bidirectional test, which gives the
+// levels and the order of every combination of classes rather than of real
+// characters.
+func TestBidiConformance(t *testing.T) {
+	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), "/temp/pdf"), "specs/BidiTest.txt")
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Skipf("no %s", name)
+	}
+	// The samples have to be what they claim, or the test proves nothing.
+	for name, r := range bidiSample {
+		if got := bidiClassOf(r); bidiClasses[got] != name {
+			t.Fatalf("U+%04X is %s, want %s", r, bidiClasses[got], name)
+		}
+	}
+
+	var wantLevels []string
+	var wantOrder []int
+	total, bad := 0, 0
+	for n, line := range strings.Split(string(b), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "@Levels:"); ok {
+			wantLevels = strings.Fields(v)
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "@Reorder:"); ok {
+			wantOrder = nil
+			for _, s := range strings.Fields(v) {
+				wantOrder = append(wantOrder, atoiOr(s, -1))
+			}
+			continue
+		}
+		classes, bits, ok := strings.Cut(line, ";")
+		if !ok {
+			t.Fatalf("line %d: %q", n+1, line)
+		}
+		var text []rune
+		for _, c := range strings.Fields(classes) {
+			r, ok := bidiSample[c]
+			if !ok {
+				t.Fatalf("line %d: no sample for class %q", n+1, c)
+			}
+			text = append(text, r)
+		}
+		set := atoiOr(strings.TrimSpace(bits), 0)
+		for _, tc := range []struct {
+			bit  int
+			base int
+		}{{1, -1}, {2, 0}, {4, 1}} {
+			if set&tc.bit == 0 {
+				continue
+			}
+			total++
+			res := bidiResolve(text, tc.base)
+			levels := res.line(0, len(text))
+			fail := len(wantLevels) != len(levels)
+			for i := 0; !fail && i < len(levels); i++ {
+				if wantLevels[i] == "x" {
+					fail = !res.gone[i]
+					continue
+				}
+				fail = res.gone[i] || int(levels[i]) != atoiOr(wantLevels[i], -1)
+			}
+			var order []int
+			for _, i := range bidiOrder(levels) {
+				if !res.gone[i] {
+					order = append(order, i)
+				}
+			}
+			if !fail && !slices.Equal(order, wantOrder) {
+				fail = true
+			}
+			if fail {
+				if bad++; bad <= 10 {
+					t.Errorf("line %d base %d: levels %v order %v, want %v and %v (%s)",
+						n+1, tc.base, levels, order, wantLevels, wantOrder, classes)
+				}
+			}
+		}
+	}
+	if bad > 0 {
+		t.Fatalf("%d of %d bidi cases wrong", bad, total)
+	}
+	t.Logf("%d bidi class cases", total)
+}
+
+// TestBidiLayout covers what the algorithm does to a line: the pieces are
+// placed in the order they are drawn, kept in the order they were written,
+// and a run that goes right to left is drawn backwards and mirrored.
+func TestBidiLayout(t *testing.T) {
+	const heb = "שלום" // shalom
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml":    `<html><body dir="rtl"><p>` + heb + ` (abc) ` + heb + `</p></body></html>`,
+		"EPUB/text/two.xhtml":    "<html/>",
+		"EPUB/images/cover.png":  "\x89PNG",
+	})
+	// The book carries a cover that is not a picture, which the layout
+	// records and carries on past.
+	if n, _ := d.Layout(&LayoutOptions{Width: 400, Height: 400, Margin: 0}); n == 0 {
+		t.Fatal("the book laid out to nothing")
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the page says is what was written, not the shape of it.
+	if got := strings.TrimSpace(p.Text()); got != heb+" (abc) "+heb {
+		t.Fatalf("the page reads %q", got)
+	}
+
+	var frags []frag
+	var walk func(b *box)
+	walk = func(b *box) {
+		if b == nil {
+			return
+		}
+		for i := range b.lines {
+			frags = append(frags, b.lines[i].frags...)
+		}
+		for _, k := range b.kids {
+			walk(k)
+		}
+	}
+	walk(p.part.root)
+	if len(frags) < 2 {
+		t.Fatalf("%d fragments", len(frags))
+	}
+	// The paragraph runs right to left, so what was written first is drawn
+	// furthest right.
+	if frags[0].x <= frags[len(frags)-1].x {
+		t.Errorf("the first fragment is at %v and the last at %v, want it further right",
+			frags[0].x, frags[len(frags)-1].x)
+	}
+	// The Hebrew is drawn backwards, and the Latin between the brackets is
+	// not.
+	first := frags[0]
+	if !first.rtl {
+		t.Fatalf("the first fragment is %q and not right to left", first.text)
+	}
+	if got := drawText(&first); got != "םולש" {
+		t.Errorf("drawn as %q, want it reversed", got)
+	}
+	for i := range frags {
+		if frags[i].text == "abc" {
+			if frags[i].rtl {
+				t.Error("the Latin run was taken for right to left")
+			}
+		}
+	}
+	// Rule L4 draws a bracket that runs right to left as the other one.
+	if got := drawText(&frag{text: "(", rtl: true}); got != ")" {
+		t.Errorf("a bracket is drawn as %q, want %q", got, ")")
+	}
+	// The line as it is drawn, which is what fribidi makes of the same text.
+	slices.SortFunc(frags, func(a, b frag) int { return cmp.Compare(a.x, b.x) })
+	var vis strings.Builder
+	for i := range frags {
+		vis.WriteString(drawText(&frags[i]))
+	}
+	if got, want := vis.String(), "םולש (abc) םולש"; got != want {
+		t.Errorf("drawn as %q, want %q", got, want)
 	}
 }

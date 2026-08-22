@@ -1,9 +1,11 @@
 package html
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // layout flows a box tree down a column of a given width. Everything it
@@ -486,6 +488,7 @@ func (l *layout) inline(b *box, x, w float32) {
 		c.gather(k)
 	}
 	c.str = c.text.String()
+	c.resolveBidi(b.style.Direction)
 	defer func() {
 		for _, k := range c.placed {
 			l.absolute(k, x, w)
@@ -633,7 +636,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 
 	extra, off := float32(0), float32(0)
 	if leftover := w - indent - total; leftover > 0 {
-		switch b.style.TextAlign {
+		switch b.style.TextAlign.Resolve(b.style.Direction) {
 		case AlignRight:
 			off = leftover
 		case AlignCenter:
@@ -645,10 +648,17 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 		}
 	}
 
+	// Placed in the order they are drawn, kept in the order they were
+	// written.
+	type placed struct {
+		f  frag
+		at int
+	}
+	var laid []placed
 	cx := x + indent + off
-	for _, p := range c.pieces(lo, hi) {
+	for _, p := range c.visual(c.pieces(lo, hi)) {
 		it := &c.items[p.item]
-		f := frag{x: cx, style: it.style, face: it.face}
+		f := frag{x: cx, style: it.style, face: it.face, rtl: c.rightToLeft(p.lo)}
 		a, d := itemBox(it)
 		switch it.style.VerticalAlign {
 		case AlignTop:
@@ -661,20 +671,26 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 		if it.sub != nil {
 			f.sub, f.w, f.h = it.sub, it.iw, it.ih
 			cx += it.iw
-			line.frags = append(line.frags, f)
+			laid = append(laid, placed{f, p.lo})
 			continue
 		}
 		if it.vis != nil {
 			f.vis, f.w, f.h = it.vis, it.iw, it.ih
 			cx += it.iw
-			line.frags = append(line.frags, f)
+			laid = append(laid, placed{f, p.lo})
 			continue
 		}
 		s := c.str[p.lo:p.hi]
 		f.text, f.extra = s, extra
 		f.w = it.face.width(s) + extra*float32(strings.Count(s, " "))
 		cx += f.w
-		line.frags = append(line.frags, f)
+		laid = append(laid, placed{f, p.lo})
+	}
+	if c.levels != nil {
+		slices.SortFunc(laid, func(a, b placed) int { return a.at - b.at })
+	}
+	for _, pl := range laid {
+		line.frags = append(line.frags, pl.f)
 	}
 
 	line.h, line.baseline, line.natural = above+below, above, total+indent
@@ -845,6 +861,11 @@ type inlineCtx struct {
 	// says whether anything has been written yet.
 	space bool
 	begun bool
+	// levels is the bidirectional level of every byte of the paragraph, nil
+	// when all of it runs left to right, and rtl the paragraph's own
+	// direction.
+	levels []byte
+	rtl    bool
 }
 
 func (c *inlineCtx) gather(b *box) {
@@ -1104,4 +1125,81 @@ func (c *inlineCtx) measure(lo, hi int) float32 {
 		}
 	}
 	return w
+}
+
+// resolveBidi levels every byte of the paragraph. levels stays nil when the
+// whole of it runs left to right.
+func (c *inlineCtx) resolveBidi(dir Direction) {
+	c.rtl = dir.RTL()
+	if !c.rtl && !needsBidi(c.str) {
+		return
+	}
+	text := []rune(c.str)
+	base := 0
+	if c.rtl {
+		base = 1
+	}
+	res := bidiResolve(text, base)
+	levels := res.line(0, len(text))
+	c.levels = make([]byte, len(c.str))
+	at := 0
+	for i, r := range text {
+		n := utf8.RuneLen(r)
+		for k := 0; k < n; k++ {
+			c.levels[at+k] = levels[i]
+		}
+		at += n
+	}
+}
+
+// needsBidi reports a character that does not run left to right.
+func needsBidi(s string) bool {
+	for _, r := range s {
+		if r < 0x0590 {
+			continue
+		}
+		switch bidiClassOf(r) {
+		case bidiR, bidiAL, bidiAN, bidiRLE, bidiRLO, bidiRLI, bidiLRE, bidiLRO, bidiLRI, bidiFSI, bidiPDF, bidiPDI:
+			return true
+		}
+	}
+	return false
+}
+
+// visual splits the pieces of a line where the level changes and orders them
+// the way rule L2 draws them.
+func (c *inlineCtx) visual(in []piece) []piece {
+	if c.levels == nil {
+		return in
+	}
+	var out []piece
+	for _, p := range in {
+		if c.items[p.item].vis != nil || c.items[p.item].sub != nil {
+			out = append(out, p)
+			continue
+		}
+		for lo := p.lo; lo < p.hi; {
+			hi := lo + 1
+			for hi < p.hi && c.levels[hi] == c.levels[lo] {
+				hi++
+			}
+			out = append(out, piece{item: p.item, lo: lo, hi: hi})
+			lo = hi
+		}
+	}
+	levels := make([]byte, len(out))
+	for i, p := range out {
+		levels[i] = c.levels[p.lo]
+	}
+	order := bidiOrder(levels)
+	res := make([]piece, len(out))
+	for i, j := range order {
+		res[i] = out[j]
+	}
+	return res
+}
+
+// rightToLeft reports a byte of the paragraph that is drawn right to left.
+func (c *inlineCtx) rightToLeft(at int) bool {
+	return c.levels != nil && c.levels[at]&1 != 0
 }

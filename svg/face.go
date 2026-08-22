@@ -62,9 +62,8 @@ func faceWeight(v string) int {
 	return n
 }
 
-// faceSrc reads the comma separated list a src declares, keeping the local
-// files in the order they were written. A local() name is not a file and a
-// data URL is not one either: neither is followed.
+// faceSrc is the files a src names, in order. A local() name and a data URL
+// are not files and are not followed.
 func faceSrc(v string) []string {
 	var out []string
 	for _, one := range splitTop(v) {
@@ -115,8 +114,7 @@ func splitTop(v string) []string {
 }
 
 // embedded is the face the drawing brings for a family at a weight and a
-// slant, and nil when it brings none. A family declared more than once picks
-// the face closest to what was asked for, the same way a stylesheet does.
+// slant, the closest of them when it declares several, and nil when it has none.
 func (d *Document) embedded(family string, bold, italic bool) *font.Font {
 	if len(d.faces) == 0 {
 		return nil
