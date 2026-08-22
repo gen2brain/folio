@@ -693,3 +693,94 @@ func TestShapeArabic(t *testing.T) {
 		}
 	}
 }
+
+// TestSyllables covers the grammar a run of an Indic script is cut into
+// syllables by, which is what everything else works on.
+func TestSyllables(t *testing.T) {
+	cats := func(s string) []uint8 {
+		out := make([]uint8, len([]rune(s)))
+		for i, r := range []rune(s) {
+			out[i], _ = indicOf(r)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		text string
+		want [][2]int
+	}{
+		// A consonant, a consonant with a halant and a consonant, and a
+		// consonant with a matra are each one syllable.
+		{"क", [][2]int{{0, 1}}},
+		{"क्क", [][2]int{{0, 3}}},
+		{"कि", [][2]int{{0, 2}}},
+		// A word is as many syllables as it has consonant groups.
+		// A consonant, a halant, a consonant and a matra are one syllable.
+		{"नमस्ते", [][2]int{{0, 1}, {1, 2}, {2, 6}}},
+		{"कर्म", [][2]int{{0, 1}, {1, 4}}},
+	} {
+		var got [][2]int
+		for _, s := range syllables(cats(tc.text)) {
+			got = append(got, [2]int{s[0], s[1]})
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("%q cut into %v, want %v", tc.text, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%q cut into %v, want %v", tc.text, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+// TestIndicCategories covers what the table says about the characters the
+// reordering asks about.
+func TestIndicCategories(t *testing.T) {
+	for _, tc := range []struct {
+		r   rune
+		cat uint8
+		pos uint8
+	}{
+		{'क', inC, posBaseC},     // a consonant
+		{'र', inRa, posBaseC},    // the one that becomes a reph
+		{0x094D, inH, posEnd},    // the virama
+		{0x093F, inM, posPreM},   // the matra written before its consonant
+		{0x0947, inM, posAboveC}, // and one written above it
+		{0x093C, inN, posEnd},    // the nukta
+		{0x0902, inSM, posSMVD},  // anusvara
+	} {
+		cat, pos := indicOf(tc.r)
+		if cat != tc.cat || pos != tc.pos {
+			t.Errorf("U+%04X is (%d,%d), want (%d,%d)", tc.r, cat, pos, tc.cat, tc.pos)
+		}
+	}
+}
+
+// TestShapeDevanagari shapes a word whose matra is written after the
+// consonant it is drawn before, which is the reordering the script needs.
+func TestShapeDevanagari(t *testing.T) {
+	f := Fallback('क', false, false)
+	if f == nil || !f.Shaped() {
+		t.Skip("no Devanagari face with layout tables")
+	}
+	// In "कि" the matra is written second and drawn first, so the consonant
+	// is the second glyph and it is the one the letter shapes to on its own.
+	gs := f.Shape([]rune("कि"), false)
+	if len(gs) != 2 {
+		t.Fatalf("%d glyphs, want 2", len(gs))
+	}
+	alone := f.Shape([]rune("क"), false)
+	if len(alone) != 1 {
+		t.Fatalf("%d glyphs for the consonant on its own", len(alone))
+	}
+	if gs[1].GID != alone[0].GID {
+		t.Errorf("the consonant is glyph %d and came out %d, so the matra did not move",
+			alone[0].GID, gs[1].GID)
+	}
+	// Both came out of one cluster, so a caret cannot land between them.
+	if gs[0].Cluster != 0 || gs[1].Cluster != 0 {
+		t.Errorf("clusters %d and %d, want both nought", gs[0].Cluster, gs[1].Cluster)
+	}
+}

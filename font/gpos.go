@@ -18,7 +18,9 @@ const (
 func (p *shapePlan) position(b *buffer) {
 	for _, st := range p.gpos {
 		for _, l := range st.lookups {
-			b.applyPos(l.lookup, l.mask, 0)
+			if b.mayMatch(l.digest) {
+				b.applyPos(l.lookup, l.mask, 0)
+			}
 		}
 	}
 	// A mark carries the advance of whatever glyph it happens to be, which
@@ -494,5 +496,93 @@ func (b *buffer) settle(i, depth int) {
 				b.items[i].yoff -= b.items[k].yadv
 			}
 		}
+	}
+}
+
+// kernPairs is the kerning the old table gives a pair of glyphs, which a font
+// with no GPOS of its own carries instead.
+func (f *Font) kernPairs(left, right int) int {
+	b := f.kern
+	if len(b) < 4 {
+		return 0
+	}
+	at, n := 4, be16(b, 2)
+	// Apple writes a longer header, and a version of one says which.
+	if be16(b, 0) != 0 {
+		if len(b) < 8 {
+			return 0
+		}
+		at, n = 8, be32(b, 4)
+	}
+	total := 0
+	for i := 0; i < n && at+6 <= len(b); i++ {
+		length := be16(b, at+2)
+		cover := be16(b, at+4)
+		if length < 6 || at+length > len(b) {
+			break
+		}
+		// Only the horizontal kerning of format zero is read; a minimum or a
+		// cross stream table says something else.
+		if cover&0x0001 != 0 && cover&0x0002 == 0 && cover>>8 == 0 {
+			total += kernFormat0(b[at:at+length], left, right)
+		}
+		at += length
+	}
+	return total
+}
+
+// kernFormat0 looks a pair up in the sorted list one subtable holds.
+func kernFormat0(b []byte, left, right int) int {
+	if len(b) < 14 {
+		return 0
+	}
+	n := be16(b, 6)
+	if 14+6*n > len(b) {
+		return 0
+	}
+	want := left<<16 | right
+	lo, hi := 0, n
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		p := 14 + 6*mid
+		if be16(b, p)<<16|be16(b, p+2) < want {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < n {
+		p := 14 + 6*lo
+		if be16(b, p)<<16|be16(b, p+2) == want {
+			return be16s(b, p+4)
+		}
+	}
+	return 0
+}
+
+// kern applies the old kerning table, which is what a font with no kerning of
+// its own in GPOS is left with. The adjustment is shared between the two
+// glyphs the way the reference shaper shares it.
+func (b *buffer) kern() {
+	for i := 0; i+1 < len(b.items); i++ {
+		if b.f.gdef.class(b.items[i].gid) == classMark {
+			continue
+		}
+		j := i + 1
+		for j < len(b.items) && b.f.gdef.class(b.items[j].gid) == classMark {
+			j++
+		}
+		if j >= len(b.items) {
+			break
+		}
+		v := b.f.kernPairs(b.items[i].gid, b.items[j].gid)
+		if v == 0 {
+			continue
+		}
+		first := v >> 1
+		second := v - first
+		b.items[i].xadv += first
+		b.items[j].xadv += second
+		b.items[j].xoff += second
 	}
 }

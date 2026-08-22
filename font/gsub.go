@@ -16,7 +16,12 @@ const (
 func (p *shapePlan) substitute(b *buffer) {
 	for _, st := range p.gsub {
 		for _, l := range st.lookups {
-			b.applySub(l.lookup, l.mask, 0)
+			if b.mayMatch(l.digest) {
+				b.applySub(l.lookup, l.mask, 0)
+			}
+		}
+		if st.pause != nil {
+			st.pause(b)
 		}
 	}
 }
@@ -209,9 +214,11 @@ func (b *buffer) ligate(gid int, idx []int) {
 	b.ligID++
 	id := b.ligID
 	first, last := idx[0], idx[len(idx)-1]
+	b.mergeClusters(first, last+1)
 	b.items[first].gid = gid
 	b.items[first].ligID = id
 	b.items[first].ligComp = 0
+	b.items[first].ligated = true
 
 	drop := map[int]bool{}
 	for _, k := range idx[1:] {

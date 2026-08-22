@@ -95,6 +95,12 @@ type item struct {
 	// ligID and ligComp say which ligature a glyph came out of and which
 	// component of it.
 	ligID, ligComp int
+	// syl is which syllable of an Indic run the glyph belongs to, counting
+	// from one, pos where in it, and ligated says the glyph is one the font
+	// made out of several.
+	syl     int
+	pos     uint8
+	ligated bool
 	// The position GPOS works out.
 	xoff, yoff, xadv, yadv int
 	// attach chains a mark onto what it sits on, as an offset in the buffer.
@@ -148,15 +154,23 @@ func (f *Font) Shape(text []rune, rtl bool) []Glyph {
 		return nil
 	}
 	script := otScript(text)
-	if script == "arab" {
+	switch script {
+	case "arab":
 		b.joining(runes)
+	case "dev2", "deva":
+		b.indicShape(runes)
 	}
-	if p := f.plan(script, rtl); p != nil {
+	p := f.plan(script, rtl)
+	if p != nil {
 		p.substitute(b)
-		b.positions()
+	}
+	b.positions()
+	// A font with no kerning of its own in GPOS falls back to the old table.
+	if len(f.kern) > 0 && (p == nil || !p.kerns) {
+		b.kern()
+	}
+	if p != nil {
 		p.position(b)
-	} else {
-		b.positions()
 	}
 	if rtl {
 		for i, j := 0, len(b.items)-1; i < j; i, j = i+1, j-1 {
@@ -246,7 +260,7 @@ func otScript(text []rune) string {
 		case scriptHebrew:
 			return "hebr"
 		case scriptDevanagari:
-			return "deva"
+			return "dev2"
 		case scriptThai:
 			return "thai"
 		case scriptHan:
@@ -333,21 +347,25 @@ func (b *buffer) joining(text []rune) {
 }
 
 // stage is one step of the plan: the lookups of a group of features, in the
-// order the font lists them, each with the glyphs it may touch.
+// order the font lists them, and what the shaper does once they have run.
 type stage struct {
 	lookups []planned
+	pause   func(*buffer)
 }
 
 type planned struct {
 	index  int
 	mask   uint32
 	lookup *otLookup
+	digest digest
 }
 
-// plan is the lookups a font runs for a script, worked out once.
+// plan is the lookups a font runs for a script, worked out once. kerns says
+// GPOS kerns of its own, so the old table is not read.
 type shapePlan struct {
-	gsub []stage
-	gpos []stage
+	gsub  []stage
+	gpos  []stage
+	kerns bool
 }
 
 // The order the features are applied in. Each group is a step of its own: a
@@ -360,19 +378,45 @@ var gsubStages = [][]string{
 	{"liga", "clig", "mset"},
 }
 
+// The Indic scripts run a list of their own: the features that pick the form
+// of each part of a syllable, the reordering that puts the parts where the
+// font has made them fit, then the ones that join the parts together.
+var indicStages = func() [][]string {
+	out := [][]string{{"ccmp", "locl"}}
+	for _, f := range indicFormFeatures {
+		out = append(out, []string{f})
+	}
+	out = append(out, []string{indicPause})
+	for _, f := range indicFinalFeatures {
+		out = append(out, []string{f})
+	}
+	return append(out, []string{"calt", "clig", "liga"})
+}()
+
+// indicPause names the step that reorders a syllable once the font has said
+// what each part of it looks like. It is not a feature.
+const indicPause = "\x00reorder"
+
 var gposStages = [][]string{
 	{"curs"},
 	{"kern", "dist"},
+	{"abvm"}, {"blwm"},
 	{"mark"},
 	{"mkmk"},
 }
 
 // featureMask is which glyphs a feature may touch: the four cursive forms
-// only the letters that take them, everything else the whole run.
+// only the letters that take them, the Indic form features only the parts of
+// a syllable that ask for them, and everything else the whole run.
 func featureMask(name string) uint32 {
 	for i, f := range formFeature {
 		if f == name {
 			return 1 << uint(i)
+		}
+	}
+	for i, f := range indicFormFeatures {
+		if f == name {
+			return 1 << uint(i+8)
 		}
 	}
 	return 1
@@ -391,9 +435,17 @@ func (f *Font) plan(script string, rtl bool) *shapePlan {
 	}
 	var p *shapePlan
 	if f.gsub != nil || f.gpos != nil {
+		stages := gsubStages
+		if script == "dev2" || script == "deva" {
+			stages = indicStages
+		}
 		p = &shapePlan{
-			gsub: buildStages(f.gsub, script, gsubStages),
-			gpos: buildStages(f.gpos, script, gposStages),
+			gsub: buildStages(f.gsub, script, stages, true),
+			gpos: buildStages(f.gpos, script, gposStages, false),
+		}
+		if f.gpos != nil {
+			lang := f.gpos.langSys(f.gpos.scriptOffset(script), "")
+			p.kerns = len(f.gpos.featureLookups(lang, "kern")) > 0
 		}
 	}
 	if f.plans == nil {
@@ -405,13 +457,17 @@ func (f *Font) plan(script string, rtl bool) *shapePlan {
 
 // buildStages collects the lookups of each group of features, sorted by the
 // order the font lists them, which is the order they apply in.
-func buildStages(t *otLayout, script string, groups [][]string) []stage {
+func buildStages(t *otLayout, script string, groups [][]string, gsub bool) []stage {
 	if t == nil {
 		return nil
 	}
 	lang := t.langSys(t.scriptOffset(script), "")
 	var out []stage
 	for _, group := range groups {
+		if len(group) == 1 && group[0] == indicPause {
+			out = append(out, stage{pause: (*buffer).indicFinal})
+			continue
+		}
 		masks := map[int]uint32{}
 		for _, name := range group {
 			m := featureMask(name)
@@ -430,7 +486,8 @@ func buildStages(t *otLayout, script string, groups [][]string) []stage {
 		var st stage
 		for _, i := range idx {
 			if l := t.lookup(i); l != nil {
-				st.lookups = append(st.lookups, planned{index: i, mask: masks[i], lookup: l})
+				st.lookups = append(st.lookups, planned{index: i, mask: masks[i],
+					lookup: l, digest: t.digestOf(l, gsub, 0)})
 			}
 		}
 		if len(st.lookups) > 0 {

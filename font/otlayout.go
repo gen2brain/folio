@@ -334,3 +334,108 @@ func (g *gdef) inMarkSet(set, gid int) bool {
 	}
 	return coverageIndex(b, at+off, gid) >= 0
 }
+
+// digest is a rough set of the glyphs a lookup covers, two bit masks over
+// different parts of the glyph number. A lookup whose digest shares no bit
+// with the run cannot match anything in it and is not walked at all.
+type digest struct{ lo, hi uint64 }
+
+func (d *digest) add(gid int) {
+	d.lo |= 1 << uint(gid&63)
+	d.hi |= 1 << uint((gid>>6)&63)
+}
+
+func (d *digest) addRange(from, to int) {
+	if to-from >= 63 {
+		d.lo = ^uint64(0)
+	}
+	if (to>>6)-(from>>6) >= 63 {
+		d.hi = ^uint64(0)
+	}
+	if d.lo == ^uint64(0) && d.hi == ^uint64(0) {
+		return
+	}
+	for g := from; g <= to && g-from < 4096; g++ {
+		d.add(g)
+	}
+}
+
+func (d *digest) union(o digest) {
+	d.lo |= o.lo
+	d.hi |= o.hi
+}
+
+// mayHave reports a glyph the digest does not rule out.
+func (d digest) mayHave(gid int) bool {
+	return d.lo&(1<<uint(gid&63)) != 0 && d.hi&(1<<uint((gid>>6)&63)) != 0
+}
+
+// addCoverage puts every glyph of a coverage table into a digest.
+func (d *digest) addCoverage(b []byte, off int) {
+	if off <= 0 || off+4 > len(b) {
+		d.lo, d.hi = ^uint64(0), ^uint64(0)
+		return
+	}
+	n := be16(b, off+2)
+	switch be16(b, off) {
+	case 1:
+		if off+4+2*n > len(b) {
+			d.lo, d.hi = ^uint64(0), ^uint64(0)
+			return
+		}
+		for i := range n {
+			d.add(be16(b, off+4+2*i))
+		}
+	case 2:
+		if off+4+6*n > len(b) {
+			d.lo, d.hi = ^uint64(0), ^uint64(0)
+			return
+		}
+		for i := range n {
+			p := off + 4 + 6*i
+			d.addRange(be16(b, p), be16(b, p+2))
+		}
+	default:
+		d.lo, d.hi = ^uint64(0), ^uint64(0)
+	}
+}
+
+// digestOf is the glyphs a lookup may match on, which is the coverage its
+// subtables start with.
+func (t *otLayout) digestOf(l *otLookup, gsub bool, depth int) digest {
+	var d digest
+	if depth > 2 {
+		return digest{^uint64(0), ^uint64(0)}
+	}
+	for _, off := range l.subs {
+		b := t.data
+		if off+2 > len(b) {
+			continue
+		}
+		format := be16(b, off)
+		switch {
+		case gsub && l.kind == gsubExtension, !gsub && l.kind == gposExtension:
+			kind, sub, ok := extension(b, off)
+			if !ok {
+				return digest{^uint64(0), ^uint64(0)}
+			}
+			d.union(t.digestOf(&otLookup{kind: kind, subs: []int{sub}}, gsub, depth+1))
+			continue
+		case gsub && (l.kind == gsubContext || l.kind == gsubChain),
+			!gsub && (l.kind == gposContext || l.kind == gposChain):
+			// A format three context names its coverages in a list, and the
+			// first of the input ones is what it matches at.
+			if format == 3 {
+				if l.kind == gsubChain || l.kind == gposChain {
+					nb := be16(b, off+2)
+					d.addCoverage(b, off+be16(b, off+4+2*nb+2))
+				} else {
+					d.addCoverage(b, off+be16(b, off+6))
+				}
+				continue
+			}
+		}
+		d.addCoverage(b, off+be16(b, off+2))
+	}
+	return d
+}

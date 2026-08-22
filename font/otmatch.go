@@ -330,3 +330,14 @@ func (b *buffer) aheadOK(l *otLookup, last int, want []matcher) bool {
 	}
 	return true
 }
+
+// mayMatch reports a lookup whose digest shares a glyph with the run, which
+// is the only kind worth walking the buffer for.
+func (b *buffer) mayMatch(d digest) bool {
+	for i := range b.items {
+		if d.mayHave(b.items[i].gid) {
+			return true
+		}
+	}
+	return false
+}

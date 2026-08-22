@@ -114,6 +114,11 @@ type faceMetrics struct {
 	// ideographs costs, and it is the same answer every time.
 	mu     sync.RWMutex
 	glyphs map[rune]glyph
+	// runMu guards the runs the font has shaped. Breaking a paragraph into
+	// lines measures the same text again and again, and shaping a script
+	// that joins is far too much work to repeat.
+	runMu sync.RWMutex
+	runs  map[shapeKey][]font.Glyph
 }
 
 // glyph is what a character maps to in one program: the glyph index, and how
@@ -305,21 +310,64 @@ func (f face) width(s string) float32 {
 	return w*f.size + float32(n)*f.track
 }
 
-// shape runs the text through the font's own layout tables, which is what a
-// script whose letters join or carry marks needs. Plain text is measured a
-// character at a time, which is the same answer and much less work.
+// shape runs the text through the font's own layout tables. Plain text is
+// measured a character at a time, the same answer for much less work.
 func (f face) shape(s string, rtl bool) ([]font.Glyph, bool) {
-	if f.prog == nil || f.vertical || !f.prog.Shaped() || !needsShaping(s) {
+	if f.prog == nil || f.m == nil || f.vertical || !f.prog.Shaped() || !needsShaping(s) {
 		return nil, false
 	}
-	return f.prog.Shape([]rune(s), rtl), true
+	key := shapeKey{s: s, rtl: rtl}
+	f.m.runMu.RLock()
+	gs, ok := f.m.runs[key]
+	f.m.runMu.RUnlock()
+	if ok {
+		return gs, true
+	}
+	gs = f.prog.Shape([]rune(s), rtl)
+	f.m.runMu.Lock()
+	if f.m.runs == nil {
+		f.m.runs = map[shapeKey][]font.Glyph{}
+	}
+	if len(f.m.runs) >= maxShapedRuns {
+		clear(f.m.runs)
+	}
+	f.m.runs[key] = gs
+	f.m.runMu.Unlock()
+	return gs, true
 }
 
+// shapeKey is one run a face has shaped.
+type shapeKey struct {
+	s   string
+	rtl bool
+}
+
+// maxShapedRuns bounds what a face remembers of the text it has shaped.
+const maxShapedRuns = 1 << 14
+
 // needsShaping reports text a font has to lay out itself: anything with a
-// combining mark in it, and every script above the Latin range.
+// combining mark in it, and the scripts whose letters join, reorder or carry
+// their vowels above and below. Everything else, Han and Kana among it, is
+// one glyph a character and takes the shorter path.
 func needsShaping(s string) bool {
 	for _, r := range s {
-		if r >= 0x0300 {
+		if r < 0x0300 {
+			continue
+		}
+		switch {
+		case r <= 0x036f, // combining marks
+			r >= 0x0590 && r <= 0x109f, // Hebrew through Myanmar
+			r >= 0x1700 && r <= 0x18af, // Tagalog through Mongolian
+			r >= 0x1900 && r <= 0x1cff, // Limbu through the Vedic marks
+			r >= 0x1dc0 && r <= 0x1dff, // more combining marks
+			r >= 0x20d0 && r <= 0x20ff,
+			r >= 0xa800 && r <= 0xabff, // Syloti through Meetei
+			r >= 0xfb1d && r <= 0xfdff, // Hebrew and Arabic forms
+			r >= 0xfe00 && r <= 0xfe2f, // variation selectors and half marks
+			r >= 0xfe70 && r <= 0xfeff,
+			r >= 0x10800 && r <= 0x10fff,
+			r >= 0x11000 && r <= 0x11fff, // Brahmi and the rest
+			r >= 0x1e800 && r <= 0x1efff:
 			return true
 		}
 	}
