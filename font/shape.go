@@ -504,6 +504,35 @@ func (f *Font) advanceUnits(gid int) int { return int(f.Advance(gid)) }
 // not is drawn from its character map alone.
 func (f *Font) Shaped() bool { return f.gsub != nil || f.gpos != nil }
 
+// NeedsShaping reports text a font has to lay out itself: anything with a
+// combining mark in it, and the scripts whose letters join, reorder or carry
+// their vowels above and below. Everything else, Han and Kana among it, is
+// one glyph a character and takes the shorter path.
+func NeedsShaping(s string) bool {
+	for _, r := range s {
+		if r < 0x0300 {
+			continue
+		}
+		switch {
+		case r <= 0x036f, // combining marks
+			r >= 0x0590 && r <= 0x109f, // Hebrew through Myanmar
+			r >= 0x1700 && r <= 0x18af, // Tagalog through Mongolian
+			r >= 0x1900 && r <= 0x1cff, // Limbu through the Vedic marks
+			r >= 0x1dc0 && r <= 0x1dff, // more combining marks
+			r >= 0x20d0 && r <= 0x20ff,
+			r >= 0xa800 && r <= 0xabff, // Syloti through Meetei
+			r >= 0xfb1d && r <= 0xfdff, // Hebrew and Arabic forms
+			r >= 0xfe00 && r <= 0xfe2f, // variation selectors and half marks
+			r >= 0xfe70 && r <= 0xfeff,
+			r >= 0x10800 && r <= 0x10fff,
+			r >= 0x11000 && r <= 0x11fff, // Brahmi and the rest
+			r >= 0x1e800 && r <= 0x1efff:
+			return true
+		}
+	}
+	return false
+}
+
 // DebugLayout reports what the layout tables of a font hold, for a
 // comparison against another shaper.
 func (f *Font) DebugLayout() string {

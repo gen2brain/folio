@@ -144,6 +144,7 @@ func (r *runner) marker(value string, v vertex, ctm raster.Matrix, st state) {
 	sub := initialState(w, h)
 	sub.ctxFill, sub.ctxFillServer = st.fill, st.fillServer
 	sub.ctxStroke, sub.ctxStrokeServer = st.stroke, st.strokeServer
+	sub.ctxCTM = ctm
 	// The marker's viewport is w by h with refX,refY of it sitting on the
 	// vertex, so the frame is the viewport moved back by that point.
 	ref := raster.Point{X: refX, Y: refY}

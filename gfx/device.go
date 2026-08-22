@@ -127,7 +127,43 @@ type Device interface {
 
 // BaseDevice implements Device with no-ops. Embed it so a device that cares
 // about three operations does not have to spell out twenty.
-type BaseDevice struct{}
+type BaseDevice struct {
+	// running is the glyph procedures the device is in the middle of. A font
+	// with no program of its own draws a glyph by running content through the
+	// device, so the device is the only thing on that path that outlives one
+	// call and the only place it can be bounded.
+	running []any
+}
+
+// EnterGlyph reports whether a glyph procedure may run and pushes it, and
+// LeaveGlyph pops it. A procedure that reaches itself stops at the cycle
+// rather than at the nesting limit, because the work a cycle does doubles at
+// every turn.
+func (b *BaseDevice) EnterGlyph(key any) bool {
+	if len(b.running) >= maxGlyphDepth {
+		return false
+	}
+	for _, v := range b.running {
+		if v == key {
+			return false
+		}
+	}
+	b.running = append(b.running, key)
+	return true
+}
+
+func (b *BaseDevice) LeaveGlyph() {
+	if n := len(b.running); n > 0 {
+		b.running = b.running[:n-1]
+	}
+}
+
+// GlyphRunner is the part of a device a font uses to draw its own glyphs
+// through it. BaseDevice implements it, so every device has it.
+type GlyphRunner interface {
+	EnterGlyph(key any) bool
+	LeaveGlyph()
+}
 
 func (BaseDevice) FillPath(*raster.Path, bool, raster.Matrix, *ColorSpace, []float32, float32, ColorParams) {
 }

@@ -104,7 +104,7 @@ func visualText(s string, rtl bool) string {
 	}
 	r := []rune(s)
 	for i := range r {
-		r[i] = bidiMirror(r[i])
+		r[i] = font.BidiMirror(r[i])
 	}
 	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
 		r[i], r[j] = r[j], r[i]
@@ -121,7 +121,7 @@ func mirrorText(s string, rtl bool) string {
 	}
 	r := []rune(s)
 	for i := range r {
-		r[i] = bidiMirror(r[i])
+		r[i] = font.BidiMirror(r[i])
 	}
 	return string(r)
 }

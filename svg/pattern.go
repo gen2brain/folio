@@ -71,8 +71,9 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 
 	// The tile is placed where it says, and the drawing inside it is scaled
 	// by its own viewBox when it has one.
-	tile := raster.Concat(raster.Translate(x, y), ctm)
-	tile = raster.Concat(transform(r.inherited(n, "patternTransform", 0)), tile)
+	pt := atOrigin(transform(r.inherited(n, "patternTransform", 0)),
+		r.inherited(n, "transform-origin", 0), st.vw, st.vh, st.em)
+	tile := raster.Concat(raster.Concat(raster.Translate(x, y), pt), ctm)
 	// pre maps the content onto the cell and is applied before the cell is
 	// stepped, so that the step stays one cell whatever the content is scaled
 	// by.

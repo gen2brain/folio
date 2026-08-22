@@ -332,7 +332,7 @@ func TestTextLayout(t *testing.T) {
 		r := &runner{doc: d}
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
-		return c.glyphs
+		return r.layout(c.chars)
 	}
 
 	g := run(`<svg><text x="10" y="20" font-size="16">abc</text></svg>`)
@@ -430,10 +430,11 @@ func TestTextSpacing(t *testing.T) {
 		r := &runner{doc: d}
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
-		if len(c.glyphs) < 2 {
-			t.Fatalf("%d glyphs", len(c.glyphs))
+		g := r.layout(c.chars)
+		if len(g) < 2 {
+			t.Fatalf("%d glyphs", len(g))
 		}
-		return c.glyphs[1].x - c.glyphs[0].x
+		return g[1].x - g[0].x
 	}
 	plain := adv(`<svg><text font-size="16">ab</text></svg>`)
 	spaced := adv(`<svg><text font-size="16" letter-spacing="5">ab</text></svg>`)
@@ -447,7 +448,7 @@ func TestTextSpacing(t *testing.T) {
 		r := &runner{doc: d}
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
-		return len(c.glyphs)
+		return len(r.layout(c.chars))
 	}
 	if n := count(`<svg><text font-size="16">a   b</text></svg>`); n != 3 {
 		t.Errorf("collapsed to %d glyphs, want 3", n)
@@ -462,8 +463,9 @@ func TestTextSpacing(t *testing.T) {
 		r := &runner{doc: d}
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
-		shiftBaseline(c.glyphs)
-		return c.glyphs[0].y
+		g := r.layout(c.chars)
+		shiftBaseline(g)
+		return g[0].y
 	}
 	if b := base("auto"); b != 50 {
 		t.Errorf("the default baseline is at %v, want 50", b)
@@ -862,16 +864,17 @@ func TestTspanPositions(t *testing.T) {
 	// The white space a text element ends with is dropped, and the space
 	// between the two tspans sits where the pen was left rather than taking
 	// the first position the second tspan lists.
+	g := r.laidOut(c)
 	var got []string
-	for _, g := range trimTrailing(c.glyphs) {
-		got = append(got, string(g.r))
+	for _, v := range g {
+		got = append(got, string(v.r))
 	}
 	if s := strings.Join(got, ""); s != "abc de" {
 		t.Errorf("placed %q, want %q", s, "abc de")
 	}
 	for i, want := range []float32{0, 10, 20, 24.8, 100, 110} {
-		if x := c.glyphs[i].x; !near(x, want) {
-			t.Errorf("glyph %d %q at %v, want %v", i, c.glyphs[i].r, x, want)
+		if x := g[i].x; !near(x, want) {
+			t.Errorf("glyph %d %q at %v, want %v", i, g[i].r, x, want)
 		}
 	}
 }
@@ -1081,8 +1084,8 @@ func TestViewportAndConditions(t *testing.T) {
 	if st.em != 20 {
 		t.Errorf("the font size is %v, want twice the ten it inherited", st.em)
 	}
-	if len(c.glyphs) != 1 || c.glyphs[0].st.em != 20 {
-		t.Errorf("the glyph was placed at %v", c.glyphs)
+	if g := r.layout(c.chars); len(g) != 1 || g[0].st.em != 20 {
+		t.Errorf("the glyph was placed at %v", g)
 	}
 }
 
@@ -1108,14 +1111,14 @@ func TestTextPath(t *testing.T) {
 	for i, want := range []*[]glyph{&flat, &down, nil} {
 		c := &textCursor{}
 		r.textRun(d.root.kids[i+2], st, c, 0, false)
-		c.glyphs = onPath(c.glyphs)
+		g := onPath(r.layout(c.chars))
 		if want == nil {
-			if len(c.glyphs) != 0 {
-				t.Errorf("a textPath naming nothing placed %d glyphs", len(c.glyphs))
+			if len(g) != 0 {
+				t.Errorf("a textPath naming nothing placed %d glyphs", len(g))
 			}
 			continue
 		}
-		*want = c.glyphs
+		*want = g
 	}
 	if len(flat) != 2 || len(down) != 2 {
 		t.Fatalf("placed %d and %d glyphs, want two each", len(flat), len(down))
@@ -1149,10 +1152,11 @@ func TestVerticalText(t *testing.T) {
 	st := r.style(d.root, initialState(200, 200))
 	c := &textCursor{}
 	r.textRun(d.root.kids[0], st, c, 0, false)
-	if len(c.glyphs) != 2 {
-		t.Fatalf("placed %d glyphs, want two", len(c.glyphs))
+	g := r.layout(c.chars)
+	if len(g) != 2 {
+		t.Fatalf("placed %d glyphs, want two", len(g))
 	}
-	latin, cjk := c.glyphs[0], c.glyphs[1]
+	latin, cjk := g[0], g[1]
 	if !latin.vert || latin.turn != 90 {
 		t.Errorf("the latin character is turned %v, want a quarter", latin.turn)
 	}
@@ -1167,10 +1171,121 @@ func TestVerticalText(t *testing.T) {
 		t.Errorf("an upright character advances %v, want the em", cjk.adv)
 	}
 	// Both sit about the line the text was placed on rather than beside it.
-	for _, g := range c.glyphs {
-		if g.x < 100-g.size || g.x > 100+g.size {
-			t.Errorf("%q sits at %v, want it about the line at 100", g.r, g.x)
+	for _, v := range g {
+		if v.x < 100-v.size || v.x > 100+v.size {
+			t.Errorf("%q sits at %v, want it about the line at 100", v.r, v.x)
 		}
+	}
+}
+
+// TestBidiText covers the order a text element draws its characters in: a
+// right to left run runs backwards inside a left to right one, direction says
+// which way a chunk runs, unicode-bidi lays a run out the way it names
+// whatever it holds, and a character given a position of its own starts a
+// chunk of its own however it is ordered.
+func TestBidiText(t *testing.T) {
+	const heb = "\u05e9\u05dc\u05d5\u05dd"
+	drawn := func(markup string) string {
+		t.Helper()
+		d, err := Load([]byte(markup))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		r := &runner{doc: d}
+		c := &textCursor{}
+		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
+		out := []rune{}
+		for _, g := range r.layout(c.chars) {
+			out = append(out, g.r)
+		}
+		return string(out)
+	}
+
+	if got, want := drawn(`<svg><text>ab`+heb+`</text></svg>`), "ab\u05dd\u05d5\u05dc\u05e9"; got != want {
+		t.Errorf("drew %q, want the hebrew backwards", got)
+	}
+	// The paragraph runs right to left, so the number goes after the word it
+	// is written before.
+	if got, want := drawn(`<svg><text direction="rtl">`+heb+` 12</text></svg>`),
+		"12 \u05dd\u05d5\u05dc\u05e9"; got != want {
+		t.Errorf("drew %q, want the run right to left", got)
+	}
+	// An override draws the characters the way the element says whatever they
+	// are, so the latin runs backwards too.
+	if got, want := drawn(`<svg><text direction="rtl" unicode-bidi="bidi-override">abc</text></svg>`),
+		"cba"; got != want {
+		t.Errorf("drew %q, want it overridden", got)
+	}
+
+	// A position of its own makes a character a chunk of its own, in the
+	// order it was written rather than the order it is drawn.
+	d, err := Load([]byte(`<svg><text x="10" y="20 30 40">` + heb + `</text></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	r := &runner{doc: d}
+	c := &textCursor{}
+	r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
+	g := r.layout(c.chars)
+	if len(g) != 4 {
+		t.Fatalf("placed %d glyphs, want four", len(g))
+	}
+	for i, want := range []float32{20, 30, 40, 40} {
+		if g[i].y != want {
+			t.Errorf("glyph %d sits at %v, want %v", i, g[i].y, want)
+		}
+	}
+}
+
+// TestTransformOrigin covers the point a transform turns about: the keywords
+// and the lengths it is written as, and that the box they are a fraction of
+// is the viewport rather than the shape.
+func TestTransformOrigin(t *testing.T) {
+	render := func(origin, turn string) *image.RGBA {
+		d, err := Load([]byte(`<svg viewBox="0 0 200 200" width="200" height="200">` +
+			`<rect x="80" y="80" width="40" height="40" fill="#00ff00"` +
+			` transform="` + turn + `" transform-origin="` + origin + `"/></svg>`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		pg, _ := d.Page(0)
+		img, err := pg.ImageDPI(96)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return img
+	}
+	differs := func(a, b *image.RGBA) int {
+		n := 0
+		for i := range a.Pix {
+			if v := int(a.Pix[i]) - int(b.Pix[i]); v > 2 || v < -2 {
+				n++
+			}
+		}
+		return n
+	}
+	for _, c := range []struct{ origin, same string }{
+		{"center", "translate(100 100) rotate(45) translate(-100 -100)"},
+		{"50% 50%", "translate(100 100) rotate(45) translate(-100 -100)"},
+		{"100 100", "translate(100 100) rotate(45) translate(-100 -100)"},
+		{"right bottom", "translate(200 200) rotate(45) translate(-200 -200)"},
+		{"top", "translate(100 0) rotate(45) translate(-100 0)"},
+		{"25% top", "translate(50 0) rotate(45) translate(-50 0)"},
+	} {
+		if n := differs(render(c.origin, "rotate(45)"), render("", c.same)); n > 64 {
+			t.Errorf("transform-origin %q turned about the wrong point, %d bytes differ", c.origin, n)
+		}
+	}
+
+	// A value that cannot be read is ignored, so the transform turns about
+	// the origin of the viewport and the shape leaves it.
+	img := render("top 3em bottom left", "rotate(45)")
+	o := 100*img.Stride + 100*4
+	if img.Pix[o] < 248 {
+		t.Error("an unreadable transform-origin was not ignored")
 	}
 }
 
@@ -1273,10 +1388,11 @@ func TestBaselineShift(t *testing.T) {
 	for _, n := range d.root.kids {
 		c := &textCursor{}
 		r.textRun(n, r.style(n, base), c, 0, true)
-		if len(c.glyphs) != 1 {
-			t.Fatalf("placed %d glyphs, want one", len(c.glyphs))
+		g := r.layout(c.chars)
+		if len(g) != 1 {
+			t.Fatalf("placed %d glyphs, want one", len(g))
 		}
-		ys = append(ys, c.glyphs[0].y)
+		ys = append(ys, g[0].y)
 	}
 	// Two nested shifts of a fifth of the em raise the character by two of
 	// them; the one on the text reaches its own character and not its tspan.

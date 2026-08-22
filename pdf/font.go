@@ -582,6 +582,13 @@ func (ft *Font) EmBox() (ascent, descent float32) {
 	return 0.8, -0.2
 }
 
+// glyphKey names one glyph procedure, which is what the device holds while it
+// is being run.
+type glyphKey struct {
+	font *Font
+	code int
+}
+
 // RunGlyph draws one glyph of a Type3 font into dev, by interpreting the
 // content stream the glyph is.
 func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32, depth int) {
@@ -596,6 +603,14 @@ func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, 
 	proc := d.f.GetStream(d.f.Lookup(ft.CharProcs, name))
 	if proc == nil {
 		return
+	}
+	// The device is what outlives this call, so it is what holds the
+	// procedures on the path to here.
+	if g, ok := dev.(gfx.GlyphRunner); ok {
+		if !g.EnterGlyph(glyphKey{ft, code}) {
+			return
+		}
+		defer g.LeaveGlyph()
 	}
 	data, err := proc.Data()
 	if err != nil {

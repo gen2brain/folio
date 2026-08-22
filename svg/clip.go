@@ -23,7 +23,8 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 	r.depth++
 	defer func() { r.depth-- }()
 
-	m := raster.Concat(transform(c.attr["transform"]), ctm)
+	m := raster.Concat(atOrigin(transform(c.attr["transform"]),
+		r.prop(c, "transform-origin"), st.vw, st.vh, st.em), ctm)
 	// A clip in the units of the object is written in fractions of the box
 	// the shape covers, SVG 1.1 14.3.5.
 	if strings.TrimSpace(r.inherited(c, "clipPathUnits", 0)) == "objectBoundingBox" {
@@ -44,7 +45,8 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 		if sub == nil {
 			continue
 		}
-		km := transform(k.attr["transform"])
+		km := atOrigin(transform(k.attr["transform"]),
+			r.prop(k, "transform-origin"), st.vw, st.vh, st.em)
 		if km != raster.Identity {
 			sub = sub.Transform(km)
 		}
@@ -139,13 +141,10 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 		r.depth++
 		c := &textCursor{}
 		r.textRun(n, st, c, 0, true)
-		c.glyphs = trimTrailing(c.glyphs)
-		r.anchorChunks(c.glyphs)
-		shiftBaseline(c.glyphs)
-		c.glyphs = onPath(c.glyphs)
+		laid := r.laidOut(c)
 		r.depth--
 		out := raster.EmptyRect
-		for _, g := range c.glyphs {
+		for _, g := range laid {
 			if g.face == nil {
 				continue
 			}
@@ -178,7 +177,9 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 		}
 		x, _ := r.length(n, "x", st.vw, st)
 		y, _ := r.length(n, "y", st.vh, st)
-		return raster.Concat(transform(t.attr["transform"]), raster.Translate(x, y)).ApplyRect(b)
+		return raster.Concat(atOrigin(transform(t.attr["transform"]),
+			r.prop(t, "transform-origin"), st.vw, st.vh, st.em),
+			raster.Translate(x, y)).ApplyRect(b)
 	default:
 		// A group's box is everything under it, in the group's own space.
 		out := raster.EmptyRect
@@ -187,7 +188,8 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 			if b.IsEmpty() {
 				continue
 			}
-			b = transform(k.attr["transform"]).ApplyRect(b)
+			b = atOrigin(transform(k.attr["transform"]),
+				r.prop(k, "transform-origin"), st.vw, st.vh, st.em).ApplyRect(b)
 			out = out.AddPoint(raster.Point{X: b.X0, Y: b.Y0})
 			out = out.AddPoint(raster.Point{X: b.X1, Y: b.Y1})
 		}

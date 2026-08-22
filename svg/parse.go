@@ -280,6 +280,87 @@ func tan32(deg float32) float32 {
 	return float32(math.Tan(float64(deg) * math.Pi / 180))
 }
 
+// atOrigin turns a transform about the point transform-origin names instead of
+// about the origin, CSS Transforms 1 section 8. The default reference box of
+// an SVG element is its viewport, so a keyword and a percentage are a fraction
+// of that.
+func atOrigin(m raster.Matrix, s string, vw, vh, em float32) raster.Matrix {
+	dx, dy, ok := origin(s, vw, vh, em)
+	if !ok || (dx == 0 && dy == 0) {
+		return m
+	}
+	return raster.Concat(raster.Concat(raster.Translate(-dx, -dy), m),
+		raster.Translate(dx, dy))
+}
+
+// origin reads the one, two or three components transform-origin is written
+// as. A pair may be given in either order when both are keywords, and the
+// third component is the depth, which a 2D transform has no use for.
+func origin(s string, vw, vh, em float32) (float32, float32, bool) {
+	f := strings.Fields(s)
+	if len(f) == 0 || len(f) > 3 {
+		return 0, 0, false
+	}
+	x, y := "center", "center"
+	if len(f) == 1 {
+		if down(f[0]) {
+			y = f[0]
+		} else {
+			x = f[0]
+		}
+	} else {
+		x, y = f[0], f[1]
+		if down(x) || across(y) {
+			x, y = y, x
+		}
+	}
+	dx, ok := originAxis(x, vw, em, false)
+	if !ok {
+		return 0, 0, false
+	}
+	dy, ok := originAxis(y, vh, em, true)
+	if !ok {
+		return 0, 0, false
+	}
+	return dx, dy, true
+}
+
+func across(s string) bool {
+	s = strings.ToLower(s)
+	return s == "left" || s == "right"
+}
+
+func down(s string) bool {
+	s = strings.ToLower(s)
+	return s == "top" || s == "bottom"
+}
+
+// originAxis is one component of transform-origin along one axis, which is a
+// length, a percentage of the viewport, or a keyword naming one of its edges.
+func originAxis(s string, ref, em float32, vertical bool) (float32, bool) {
+	switch strings.ToLower(s) {
+	case "center":
+		return ref / 2, true
+	case "left", "right":
+		if vertical {
+			return 0, false
+		}
+		if s[0] == 'l' || s[0] == 'L' {
+			return 0, true
+		}
+		return ref, true
+	case "top", "bottom":
+		if !vertical {
+			return 0, false
+		}
+		if s[0] == 't' || s[0] == 'T' {
+			return 0, true
+		}
+		return ref, true
+	}
+	return length(s, ref, em)
+}
+
 // viewport is what viewBox and preserveAspectRatio put between the coordinates
 // an element is drawn in and the box it is drawn into, SVG 1.1 7.7.
 func viewport(box []float32, align string, slice bool, w, h float32) raster.Matrix {

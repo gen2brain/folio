@@ -339,7 +339,8 @@ func (r *runner) server(value string, box raster.Rect, st state) (*gradient, boo
 	lo, hi := g.axisRange(span)
 	g.spread(strings.TrimSpace(r.gradAttr(n, "spreadMethod", g.radial)), lo, hi)
 
-	g.matrix = transform(r.gradAttr(n, "gradientTransform", g.radial))
+	g.matrix = atOrigin(transform(r.gradAttr(n, "gradientTransform", g.radial)),
+		r.gradAttr(n, "transform-origin", g.radial), st.vw, st.vh, st.em)
 	if !user {
 		if box.IsEmpty() {
 			return nil, true

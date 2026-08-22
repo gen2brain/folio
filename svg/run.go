@@ -17,8 +17,13 @@ type state struct {
 	fillServer, strokeServer string
 	// ctxFill and ctxStroke are what context-fill and context-stroke stand
 	// for: the paint of the element that referred to this one, SVG 2 13.2.
+	// ctxCTM and ctxBox are the space that paint is read in, and fillCtx and
+	// strokeCtx which of the two the element took.
 	ctxFill, ctxStroke             paint
 	ctxFillServer, ctxStrokeServer string
+	ctxCTM                         raster.Matrix
+	ctxBox                         raster.Rect
+	fillCtx, strokeCtx             bool
 	color                          paint
 	fillOpacity                    float32
 	strokeOpacity                  float32
@@ -43,6 +48,12 @@ type state struct {
 	// vertical is writing-mode: the characters run down the page and each one
 	// either stands upright or turns a quarter with the line, UAX #50.
 	vertical bool
+	// rtl is direction, the way the characters of a chunk run when the
+	// bidirectional algorithm has nothing to say, and override is
+	// unicode-bidi: bidi-override, which lays them out that way whatever they
+	// are.
+	rtl      bool
+	override bool
 	// shift is how far baseline-shift has moved the baseline of the
 	// characters an element holds, and chain what a tspan inside it shifts
 	// from.
@@ -199,7 +210,8 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	if st.hidden {
 		return
 	}
-	ctm = raster.Concat(transform(r.prop(n, "transform")), ctm)
+	ctm = raster.Concat(atOrigin(transform(r.prop(n, "transform")),
+		r.prop(n, "transform-origin"), st.vw, st.vh, st.em), ctm)
 	if r.clip(n, ctm, st) {
 		defer r.dev.PopClip()
 	}
@@ -319,11 +331,27 @@ func speaks(v string) bool {
 
 // inContext hands the element's own paint down as what context-fill and
 // context-stroke stand for, which is what a use and a marker do for what they
-// draw.
-func (st state) inContext() state {
+// draw. A server it names is read in the space of the element that handed it
+// down, not of the shape that takes it, so a rotated shape does not rotate the
+// gradient it was given.
+func (r *runner) inContext(n *node, ctm raster.Matrix, st state) state {
 	st.ctxFill, st.ctxFillServer = st.fill, st.fillServer
 	st.ctxStroke, st.ctxStrokeServer = st.stroke, st.strokeServer
+	st.ctxCTM, st.ctxBox = ctm, raster.Rect{}
+	st.fillCtx, st.strokeCtx = false, false
+	if st.fillServer != "" || st.strokeServer != "" {
+		st.ctxBox = r.shapeBounds(n, st)
+	}
 	return st
+}
+
+// paintSpace is where a paint server is read: the shape's own space, or the
+// space the paint came from when it came from context-fill or context-stroke.
+func paintSpace(ctx bool, box raster.Rect, ctm raster.Matrix, st state) (raster.Rect, raster.Matrix) {
+	if ctx && !st.ctxBox.IsEmpty() {
+		return st.ctxBox, st.ctxCTM
+	}
+	return box, ctm
 }
 
 // opened reports an element the runner is inside of.
@@ -400,13 +428,13 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 	}
 	r.active[target] = true
 	defer delete(r.active, target)
+	st = r.inContext(n, ctm, st)
 	x, _ := r.length(n, "x", st.vw, st)
 	y, _ := r.length(n, "y", st.vh, st)
 	ctm = raster.Concat(raster.Translate(x, y), ctm)
 
 	r.depth++
 	defer func() { r.depth-- }()
-	st = st.inContext()
 
 	if target.name == "symbol" || target.name == "svg" {
 		w, wok := r.length(n, "width", st.vw, st)
@@ -451,16 +479,16 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	fillAlpha := st.fillOpacity * st.fill.alpha
 	strokeAlpha := st.strokeOpacity * st.stroke.alpha
 	if !st.fill.none || st.fillServer != "" {
-		box := p.Bounds(raster.Identity)
+		box, at := paintSpace(st.fillCtx, p.Bounds(raster.Identity), ctm, st)
 		g, empty := r.server(st.fillServer, box, st)
 		switch {
 		case g != nil:
 			r.dev.ClipPath(p, st.fillEvenOdd, ctm, raster.InfiniteRect)
-			r.dev.FillShade(g, ctm, fillAlpha*g.alpha(), gfx.ColorParams{})
+			r.dev.FillShade(g, at, fillAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
 		case empty:
 		case st.fillServer != "" && r.faded(fillAlpha, func() bool {
-			return r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, st)
+			return r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, at, st)
 		}):
 		case st.fill.none:
 		default:
@@ -472,16 +500,16 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 		s := r.strokeOf(st)
 		// The box a gradient in objectBoundingBox units is a fraction of is
 		// the shape's own, which SVG 1.1 7.11 says the stroke is not part of.
-		box := p.Bounds(raster.Identity)
+		box, at := paintSpace(st.strokeCtx, p.Bounds(raster.Identity), ctm, st)
 		g, empty := r.server(st.strokeServer, box, st)
 		switch {
 		case g != nil:
 			r.dev.ClipStrokePath(p, s, ctm, raster.InfiniteRect)
-			r.dev.FillShade(g, ctm, strokeAlpha*g.alpha(), gfx.ColorParams{})
+			r.dev.FillShade(g, at, strokeAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
 		case empty:
 		case st.strokeServer != "" && r.faded(strokeAlpha, func() bool {
-			return r.tiledStroke(st.strokeServer, p, s, box, ctm, st)
+			return r.tiledStroke(st.strokeServer, p, s, box, ctm, at, st)
 		}):
 		case st.stroke.none:
 		default:
@@ -502,9 +530,9 @@ func (r *runner) marked(p *raster.Path, ctm raster.Matrix, st state) {
 
 // tiled paints a shape with a pattern, clipped to it.
 func (r *runner) tiled(server string, p *raster.Path, even bool, box raster.Rect,
-	ctm raster.Matrix, st state) bool {
+	ctm, at raster.Matrix, st state) bool {
 	r.dev.ClipPath(p, even, ctm, raster.InfiniteRect)
-	ok := r.pattern(server, box, ctm, st)
+	ok := r.pattern(server, box, at, st)
 	r.dev.PopClip()
 	return ok
 }
@@ -523,9 +551,9 @@ func (r *runner) faded(alpha float32, draw func() bool) bool {
 
 // tiledStroke paints a stroke with a pattern, clipped to it.
 func (r *runner) tiledStroke(server string, p *raster.Path, s *raster.Stroke,
-	box raster.Rect, ctm raster.Matrix, st state) bool {
+	box raster.Rect, ctm, at raster.Matrix, st state) bool {
 	r.dev.ClipStrokePath(p, s, ctm, raster.InfiniteRect)
-	ok := r.pattern(server, box, ctm, st)
+	ok := r.pattern(server, box, at, st)
 	r.dev.PopClip()
 	return ok
 }
@@ -606,8 +634,10 @@ func (r *runner) style(n *node, st state) state {
 	if c, ok := parseColor(r.prop(n, "color"), st.color); ok {
 		st.color = c
 	}
-	st.fill, st.fillServer = st.paintOf(r.prop(n, "fill"), st.fill, st.fillServer)
-	st.stroke, st.strokeServer = st.paintOf(r.prop(n, "stroke"), st.stroke, st.strokeServer)
+	st.fill, st.fillServer, st.fillCtx =
+		st.paintOf(r.prop(n, "fill"), st.fill, st.fillServer, st.fillCtx)
+	st.stroke, st.strokeServer, st.strokeCtx =
+		st.paintOf(r.prop(n, "stroke"), st.stroke, st.strokeServer, st.strokeCtx)
 	st.fill = st.fill.follow(st.color)
 	st.stroke = st.stroke.follow(st.color)
 	if v, ok := opacity(r.prop(n, "fill-opacity")); ok {
@@ -680,6 +710,18 @@ func (r *runner) style(n *node, st state) state {
 	if v := strings.TrimSpace(r.prop(n, "text-anchor")); v != "" {
 		st.anchor = v
 	}
+	switch strings.TrimSpace(r.prop(n, "direction")) {
+	case "rtl":
+		st.rtl = true
+	case "ltr":
+		st.rtl = false
+	}
+	switch strings.TrimSpace(r.prop(n, "unicode-bidi")) {
+	case "bidi-override", "isolate-override":
+		st.override = true
+	case "normal", "embed", "isolate", "plaintext":
+		st.override = false
+	}
 	if v := strings.TrimSpace(r.prop(n, "marker")); v != "" {
 		st.markStart, st.markMid, st.markEnd = v, v, v
 	}
@@ -744,31 +786,31 @@ func (r *runner) style(n *node, st state) state {
 // SVG 1.1 11.3 draws neither when the reference resolves to no server. A
 // value written but not understood is ignored, so the paint stays what was
 // inherited, which is what CSS does with any property it cannot read.
-func (st state) paintOf(v string, was paint, wasServer string) (paint, string) {
+func (st state) paintOf(v string, was paint, wasServer string, wasCtx bool) (paint, string, bool) {
 	switch strings.TrimSpace(v) {
 	case "":
-		return was, wasServer
+		return was, wasServer, wasCtx
 	case "context-fill":
-		return st.ctxFill, st.ctxFillServer
+		return st.ctxFill, st.ctxFillServer, true
 	case "context-stroke":
-		return st.ctxStroke, st.ctxStrokeServer
+		return st.ctxStroke, st.ctxStrokeServer, true
 	}
 	p, ok := parsePaint(v, st.color)
 	if id := serverID(v); id != "" {
 		// A reference with a fallback that is not a paint is not a paint
 		// either, however good the reference is.
 		if !ok && fallbackOf(v) != "" {
-			return was, wasServer
+			return was, wasServer, wasCtx
 		}
 		if !ok {
 			p = noPaint
 		}
-		return p, v
+		return p, v, false
 	}
 	if !ok {
-		return was, wasServer
+		return was, wasServer, wasCtx
 	}
-	return p, ""
+	return p, "", false
 }
 
 // baselineShift is how far down the page baseline-shift moves a character.

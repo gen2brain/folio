@@ -967,6 +967,36 @@ func renderDoc(t *testing.T, d *Document, o *Options) *raster.Pixmap {
 	return px
 }
 
+// TestType3Cycle checks that a Type3 glyph which shows itself stops. A font
+// with no program of its own draws a glyph by running content through the
+// device, which starts an interpreter of its own, so the depth counter of the
+// one that asked does not reach it and the work a cycle does doubles at every
+// turn.
+func TestType3Cycle(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Font << /T3 5 0 R >> >> >>",
+		streamObj("", "BT /T3 10 Tf 10 50 Td (a) Tj ET"),
+		"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 10 10]" +
+			" /FontMatrix [0.1 0 0 0.1 0 0] /FirstChar 97 /LastChar 97 /Widths [10]" +
+			" /Encoding << /Differences [97 /a] >> /CharProcs << /a 6 0 R >>" +
+			" /Resources << /Font << /T3 5 0 R >> >> >>",
+		streamObj("", "10 0 0 0 10 10 d1 0 0 4 4 re f BT /T3 10 Tf 2 2 Td (a) Tj ET"),
+	})
+	done := make(chan *raster.Pixmap, 1)
+	go func() { done <- renderDoc(t, d, nil) }()
+	select {
+	case px := <-done:
+		if got := pixel(px, 11, 48); same(got, 255, 255, 255) {
+			t.Errorf("the glyph drew nothing at all, %v", got)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a glyph that shows itself did not stop")
+	}
+}
+
 // TestNestedColorIsolation checks that a form, a pattern or a glyph procedure
 // setting a color does not reach back into the state that invoked it. The
 // color operators write their operands into the slice the graphics state

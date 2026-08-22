@@ -24,10 +24,12 @@ type SVGDevice struct {
 	// the body that refers to them.
 	defs, body bytes.Buffer
 	glyphs     map[glyphRef]string
-	// open counts the groups still to close.
-	open int
-	ids  int
-	err  error
+	// open counts the groups still to close, and depth how deep a Type3
+	// glyph that shows text in its own font has reached.
+	open  int
+	ids   int
+	depth int
+	err   error
 }
 
 type glyphRef struct {
@@ -325,7 +327,11 @@ func (d *SVGDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(id string, m r
 				E: it.X, F: it.Y,
 			}, ctm)
 			if prog == nil {
-				sp.Font.RunGlyph(d, it.GID, m, cs, color, alpha, 0)
+				if d.depth < maxGlyphDepth {
+					d.depth++
+					sp.Font.RunGlyph(d, it.GID, m, cs, color, alpha, d.depth)
+					d.depth--
+				}
 				continue
 			}
 			id, ok := d.glyph(prog, it.GID)

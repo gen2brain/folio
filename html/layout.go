@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gen2brain/folio/font"
 )
 
 // layout flows a box tree down a column of a given width. Everything it
@@ -1131,7 +1133,7 @@ func (c *inlineCtx) measure(lo, hi int) float32 {
 // whole of it runs left to right.
 func (c *inlineCtx) resolveBidi(dir Direction) {
 	c.rtl = dir.RTL()
-	if !c.rtl && !needsBidi(c.str) {
+	if !c.rtl && !font.NeedsBidi(c.str) {
 		return
 	}
 	text := []rune(c.str)
@@ -1139,8 +1141,7 @@ func (c *inlineCtx) resolveBidi(dir Direction) {
 	if c.rtl {
 		base = 1
 	}
-	res := bidiResolve(text, base)
-	levels := res.line(0, len(text))
+	levels := font.BidiLevels(text, base)
 	c.levels = make([]byte, len(c.str))
 	at := 0
 	for i, r := range text {
@@ -1150,20 +1151,6 @@ func (c *inlineCtx) resolveBidi(dir Direction) {
 		}
 		at += n
 	}
-}
-
-// needsBidi reports a character that does not run left to right.
-func needsBidi(s string) bool {
-	for _, r := range s {
-		if r < 0x0590 {
-			continue
-		}
-		switch bidiClassOf(r) {
-		case bidiR, bidiAL, bidiAN, bidiRLE, bidiRLO, bidiRLI, bidiLRE, bidiLRO, bidiLRI, bidiFSI, bidiPDF, bidiPDI:
-			return true
-		}
-	}
-	return false
 }
 
 // visual splits the pieces of a line where the level changes and orders them
@@ -1191,7 +1178,7 @@ func (c *inlineCtx) visual(in []piece) []piece {
 	for i, p := range out {
 		levels[i] = c.levels[p.lo]
 	}
-	order := bidiOrder(levels)
+	order := font.BidiOrder(levels)
 	res := make([]piece, len(out))
 	for i, j := range order {
 		res[i] = out[j]

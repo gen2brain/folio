@@ -101,16 +101,17 @@ func (r *runner) textPath(n *node, st state, c *textCursor, depth int) {
 	if st.hidden {
 		return
 	}
-	w := r.pathOf(n)
+	w := r.pathOf(n, st)
 	if w == nil {
 		return
 	}
-	was, wasX, wasY := c.path, c.x, c.y
+	was := c.path
 	c.path = w
-	c.x, c.y = 0, 0
+	c.setX, c.setY = 0, 0
+	c.hasX, c.hasY = true, true
 	c.chunk++
 	if v, ok := length(r.prop(n, "startOffset"), w.total, st.em); ok {
-		c.x = v
+		c.setX = v
 	}
 	// The characters of a textPath run along it: x and y on the element
 	// itself say nothing, and a tspan inside it measures along the path.
@@ -124,12 +125,12 @@ func (r *runner) textPath(n *node, st state, c *textCursor, depth int) {
 			r.textRun(k, st, c, depth+1, false)
 		}
 	}
-	c.path, c.x, c.y = was, wasX, wasY
+	c.path = was
 }
 
 // pathOf is the path a textPath draws along: the one it refers to, under
 // whatever that element was transformed by.
-func (r *runner) pathOf(n *node) *pathWalk {
+func (r *runner) pathOf(n *node, st state) *pathWalk {
 	t := r.doc.byID[fragment(n.attr["href"])]
 	if t == nil || t.name != "path" {
 		return nil
@@ -138,7 +139,8 @@ func (r *runner) pathOf(n *node) *pathWalk {
 	if p == nil || p.IsEmpty() {
 		return nil
 	}
-	return flattenPath(p, transform(t.attr["transform"]))
+	return flattenPath(p, atOrigin(transform(t.attr["transform"]),
+		r.prop(t, "transform-origin"), st.vw, st.vh, st.em))
 }
 
 // onPath moves the characters laid along a path onto it: each one sits where

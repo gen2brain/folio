@@ -313,7 +313,7 @@ func (f face) width(s string) float32 {
 // shape runs the text through the font's own layout tables. Plain text is
 // measured a character at a time, the same answer for much less work.
 func (f face) shape(s string, rtl bool) ([]font.Glyph, bool) {
-	if f.prog == nil || f.m == nil || f.vertical || !f.prog.Shaped() || !needsShaping(s) {
+	if f.prog == nil || f.m == nil || f.vertical || !f.prog.Shaped() || !font.NeedsShaping(s) {
 		return nil, false
 	}
 	key := shapeKey{s: s, rtl: rtl}
@@ -344,35 +344,6 @@ type shapeKey struct {
 
 // maxShapedRuns bounds what a face remembers of the text it has shaped.
 const maxShapedRuns = 1 << 14
-
-// needsShaping reports text a font has to lay out itself: anything with a
-// combining mark in it, and the scripts whose letters join, reorder or carry
-// their vowels above and below. Everything else, Han and Kana among it, is
-// one glyph a character and takes the shorter path.
-func needsShaping(s string) bool {
-	for _, r := range s {
-		if r < 0x0300 {
-			continue
-		}
-		switch {
-		case r <= 0x036f, // combining marks
-			r >= 0x0590 && r <= 0x109f, // Hebrew through Myanmar
-			r >= 0x1700 && r <= 0x18af, // Tagalog through Mongolian
-			r >= 0x1900 && r <= 0x1cff, // Limbu through the Vedic marks
-			r >= 0x1dc0 && r <= 0x1dff, // more combining marks
-			r >= 0x20d0 && r <= 0x20ff,
-			r >= 0xa800 && r <= 0xabff, // Syloti through Meetei
-			r >= 0xfb1d && r <= 0xfdff, // Hebrew and Arabic forms
-			r >= 0xfe00 && r <= 0xfe2f, // variation selectors and half marks
-			r >= 0xfe70 && r <= 0xfeff,
-			r >= 0x10800 && r <= 0x10fff,
-			r >= 0x11000 && r <= 0x11fff, // Brahmi and the rest
-			r >= 0x1e800 && r <= 0x1efff:
-			return true
-		}
-	}
-	return false
-}
 
 // advance is what a character takes along its line, which for one that stands
 // upright in vertical text is the em rather than its own width.

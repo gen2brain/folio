@@ -133,8 +133,8 @@ func (b *shaderBlitter) opaque(row, span []uint8, w, sn, n int) {
 }
 
 // GradientSpec describes an axial or radial gradient: the two circles it runs
-// between — an axial gradient ignores the radii and runs between the two
-// points — the table of 256 colors of N components it takes its color from,
+// between (an axial gradient ignores the radii and runs between the two
+// points), the table of 256 colors of N components it takes its color from,
 // the transform from its own space to the device, and whether it paints on
 // past each end.
 type GradientSpec struct {

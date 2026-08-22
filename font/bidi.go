@@ -1,4 +1,4 @@
-package html
+package font
 
 import "slices"
 
@@ -73,6 +73,42 @@ func (c bidiClass) neutralOrIsolate() bool {
 	switch c {
 	case bidiB, bidiS, bidiWS, bidiON, bidiFSI, bidiLRI, bidiRLI, bidiPDI:
 		return true
+	}
+	return false
+}
+
+// BidiLevels is the embedding level of every character of one paragraph, the
+// bidirectional algorithm of UAX #9 run end to end. base is 0 for a paragraph
+// that runs left to right, 1 for one that runs right to left, and negative to
+// take the direction from the text itself.
+func BidiLevels(text []rune, base int) []byte {
+	return bidiResolve(text, base).line(0, len(text))
+}
+
+// BidiOrder is the order a line of the given levels is drawn in, left to
+// right, rule L2.
+func BidiOrder(levels []byte) []int {
+	return bidiOrder(levels)
+}
+
+// BidiMirror is what rule L4 draws in place of a character that runs right to
+// left, and the character itself where there is no other form.
+func BidiMirror(r rune) rune {
+	return bidiMirror(r)
+}
+
+// NeedsBidi reports text with a character in it that does not run left to
+// right, which is what the algorithm has anything to say about.
+func NeedsBidi(s string) bool {
+	for _, r := range s {
+		if r < 0x0590 {
+			continue
+		}
+		switch bidiClassOf(r) {
+		case bidiR, bidiAL, bidiAN, bidiRLE, bidiRLO, bidiRLI,
+			bidiLRE, bidiLRO, bidiLRI, bidiFSI, bidiPDF, bidiPDI:
+			return true
+		}
 	}
 	return false
 }
