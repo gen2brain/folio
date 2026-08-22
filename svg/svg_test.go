@@ -1135,6 +1135,45 @@ func TestTextPath(t *testing.T) {
 	}
 }
 
+// TestVerticalText covers a line that runs down the page: a character that
+// stands upright is centered on it and one that does not turns a quarter,
+// and the two advance by different amounts.
+func TestVerticalText(t *testing.T) {
+	d, err := Load([]byte(`<svg width="200" height="200" font-size="20">` +
+		`<text x="100" y="30" writing-mode="tb">A日</text></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	r := &runner{doc: d}
+	st := r.style(d.root, initialState(200, 200))
+	c := &textCursor{}
+	r.textRun(d.root.kids[0], st, c, 0, false)
+	if len(c.glyphs) != 2 {
+		t.Fatalf("placed %d glyphs, want two", len(c.glyphs))
+	}
+	latin, cjk := c.glyphs[0], c.glyphs[1]
+	if !latin.vert || latin.turn != 90 {
+		t.Errorf("the latin character is turned %v, want a quarter", latin.turn)
+	}
+	if cjk.turn != 0 {
+		t.Errorf("the ideograph is turned %v, want upright", cjk.turn)
+	}
+	if cjk.y <= latin.y {
+		t.Errorf("the second character is at %v, want it below the first", cjk.y)
+	}
+	// An upright character advances by the em however wide it is.
+	if cjk.adv != 20 {
+		t.Errorf("an upright character advances %v, want the em", cjk.adv)
+	}
+	// Both sit about the line the text was placed on rather than beside it.
+	for _, g := range c.glyphs {
+		if g.x < 100-g.size || g.x > 100+g.size {
+			t.Errorf("%q sits at %v, want it about the line at 100", g.r, g.x)
+		}
+	}
+}
+
 // TestFilterUnderRotation holds the coordinate system a filter runs in: the
 // user's own, not the device's. A quarter turn between the element and the
 // page sends an offset along x down the page instead of across it.

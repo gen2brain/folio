@@ -28,6 +28,8 @@ type glyph struct {
 	// path is the one a textPath lays the character along, on which x is the
 	// distance travelled and y the offset from it.
 	path *pathWalk
+	// vert says the character was placed down the page rather than across it.
+	vert bool
 	st   state
 }
 
@@ -174,14 +176,46 @@ func (r *runner) place(c *textCursor, s string, st state, face *font.Font, xs, y
 			turn = c.rotate[min(c.rotateAt, n-1)]
 			c.rotateAt++
 		}
-		c.glyphs = append(c.glyphs, glyph{
+		g := glyph{
 			r: ch, gid: gid, face: f, size: st.em, adv: adv,
-			x: c.x, y: c.y + st.shift, chunk: c.chunk, turn: turn, path: c.path, st: st,
-		})
-		c.x += adv
+			x: c.x, y: c.y, chunk: c.chunk, turn: turn, path: c.path,
+			vert: st.vertical, st: st,
+		}
+		if st.vertical {
+			// A line running down the page advances by the em where the
+			// character stands upright and by the character's own width
+			// where it turns with the line. Either way the em box is
+			// centered on the line, SVG 1.1 10.7.
+			if font.Upright(ch) {
+				g.x -= adv / 2
+				g.y += emBaseline(f) * st.em
+				g.adv = st.em + st.letter
+			} else {
+				g.turn += 90
+				g.x -= (f.Ascent + f.Descent) / 2 * st.em
+			}
+			g.x += st.shift
+			c.y += g.adv
+		} else {
+			g.y += st.shift
+			c.x += adv
+		}
+		c.glyphs = append(c.glyphs, g)
 		i++
 	}
 	return i
+}
+
+// emBaseline is how far below the top of the em box the baseline sits, which
+// is what puts an upright character in the middle of the line it runs down.
+// A face whose ascent and descent reach past the em, as a CJK face does, must
+// not push the character out of its box.
+func emBaseline(f *font.Font) float32 {
+	h := f.Ascent - f.Descent
+	if h <= 0 {
+		return 0.8
+	}
+	return f.Ascent / h
 }
 
 // collapse turns the white space of a text element into the single spaces
@@ -236,6 +270,10 @@ func (r *runner) anchorChunks(g []glyph) {
 		}
 		if shift != 0 {
 			for k := i; k < j; k++ {
+				if g[k].vert {
+					g[k].y += shift
+					continue
+				}
 				g[k].x += shift
 			}
 		}
@@ -282,6 +320,11 @@ func (r *runner) decorate(g []glyph, ctm raster.Matrix) {
 		i = j
 		kind := strings.TrimSpace(st.decoration)
 		if kind == "" || kind == "none" || len(run) == 0 {
+			continue
+		}
+		// A line drawn under a run that goes down the page or along a path
+		// would have to follow it, which this does not do.
+		if run[0].vert || run[0].path != nil {
 			continue
 		}
 		x0, x1 := run[0].x, run[len(run)-1].x+run[len(run)-1].adv

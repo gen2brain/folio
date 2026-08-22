@@ -36,6 +36,9 @@ type state struct {
 	bold   bool
 	italic bool
 	anchor string
+	// vertical is writing-mode: the characters run down the page and each one
+	// either stands upright or turns a quarter with the line, UAX #50.
+	vertical bool
 	// shift is how far baseline-shift moved the baseline. It is not
 	// inherited: it moves the characters the element holds itself and
 	// nothing a child of it holds.
@@ -673,6 +676,12 @@ func (r *runner) style(n *node, st state) state {
 		st.baseline = v
 	}
 	st.shift = baselineShift(strings.TrimSpace(r.prop(n, "baseline-shift")), st.em)
+	switch strings.TrimSpace(r.prop(n, "writing-mode")) {
+	case "tb", "tb-rl", "vertical-rl", "vertical-lr":
+		st.vertical = true
+	case "lr", "lr-tb", "rl", "rl-tb", "horizontal-tb":
+		st.vertical = false
+	}
 	if v, ok := length(r.prop(n, "letter-spacing"), 0, st.em); ok {
 		st.letter = v
 	}
