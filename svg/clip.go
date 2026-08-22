@@ -139,6 +139,9 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 		r.depth++
 		c := &textCursor{}
 		r.textRun(n, st, c, 0, true)
+		c.glyphs = trimTrailing(c.glyphs)
+		r.anchorChunks(c.glyphs)
+		shiftBaseline(c.glyphs)
 		c.glyphs = onPath(c.glyphs)
 		r.depth--
 		out := raster.EmptyRect
