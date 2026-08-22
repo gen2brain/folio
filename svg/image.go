@@ -91,7 +91,7 @@ func (r *runner) drawn(n *node, art *Page, ctm raster.Matrix, st state) {
 		raster.Concat(raster.Translate(x, y), ctm))
 
 	var box raster.Path
-	box.Rect(x, y, x+w, y+h)
+	box.Rect(x, y, w, h)
 	r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
 	if err := art.run(r.dev, m, r.depth+1); err != nil {
 		r.fail(err)

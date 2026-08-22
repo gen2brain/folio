@@ -204,10 +204,11 @@ func (d *Document) readSize() {
 		d.width, d.height = d.box[2], d.box[3]
 	} else {
 		d.width, d.height = d.pw, d.ph
-		if v, ok := length(wa, d.pw, defFontSize); ok {
+		// A size that is not positive is no size at all.
+		if v, ok := length(wa, d.pw, defFontSize); ok && v > 0 {
 			d.width = v
 		}
-		if v, ok := length(ha, d.ph, defFontSize); ok {
+		if v, ok := length(ha, d.ph, defFontSize); ok && v > 0 {
 			d.height = v
 		}
 	}

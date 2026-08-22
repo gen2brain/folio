@@ -27,12 +27,24 @@ type simple struct {
 	name    string
 	classes []string
 	ids     []string
+	// attrs are the attribute selectors: a name the element has to carry,
+	// and a value it has to have when one is written.
+	attrs []attrSel
 	// child says the element must be the one directly inside the match
 	// before it rather than anywhere inside it.
 	child bool
 }
 
-type decl struct{ name, value string }
+type attrSel struct {
+	name, value string
+	exact       bool
+}
+
+type decl struct {
+	name, value string
+	// important is the declaration CSS 2.1 6.4.2 puts above the rest.
+	important bool
+}
 
 // readStyles collects every sheet the drawing names, in the order they are
 // read: the files an xml-stylesheet instruction points at first, then every
@@ -168,7 +180,15 @@ func parseDecls(body string) []decl {
 		if !ok || k == "" || v == "" {
 			continue
 		}
-		out = append(out, decl{name: strings.ToLower(k), value: v})
+		bang := false
+		if i := strings.LastIndexByte(v, '!'); i >= 0 &&
+			strings.EqualFold(strings.TrimSpace(v[i+1:]), "important") {
+			v, bang = strings.TrimSpace(v[:i]), true
+		}
+		if v == "" {
+			continue
+		}
+		out = append(out, decl{name: strings.ToLower(k), value: v, important: bang})
 	}
 	return out
 }
@@ -207,7 +227,19 @@ func parseSelector(s string) ([]simple, [3]int, bool) {
 				part = part[k:]
 			case '*':
 				part = part[1:]
-			case ':', '[':
+			case '[':
+				k := strings.IndexByte(part, ']')
+				if k < 0 {
+					return nil, spec, false
+				}
+				a, ok := parseAttrSel(part[1:k])
+				if !ok {
+					return nil, spec, false
+				}
+				one.attrs = append(one.attrs, a)
+				spec[1]++
+				part = part[k+1:]
+			case ':':
 				return nil, spec, false
 			default:
 				k := 0
@@ -231,6 +263,20 @@ func parseSelector(s string) ([]simple, [3]int, bool) {
 	return out, spec, true
 }
 
+// parseAttrSel reads what is between the brackets: a name, or a name and the
+// value it has to equal.
+func parseAttrSel(s string) (attrSel, bool) {
+	name, value, ok := strings.Cut(s, "=")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return attrSel{}, false
+	}
+	if !ok {
+		return attrSel{name: name}, true
+	}
+	return attrSel{name: name, value: strings.Trim(strings.TrimSpace(value), `"'`), exact: true}, true
+}
+
 // sheetProp is what the stylesheets declare for an element, and false when
 // none of them declare it. The chain is matched against the ancestors the
 // runner is holding, which is how a descendant selector is answered without
@@ -239,15 +285,15 @@ func (r *runner) sheetProp(n *node, name string) (string, bool) {
 	if len(r.doc.rules) == 0 {
 		return "", false
 	}
-	out, found := "", false
+	out, found, bang := "", false, false
 	for i := range r.doc.rules {
 		ru := &r.doc.rules[i]
 		if !r.matches(ru.sel, n) {
 			continue
 		}
 		for _, d := range ru.decls {
-			if d.name == name {
-				out, found = d.value, true
+			if d.name == name && (d.important || !bang) {
+				out, found, bang = d.value, true, d.important
 			}
 		}
 	}
@@ -289,6 +335,12 @@ func matchOne(s simple, n *node) bool {
 	}
 	for _, id := range s.ids {
 		if n.attr["id"] != id {
+			return false
+		}
+	}
+	for _, a := range s.attrs {
+		v, ok := n.attr[a.name]
+		if !ok || (a.exact && v != a.value) {
 			return false
 		}
 	}

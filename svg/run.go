@@ -79,10 +79,10 @@ type runner struct {
 	faces map[faceKey]*font.Font
 	pics  map[string]gfx.Image
 	// arts are the drawings an image element referred to, which are
-	// documents of their own, and masking the masks being drawn, which one
-	// naming itself must not re-enter.
-	arts    map[string]*Page
-	masking map[*node]bool
+	// documents of their own, and active the elements being drawn through,
+	// which one that names itself must not re-enter.
+	arts   map[string]*Page
+	active map[*node]bool
 	// fbs are the faces a character the chosen one cannot draw has fallen
 	// back to, which is the same answer for every element that asks.
 	fbs map[fallbackKey]*font.Font
@@ -186,7 +186,7 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	if st.hidden {
 		return
 	}
-	ctm = raster.Concat(transform(n.attr["transform"]), ctm)
+	ctm = raster.Concat(transform(r.prop(n, "transform")), ctm)
 	if r.clip(n, ctm, st) {
 		defer r.dev.PopClip()
 	}
@@ -304,6 +304,16 @@ func speaks(v string) bool {
 	return false
 }
 
+// opened reports an element the runner is inside of.
+func (r *runner) opened(n *node) bool {
+	for _, o := range r.open {
+		if o == n {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *runner) group(n *node, ctm raster.Matrix, st state) {
 	r.children(n, ctm, st)
 }
@@ -346,7 +356,7 @@ func (r *runner) viewportClip(n *node, x, y, w, h float32, ctm raster.Matrix) bo
 		return false
 	}
 	var box raster.Path
-	box.Rect(x, y, x+w, y+h)
+	box.Rect(x, y, w, h)
 	r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
 	return true
 }
@@ -358,9 +368,16 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 		return
 	}
 	target := r.doc.byID[fragment(n.attr["href"])]
-	if target == nil {
+	// An element already being drawn is one this is inside of, so drawing it
+	// again would never end.
+	if target == nil || r.active[target] || r.opened(target) {
 		return
 	}
+	if r.active == nil {
+		r.active = map[*node]bool{}
+	}
+	r.active[target] = true
+	defer delete(r.active, target)
 	x, _ := r.length(n, "x", st.vw, st)
 	y, _ := r.length(n, "y", st.vh, st)
 	ctm = raster.Concat(raster.Translate(x, y), ctm)
@@ -384,7 +401,8 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 		if sub.hidden {
 			return
 		}
-		m := raster.Concat(transform(target.attr["transform"]), ctm)
+		// SVG 1.1 gives neither a symbol nor an svg a transform of its own.
+		m := ctm
 		if r.viewportClip(target, 0, 0, w, h, m) {
 			defer r.dev.PopClip()
 		}
@@ -532,6 +550,9 @@ func styleProp(style, name string) (string, bool) {
 	if style == "" {
 		return "", false
 	}
+	if strings.Contains(style, "/*") {
+		style = stripComments(style)
+	}
 	for _, decl := range strings.Split(style, ";") {
 		k, v, ok := strings.Cut(decl, ":")
 		if !ok {
@@ -557,12 +578,15 @@ func (r *runner) style(n *node, st state) state {
 	case "visible":
 		st.invisible = false
 	}
-	// color is read first: currentColor in any other property means this one.
+	// color is read first: currentColor in any other property means this one,
+	// and an inherited one follows the color of wherever it is used.
 	if c, ok := parseColor(r.prop(n, "color"), st.color); ok {
 		st.color = c
 	}
 	st.fill, st.fillServer = paintOf(r.prop(n, "fill"), st.fill, st.fillServer, st.color)
 	st.stroke, st.strokeServer = paintOf(r.prop(n, "stroke"), st.stroke, st.strokeServer, st.color)
+	st.fill = st.fill.follow(st.color)
+	st.stroke = st.stroke.follow(st.color)
 	if v, ok := opacity(r.prop(n, "fill-opacity")); ok {
 		st.fillOpacity = v
 	}

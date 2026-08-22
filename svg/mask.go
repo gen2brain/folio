@@ -15,15 +15,15 @@ func (r *runner) mask(n *node, ctm raster.Matrix, st state) bool {
 		return false
 	}
 	m := r.doc.byID[id]
-	if m == nil || m.name != "mask" || r.depth >= maxNesting || r.masking[m] {
+	if m == nil || m.name != "mask" || r.depth >= maxNesting || r.active[m] {
 		return false
 	}
 	r.depth++
-	if r.masking == nil {
-		r.masking = map[*node]bool{}
+	if r.active == nil {
+		r.active = map[*node]bool{}
 	}
-	r.masking[m] = true
-	defer func() { r.depth--; delete(r.masking, m) }()
+	r.active[m] = true
+	defer func() { r.depth--; delete(r.active, m) }()
 
 	// A mask is the luminance of what it draws, or its alpha where SVG 2's
 	// mask-type asks for that, which is what BeginMask composites the next
@@ -86,7 +86,7 @@ func (r *runner) maskRegion(m *node, box raster.Rect, ctm raster.Matrix, st stat
 		reg = raster.Rect{X0: x, Y0: y, X1: x + w, Y1: y + h}
 	}
 	var p raster.Path
-	p.Rect(reg.X0, reg.Y0, reg.X1, reg.Y1)
+	p.Rect(reg.X0, reg.Y0, reg.X1-reg.X0, reg.Y1-reg.Y0)
 	r.dev.ClipPath(&p, false, ctm, raster.InfiniteRect)
 	return true
 }

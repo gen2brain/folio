@@ -17,6 +17,10 @@ type paint struct {
 	// the opacity property that applies.
 	color [3]float32
 	alpha float32
+	// current says the paint was written as currentColor, which is the color
+	// property of whatever element it is finally used on rather than of the
+	// one that wrote it.
+	current bool
 }
 
 var (
@@ -25,6 +29,16 @@ var (
 	// is one so that a server that resolves beside it is not faded away.
 	noPaint = paint{none: true, alpha: 1}
 )
+
+// follow re-reads a paint written as currentColor against the color where it
+// is used, which is not where it was written.
+func (p paint) follow(current paint) paint {
+	if !p.current {
+		return p
+	}
+	current.current = true
+	return current
+}
 
 // parsePaint reads a paint value. current is what currentColor stands for,
 // and ok is false for a word this does not understand, which leaves whatever
@@ -37,6 +51,7 @@ func parsePaint(s string, current paint) (paint, bool) {
 	case "none":
 		return noPaint, true
 	case "currentcolor":
+		current.current = true
 		return current, true
 	}
 	// A paint may name a server and then a color to fall back on, and this
@@ -79,6 +94,7 @@ func parseColor(s string, current paint) (paint, bool) {
 		return funcColor(low[:i], s[i+1:j])
 	}
 	if low == "currentcolor" {
+		current.current = true
 		return current, true
 	}
 	if low == "transparent" {
