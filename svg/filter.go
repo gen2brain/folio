@@ -27,6 +27,14 @@ type fimage struct {
 // it dealt with the element. A reference that resolves to nothing takes the
 // element off the page, SVG 1.1 15.7.
 func (r *runner) filtered(n *node, ctm raster.Matrix, st state, alpha float32) bool {
+	return r.filterWith(n, ctm, st, alpha, r.paint)
+}
+
+// filterWith is filtered with the drawing named. The root element is a
+// viewport rather than a shape and passes its children.
+func (r *runner) filterWith(n *node, ctm raster.Matrix, st state, alpha float32,
+	draw func(*node, raster.Matrix, state)) bool {
+
 	v := strings.TrimSpace(r.prop(n, "filter"))
 	if v == "" || v == "none" || r.depth >= maxNesting {
 		return v != "" && v != "none"
@@ -46,11 +54,11 @@ func (r *runner) filtered(n *node, ctm raster.Matrix, st state, alpha float32) b
 	for _, l := range chain {
 		reg = reg.Union(l.reg)
 	}
-	dr := ctm.ApplyRect(reg)
-	if !r.canvas.IsEmpty() {
-		dr = dr.Intersect(r.canvas)
-	}
-	x0, y0, x1, y1 := dr.Outer()
+	// A filter is a grid of samples over the user's own axes. Where the
+	// element is only scaled and moved those are the device's; a rotation or
+	// a skew is split off and put back afterwards.
+	inner, back := filterSpace(ctm)
+	x0, y0, x1, y1 := inner.ApplyRect(reg).Outer()
 	w, h := x1-x0, y1-y0
 	if w <= 0 || h <= 0 {
 		return true
@@ -67,23 +75,42 @@ func (r *runner) filtered(n *node, ctm raster.Matrix, st state, alpha float32) b
 	dev := gfx.NewDrawDevice(src)
 	outer := r.dev
 	r.dev = dev
-	r.paint(n, ctm, st)
+	draw(n, inner, st)
 	r.dev = outer
 	dev.Close()
 
 	var out *raster.Pixmap
 	for _, l := range chain {
-		p := &pipe{r: r, f: l.f, src: src, reg: l.reg, box: box, ctm: ctm, st: st, pobj: l.pobj}
-		p.sx, p.sy = scaleOf(ctm)
+		p := &pipe{r: r, f: l.f, src: src, reg: l.reg, box: box, ctm: inner, st: st, pobj: l.pobj}
+		p.sx, p.sy = scaleOf(inner)
 		p.full = irect{0, 0, w, h}
 		if out = p.run(l.prims); out == nil {
 			return true
 		}
 		src = out
 	}
-	m := raster.Matrix{A: float32(w), D: float32(h), E: float32(x0), F: float32(y0)}
-	r.dev.FillImage(gfx.NewPicture(out), m, alpha, gfx.ColorParams{})
+	place := raster.Matrix{A: float32(w), D: float32(h), E: float32(x0), F: float32(y0)}
+	r.dev.FillImage(gfx.NewPicture(out), raster.Concat(place, back), alpha, gfx.ColorParams{})
 	return true
+}
+
+// filterSpace splits a transform into the scale the filter's samples are laid
+// out on and whatever turn is left over. One with no rotation and no skew in it
+// keeps the whole thing, and nothing is resampled.
+func filterSpace(ctm raster.Matrix) (inner, back raster.Matrix) {
+	if ctm.B == 0 && ctm.C == 0 {
+		return ctm, raster.Identity
+	}
+	sx, sy := scaleOf(ctm)
+	if sx <= 0 || sy <= 0 {
+		return ctm, raster.Identity
+	}
+	scale := raster.Scale(sx, sy)
+	inv, ok := scale.Invert()
+	if !ok {
+		return ctm, raster.Identity
+	}
+	return scale, raster.Concat(inv, ctm)
 }
 
 // link is one entry of a filter property: a filter element, or the primitives
@@ -119,6 +146,9 @@ func (r *runner) chain(v string, box raster.Rect, st state) ([]link, bool) {
 		if !ok {
 			return nil, false
 		}
+		if m := funcMargin(prims); m > 0 {
+			reg = raster.Rect{X0: reg.X0 - m, Y0: reg.Y0 - m, X1: reg.X1 + m, Y1: reg.Y1 + m}
+		}
 		out = append(out, link{prims: prims, reg: reg})
 	}
 	if len(out) == 0 && bad {
@@ -149,6 +179,29 @@ func (r *runner) filterLink(id string, box raster.Rect, st state) (link, bool) {
 	}
 	l.reg = reg
 	return l, true
+}
+
+// funcMargin is how far past the element the shorthand spreads. A filter
+// element declares a region and a function does not.
+func funcMargin(prims []*node) float32 {
+	m := float32(0)
+	for _, k := range prims {
+		dx, dy := deviation(k.attr["stdDeviation"])
+		switch k.name {
+		case "feGaussianBlur":
+			m += 3 * max(dx, dy)
+		case "feDropShadow":
+			m += 3*max(dx, dy) + max(absf32(number(k.attr["dx"], 2)), absf32(number(k.attr["dy"], 2)))
+		}
+	}
+	return m
+}
+
+func absf32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // filterEntries splits a filter property into the references and the
@@ -275,6 +328,9 @@ func filterFunc(name, args string, st state) *node {
 	}
 	switch name {
 	case "blur":
+		if strings.Contains(args, "%") {
+			return nil
+		}
 		d, ok := length(args, st.vw, st.em)
 		if !ok && strings.TrimSpace(args) != "" {
 			return nil
@@ -346,6 +402,9 @@ func mix(m [3][4]float32, t float32) string {
 }
 
 func dropShadowFunc(args string, st state) *node {
+	if strings.ContainsAny(args, ",") {
+		return nil
+	}
 	var nums []string
 	var col string
 	for _, f := range splitArgs(args) {
@@ -359,7 +418,7 @@ func dropShadowFunc(args string, st state) *node {
 		}
 		col = strings.TrimSpace(f)
 	}
-	if len(nums) < 2 {
+	if len(nums) < 2 || len(nums) > 3 {
 		return nil
 	}
 	dx, _ := length(nums[0], st.vw, st.em)
@@ -399,22 +458,25 @@ func amount(s string, unit bool) float32 {
 	return out
 }
 
+// badAmount is an argument that is not a number at all, or is negative, which
+// none of these functions takes.
 func badAmount(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return false
 	}
-	_, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 32)
-	return err != nil
+	v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 32)
+	return err != nil || v < 0
 }
 
-// angle reads the four forms CSS writes a rotation in, in degrees.
+// angle reads the four forms CSS writes a rotation in, in degrees. Only zero
+// may be written without a unit.
 func angle(s string) (float32, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, true
 	}
-	scale := float32(1)
+	scale, unit := float32(1), true
 	switch {
 	case strings.HasSuffix(s, "deg"):
 		s = s[:len(s)-3]
@@ -424,9 +486,11 @@ func angle(s string) (float32, bool) {
 		s, scale = s[:len(s)-3], 180/math.Pi
 	case strings.HasSuffix(s, "turn"):
 		s, scale = s[:len(s)-4], 360
+	default:
+		unit = false
 	}
 	v, err := strconv.ParseFloat(strings.TrimSpace(s), 32)
-	if err != nil {
+	if err != nil || (!unit && v != 0) {
 		return 0, false
 	}
 	return float32(v) * scale, true

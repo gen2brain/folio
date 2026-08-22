@@ -82,9 +82,6 @@ type runner struct {
 	// open is the elements being drawn, outermost first, which is what a
 	// descendant selector is matched against.
 	open []*node
-	// canvas is the page in device pixels, which bounds what a filter has to
-	// render off to one side.
-	canvas raster.Rect
 }
 
 // maxOps bounds the elements one drawing may draw, so that a use that
@@ -95,7 +92,6 @@ const maxOps = 1 << 20
 func (p *Page) Run(dev Device, ctm raster.Matrix) error {
 	r := &runner{doc: p.doc, dev: dev}
 	d := p.doc
-	r.canvas = ctm.ApplyRect(p.Bounds())
 	// The root's viewBox maps the coordinates the file draws in onto the size
 	// it asked to be drawn at.
 	m := ctm
@@ -113,7 +109,21 @@ func (p *Page) Run(dev Device, ctm raster.Matrix) error {
 	if st.hidden {
 		return nil
 	}
-	r.children(d.root, m, st)
+	// The root is a viewport, so its filter and its opacity apply to what it
+	// holds.
+	alpha := float32(1)
+	if v, ok := opacity(r.prop(d.root, "opacity")); ok {
+		alpha = v
+	}
+	if !r.filterWith(d.root, m, st, alpha, r.children) {
+		if alpha < 1 {
+			r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)
+		}
+		r.children(d.root, m, st)
+		if alpha < 1 {
+			r.dev.EndGroup()
+		}
+	}
 	if len(r.errs) > 0 {
 		return r.errs[0]
 	}

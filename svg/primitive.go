@@ -909,11 +909,14 @@ func (p *pipe) convolve(k *node, lin bool) *fimage {
 	if cols < 1 || rows < 1 || cols*rows != len(m) {
 		return p.blank(lin)
 	}
-	div := float32(0)
+	// The default divisor is the sum of the kernel. A kernel written to cancel
+	// out reaches zero exactly only when it is added in wider arithmetic.
+	sum := float64(0)
 	for _, v := range m {
-		div += v
+		sum += float64(v)
 	}
-	if div == 0 {
+	div := float32(sum)
+	if sum == 0 {
 		div = 1
 	}
 	if v, ok := k.attr["divisor"]; ok {

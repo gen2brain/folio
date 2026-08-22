@@ -988,4 +988,42 @@ func TestFilter(t *testing.T) {
 	if r != g || g != b || r == 0 || r == 255 {
 		t.Errorf("grayscale(1) of red is %d,%d,%d, want one grey", r, g, b)
 	}
+
+	// A filter on the root element is applied to everything under it.
+	at = pixels(`<svg width="20" height="20" filter="url(#f)">` +
+		`<filter id="f"><feFlood flood-color="#00ff00"/></filter>` +
+		`<rect width="20" height="20" fill="red"/></svg>`)
+	if r, g, b, _ := at(10, 10); r > 8 || g < 240 || b > 8 {
+		t.Errorf("a filter on the root drew %d,%d,%d, want green", r, g, b)
+	}
+}
+
+// TestFilterUnderRotation holds the coordinate system a filter runs in: the
+// user's own, not the device's. A quarter turn between the element and the
+// page sends an offset along x down the page instead of across it.
+func TestFilterUnderRotation(t *testing.T) {
+	d, err := Load([]byte(`<svg width="50" height="50">` +
+		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="50" height="50">` +
+		`<feOffset dx="10" dy="0"/></filter>` +
+		`<rect x="15" y="15" width="10" height="10" fill="black"` +
+		` transform="rotate(90 20 20)" filter="url(#f)"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dark := func(x, y int) bool { return img.Pix[y*img.Stride+x*4] < 128 }
+	if !dark(20, 30) {
+		t.Error("the offset did not follow the element's own x axis")
+	}
+	if dark(30, 20) {
+		t.Error("the offset followed the device x axis")
+	}
+	if dark(20, 20) {
+		t.Error("the element is still where it was drawn")
+	}
 }
