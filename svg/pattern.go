@@ -7,29 +7,34 @@ import (
 )
 
 // pattern draws what a pattern server paints over the shape a path covers,
-// and reports whether it drew anything. The caller has already clipped to the
-// shape, which is what bounds the tiles.
+// and reports whether the reference named a pattern at all. One that draws
+// nothing still answers for the paint, so the shape is not filled with the
+// color underneath it. The caller has already clipped to the shape, which is
+// what bounds the tiles.
 func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st state) bool {
 	id := serverID(value)
 	if id == "" {
 		return false
 	}
 	n := r.doc.byID[id]
-	if n == nil || n.name != "pattern" || r.depth >= maxNesting {
+	if n == nil || n.name != "pattern" {
 		return false
+	}
+	if r.depth >= maxNesting {
+		return true
 	}
 	// A pattern with no content of its own draws what the one it was written
 	// as a variation of draws.
 	content := n
 	for i := 0; len(content.kids) == 0 && i < maxNesting; i++ {
 		p := r.doc.byID[fragment(content.attr["href"])]
-		if p == nil || p == content {
+		if p == nil || p == content || p.name != "pattern" {
 			break
 		}
 		content = p
 	}
 	if len(content.kids) == 0 {
-		return false
+		return true
 	}
 
 	// The tile's own box is in the units of the shape unless it says
@@ -56,7 +61,7 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	w, wok := num("width", false)
 	h, hok := num("height", true)
 	if !wok || !hok || w <= 0 || h <= 0 {
-		return false
+		return true
 	}
 	if !user {
 		bw, bh := box.X1-box.X0, box.Y1-box.Y0
@@ -68,22 +73,25 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	// by its own viewBox when it has one.
 	tile := raster.Concat(raster.Translate(x, y), ctm)
 	tile = raster.Concat(transform(r.inherited(n, "patternTransform", 0)), tile)
-	inner := tile
+	// pre maps the content onto the cell and is applied before the cell is
+	// stepped, so that the step stays one cell whatever the content is scaled
+	// by.
+	pre := raster.Identity
 	// The content of a pattern is not inside the shape that referred to it,
 	// so it inherits nothing from it: a shape stroked black must not put a
 	// black edge around every tile.
 	sub := initialState(w, h)
 	if vb := numbers(r.inherited(n, "viewBox", 0)); len(vb) == 4 && vb[2] > 0 && vb[3] > 0 {
 		al, sl := aspect(r.inherited(n, "preserveAspectRatio", 0))
-		inner = raster.Concat(viewport(vb, al, sl, w, h), tile)
+		pre = viewport(vb, al, sl, w, h)
 		sub.vw, sub.vh = vb[2], vb[3]
 	} else if strings.TrimSpace(r.inherited(n, "patternContentUnits", 0)) == "objectBoundingBox" {
-		inner = raster.Concat(raster.Scale(box.X1-box.X0, box.Y1-box.Y0), tile)
+		pre = raster.Scale(box.X1-box.X0, box.Y1-box.Y0)
 	}
 
 	area, ok := tile.UnapplyRect(r.clipBox(box, ctm))
 	if !ok {
-		return false
+		return true
 	}
 	view := raster.Rect{X1: w, Y1: h}
 	r.depth++
@@ -98,9 +106,9 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	cell.Rect(0, 0, w, h)
 	for ty := y0; ty < y1; ty++ {
 		for tx := x0; tx < x1; tx++ {
-			at := raster.Translate(float32(tx)*w, float32(ty)*h)
-			r.dev.ClipPath(&cell, false, raster.Concat(at, tile), raster.InfiniteRect)
-			r.children(content, raster.Concat(at, inner), sub)
+			at := raster.Concat(raster.Translate(float32(tx)*w, float32(ty)*h), tile)
+			r.dev.ClipPath(&cell, false, at, raster.InfiniteRect)
+			r.children(content, raster.Concat(pre, at), sub)
 			r.dev.PopClip()
 		}
 	}

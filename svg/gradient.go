@@ -2,7 +2,6 @@ package svg
 
 import (
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/gen2brain/folio/gfx"
@@ -247,35 +246,36 @@ func (g *gradient) opacityAt(t float32) float32 {
 // server resolves a paint that names a gradient, and is nil for one that
 // names anything else. bbox is the shape's own box, which a gradient in
 // objectBoundingBox units is a fraction of.
-func (r *runner) server(value string, box raster.Rect, st state) *gradient {
+func (r *runner) server(value string, box raster.Rect, st state) (*gradient, bool) {
 	id := serverID(value)
 	if id == "" {
-		return nil
+		return nil, false
 	}
 	n := r.doc.byID[id]
 	if n == nil {
-		return nil
+		return nil, false
 	}
 	switch n.name {
 	case "linearGradient", "radialGradient":
 	default:
-		return nil
+		return nil, false
 	}
 	g := &gradient{radial: n.name == "radialGradient"}
 	g.stops = r.stops(n, st, 0)
+	// A gradient with no stops paints as none does, SVG 1.1 13.2.4.
 	if len(g.stops) == 0 {
-		return nil
+		return nil, true
 	}
 
 	// A gradient in the units of the shape is written in fractions of its
 	// box, so the box becomes the transform, SVG 1.1 13.2.2.
-	user := strings.TrimSpace(r.inherited(n, "gradientUnits", 0)) == "userSpaceOnUse"
+	user := strings.TrimSpace(r.gradAttr(n, "gradientUnits", g.radial)) == "userSpaceOnUse"
 	ref := raster.Rect{X1: 1, Y1: 1}
 	if user {
 		ref = raster.Rect{X1: st.vw, Y1: st.vh}
 	}
 	num := func(name string, def float32, vertical bool) float32 {
-		s := r.inherited(n, name, 0)
+		s := r.gradAttr(n, name, g.radial)
 		if s == "" {
 			return def
 		}
@@ -295,16 +295,18 @@ func (r *runner) server(value string, box raster.Rect, st state) *gradient {
 		cy := num("cy", 0.5*ref.Y1, true)
 		rr := num("r", 0.5*diagonal(ref.X1, ref.Y1), false)
 		fx, fy := cx, cy
-		if s := r.inherited(n, "fx", 0); s != "" {
+		if s := r.gradAttr(n, "fx", true); s != "" {
 			fx = num("fx", cx, false)
 		}
-		if s := r.inherited(n, "fy", 0); s != "" {
+		if s := r.gradAttr(n, "fy", true); s != "" {
 			fy = num("fy", cy, true)
 		}
-		g.c0, g.r0 = raster.Point{X: fx, Y: fy}, 0
+		g.c0, g.r0 = raster.Point{X: fx, Y: fy}, max(num("fr", 0, false), 0)
 		g.c1, g.r1 = raster.Point{X: cx, Y: cy}, rr
-		if rr <= 0 {
-			return nil
+		// A circle with no radius is the color of the last stop, SVG 1.1
+		// 13.2.3, and so is a focus as wide as the circle.
+		if rr <= 0 || g.r0 >= rr {
+			g.solid()
 		}
 	} else {
 		x1 := num("x1", 0, false)
@@ -314,11 +316,7 @@ func (r *runner) server(value string, box raster.Rect, st state) *gradient {
 		g.c0 = raster.Point{X: x1, Y: y1}
 		g.c1 = raster.Point{X: x2, Y: y2}
 		if g.c0 == g.c1 {
-			// A gradient with no length is the color of its last stop.
-			last := g.stops[len(g.stops)-1]
-			g.stops = []stop{{offset: 0, color: last.color, alpha: last.alpha},
-				{offset: 1, color: last.color, alpha: last.alpha}}
-			g.c1.X += 1
+			g.solid()
 		}
 	}
 
@@ -329,18 +327,71 @@ func (r *runner) server(value string, box raster.Rect, st state) *gradient {
 		span = raster.Rect{X1: 1, Y1: 1}
 	}
 	lo, hi := g.axisRange(span)
-	g.spread(strings.TrimSpace(r.inherited(n, "spreadMethod", 0)), lo, hi)
+	g.spread(strings.TrimSpace(r.gradAttr(n, "spreadMethod", g.radial)), lo, hi)
 
-	g.matrix = transform(r.inherited(n, "gradientTransform", 0))
+	g.matrix = transform(r.gradAttr(n, "gradientTransform", g.radial))
 	if !user {
 		if box.IsEmpty() {
-			return nil
+			return nil, true
 		}
 		unit := raster.Concat(raster.Scale(box.X1-box.X0, box.Y1-box.Y0),
 			raster.Translate(box.X0, box.Y0))
 		g.matrix = raster.Concat(g.matrix, unit)
 	}
-	return g
+	return g, true
+}
+
+// solid turns a degenerate gradient into the one color the spec says it
+// paints: the last stop's, everywhere.
+func (g *gradient) solid() {
+	last := g.stops[len(g.stops)-1]
+	g.stops = []stop{{offset: 0, color: last.color, alpha: last.alpha},
+		{offset: 1, color: last.color, alpha: last.alpha}}
+	g.radial = false
+	g.c0, g.c1 = raster.Point{}, raster.Point{X: 1}
+	g.r0, g.r1 = 0, 0
+	g.reps, g.first, g.mirror = 0, 0, false
+}
+
+// ancestral reads a property off an element or the nearest one it is written
+// inside, which is how a definition sees what it inherits without ever being
+// walked into.
+func (r *runner) ancestral(n *node, name string) string {
+	for i := 0; n != nil && i < maxNesting*4; i++ {
+		if v := strings.TrimSpace(r.prop(n, name)); v != "" && v != "inherit" {
+			return v
+		}
+		n = n.up
+	}
+	return ""
+}
+
+// gradAttr reads an attribute off a gradient, following href to the gradient
+// it was written as a variation of, SVG 1.1 13.2.4. Only a gradient is
+// followed, and the geometry of one kind is not the geometry of the other.
+func (r *runner) gradAttr(n *node, name string, radial bool) string {
+	geom := gradGeom(name)
+	for i := 0; n != nil && i < maxNesting; i++ {
+		if !geom || (n.name == "radialGradient") == radial {
+			if v, ok := n.attr[name]; ok {
+				return v
+			}
+		}
+		p := r.doc.byID[fragment(n.attr["href"])]
+		if p == nil || p == n || (p.name != "linearGradient" && p.name != "radialGradient") {
+			return ""
+		}
+		n = p
+	}
+	return ""
+}
+
+func gradGeom(name string) bool {
+	switch name {
+	case "x1", "y1", "x2", "y2", "cx", "cy", "r", "fx", "fy", "fr":
+		return true
+	}
+	return false
 }
 
 // serverID is the element a url() paint names, and empty for a paint that
@@ -376,6 +427,12 @@ func (r *runner) inherited(n *node, name string, depth int) string {
 // stops reads a gradient's ramp, following href when it declares none of its
 // own. The offsets are clamped and never go backwards.
 func (r *runner) stops(n *node, st state, depth int) []stop {
+	// currentColor in a stop is the color where the gradient is written, not
+	// the color of whatever is being painted with it.
+	cur := st.color
+	if v, ok := parseColor(r.ancestral(n, "color"), st.color); ok {
+		cur = v
+	}
 	var out []stop
 	for _, k := range n.kids {
 		if k.name != "stop" {
@@ -385,13 +442,17 @@ func (r *runner) stops(n *node, st state, depth int) []stop {
 		if v, ok := opacity(r.prop(k, "offset")); ok {
 			s.offset = v
 		}
-		c, ok := parseColor(r.prop(k, "stop-color"), st.color)
+		v := strings.TrimSpace(r.prop(k, "stop-color"))
+		if v == "inherit" {
+			v = r.ancestral(k.up, "stop-color")
+		}
+		c, ok := parseColor(v, cur)
 		if !ok {
 			c = black
 		}
-		s.color = c.color
+		s.color, s.alpha = c.color, c.alpha
 		if v, ok := opacity(r.prop(k, "stop-opacity")); ok {
-			s.alpha = v
+			s.alpha *= v
 		}
 		out = append(out, s)
 	}
@@ -399,12 +460,14 @@ func (r *runner) stops(n *node, st state, depth int) []stop {
 		if depth >= maxNesting {
 			return nil
 		}
-		if p := r.doc.byID[fragment(n.attr["href"])]; p != nil && p != n {
+		p := r.doc.byID[fragment(n.attr["href"])]
+		if p != nil && p != n && (p.name == "linearGradient" || p.name == "radialGradient") {
 			return r.stops(p, st, depth+1)
 		}
 		return nil
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].offset < out[j].offset })
+	// A stop that steps backwards is pulled up to the one before it rather
+	// than sorted into place, SVG 1.1 13.2.4.
 	for i := 1; i < len(out); i++ {
 		if out[i].offset < out[i-1].offset {
 			out[i].offset = out[i-1].offset

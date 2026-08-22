@@ -357,22 +357,28 @@ func (r *runner) drawGlyphs(g []glyph, ctm raster.Matrix) {
 		t := &gfx.Text{Spans: []gfx.TextSpan{span}}
 		box := textBounds(run)
 		if !st.fill.none {
-			if sh := r.server(st.fillServer, box, st); sh != nil {
+			sh, empty := r.server(st.fillServer, box, st)
+			switch {
+			case sh != nil:
 				r.dev.ClipText(t, ctm, raster.InfiniteRect)
 				r.dev.FillShade(sh, ctm, st.fillOpacity*sh.alpha(), gfx.ColorParams{})
 				r.dev.PopClip()
-			} else {
+			case empty:
+			default:
 				c := st.fill.color
 				r.dev.FillText(t, ctm, gfx.DeviceRGB, c[:], st.fillOpacity, gfx.ColorParams{})
 			}
 		}
 		if !st.stroke.none && st.width > 0 {
 			s := r.strokeOf(st)
-			if sh := r.server(st.strokeServer, box, st); sh != nil {
+			sh, empty := r.server(st.strokeServer, box, st)
+			switch {
+			case sh != nil:
 				r.dev.ClipStrokeText(t, s, ctm, raster.InfiniteRect)
 				r.dev.FillShade(sh, ctm, st.strokeOpacity*sh.alpha(), gfx.ColorParams{})
 				r.dev.PopClip()
-			} else {
+			case empty:
+			default:
 				c := st.stroke.color
 				r.dev.StrokeText(t, s, ctm, gfx.DeviceRGB, c[:], st.strokeOpacity, gfx.ColorParams{})
 			}

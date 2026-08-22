@@ -41,7 +41,12 @@ type node struct {
 	name  string
 	attr  map[string]string
 	kids  []*node
+	up    *node
 	chars string
+}
+
+func isXlink(space string) bool {
+	return space == "xlink" || space == "http://www.w3.org/1999/xlink"
 }
 
 // Document is one SVG file.
@@ -241,13 +246,26 @@ func parseXML(b []byte) (*node, []string, error) {
 				return nil, nil, fmt.Errorf("%w: elements nested too deeply", ErrInvalid)
 			}
 			n := &node{name: t.Name.Local, attr: make(map[string]string, len(t.Attr))}
+			// An attribute keeps its local name. The only namespace that
+			// matters is xlink, whose href means the same as href and gives
+			// way to one written without a prefix.
 			for _, a := range t.Attr {
-				// An attribute keeps its local name: the only namespace that
-				// matters here is xlink, whose href means the same as href.
+				if a.Name.Local == "href" && a.Name.Space != "" {
+					continue
+				}
 				n.attr[a.Name.Local] = a.Value
+			}
+			for _, a := range t.Attr {
+				if a.Name.Local != "href" || !isXlink(a.Name.Space) {
+					continue
+				}
+				if _, ok := n.attr["href"]; !ok {
+					n.attr["href"] = a.Value
+				}
 			}
 			if len(stack) > 0 {
 				p := stack[len(stack)-1]
+				n.up = p
 				p.kids = append(p.kids, n)
 			} else if root == nil && n.name == "svg" {
 				root = n

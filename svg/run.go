@@ -76,6 +76,9 @@ type runner struct {
 	// far, which a use may draw many times.
 	faces map[faceKey]*font.Font
 	pics  map[string]gfx.Image
+	// arts are the drawings an image element referred to, which are
+	// documents of their own.
+	arts map[string]*Page
 	// fbs are the faces a character the chosen one cannot draw has fallen
 	// back to, which is the same answer for every element that asks.
 	fbs map[fallbackKey]*font.Font
@@ -89,8 +92,15 @@ type runner struct {
 const maxOps = 1 << 20
 
 // Run draws the page onto a device under ctm.
-func (p *Page) Run(dev Device, ctm raster.Matrix) error {
-	r := &runner{doc: p.doc, dev: dev}
+func (p *Page) Run(dev Device, ctm raster.Matrix) error { return p.run(dev, ctm, 0) }
+
+// run is Run with the nesting a drawing reached to get here, so that one that
+// puts itself in an image element stops.
+func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
+	if depth >= maxNesting {
+		return nil
+	}
+	r := &runner{doc: p.doc, dev: dev, depth: depth}
 	d := p.doc
 	// The root's viewBox maps the coordinates the file draws in onto the size
 	// it asked to be drawn at.
@@ -159,6 +169,9 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 		return
 	}
 
+	if !conditional(n) {
+		return
+	}
 	st = r.style(n, st)
 	if st.hidden {
 		return
@@ -224,7 +237,59 @@ func (r *runner) paint(n *node, ctm raster.Matrix, st state) {
 		r.text(n, ctm, st)
 	case "image":
 		r.image(n, ctm, st)
+	case "switch":
+		r.chosen(n, ctm, st)
 	}
+}
+
+// chosen draws the first child of a switch whose conditions all hold,
+// SVG 1.1 5.8.
+func (r *runner) chosen(n *node, ctm raster.Matrix, st state) {
+	for _, k := range n.kids {
+		if switchable(k.name) && conditional(k) {
+			r.element(k, ctm, st)
+			return
+		}
+	}
+}
+
+// switchable is an element a switch may choose between.
+func switchable(name string) bool {
+	switch name {
+	case "a", "foreignObject", "g", "image", "svg", "switch", "text", "use",
+		"circle", "ellipse", "line", "path", "polygon", "polyline", "rect":
+		return true
+	}
+	return false
+}
+
+// conditional evaluates the three attributes of SVG 1.1 5.8. An empty value
+// is false for all of them; an extension is one this has none of, and a
+// feature is one it has.
+func conditional(n *node) bool {
+	if _, ok := n.attr["requiredExtensions"]; ok {
+		return false
+	}
+	if v, ok := n.attr["requiredFeatures"]; ok && strings.TrimSpace(v) == "" {
+		return false
+	}
+	if v, ok := n.attr["systemLanguage"]; ok {
+		return speaks(v)
+	}
+	return true
+}
+
+// language is the tag systemLanguage is matched against.
+const language = "en"
+
+func speaks(v string) bool {
+	for _, tag := range strings.Split(v, ",") {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == language || strings.HasPrefix(tag, language+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *runner) group(n *node, ctm raster.Matrix, st state) {
@@ -246,6 +311,9 @@ func (r *runner) nested(n *node, ctm raster.Matrix, st state) {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	if r.viewportClip(n, x, y, w, h, ctm) {
+		defer r.dev.PopClip()
+	}
 	ctm = raster.Concat(raster.Translate(x, y), ctm)
 	if box := numbers(n.attr["viewBox"]); len(box) == 4 && box[2] > 0 && box[3] > 0 {
 		al, sl := aspect(n.attr["preserveAspectRatio"])
@@ -255,6 +323,20 @@ func (r *runner) nested(n *node, ctm raster.Matrix, st state) {
 		st.vw, st.vh = w, h
 	}
 	r.children(n, ctm, st)
+}
+
+// viewportClip cuts what an element draws down to the viewport it
+// establishes, which is what overflow asks for and is hidden by default,
+// SVG 1.1 14.3.3.
+func (r *runner) viewportClip(n *node, x, y, w, h float32, ctm raster.Matrix) bool {
+	switch strings.TrimSpace(r.prop(n, "overflow")) {
+	case "visible", "auto":
+		return false
+	}
+	var box raster.Path
+	box.Rect(x, y, x+w, y+h)
+	r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
+	return true
 }
 
 // use draws what an element refers to, in place. A use of a symbol or of an
@@ -291,6 +373,9 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 			return
 		}
 		m := raster.Concat(transform(target.attr["transform"]), ctm)
+		if r.viewportClip(target, 0, 0, w, h, m) {
+			defer r.dev.PopClip()
+		}
 		if box := numbers(target.attr["viewBox"]); len(box) == 4 && box[2] > 0 && box[3] > 0 {
 			al, sl := aspect(target.attr["preserveAspectRatio"])
 			m = raster.Concat(viewport(box, al, sl, w, h), m)
@@ -314,12 +399,15 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	strokeAlpha := st.strokeOpacity * st.stroke.alpha
 	if !st.fill.none {
 		box := p.Bounds(raster.Identity)
-		if g := r.server(st.fillServer, box, st); g != nil {
+		g, empty := r.server(st.fillServer, box, st)
+		switch {
+		case g != nil:
 			r.dev.ClipPath(p, st.fillEvenOdd, ctm, raster.InfiniteRect)
 			r.dev.FillShade(g, ctm, fillAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
-		} else if st.fillServer != "" && r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, st) {
-		} else {
+		case empty:
+		case st.fillServer != "" && r.tiled(st.fillServer, p, st.fillEvenOdd, box, ctm, st):
+		default:
 			c := st.fill.color
 			r.dev.FillPath(p, st.fillEvenOdd, ctm, gfx.DeviceRGB, c[:], fillAlpha, gfx.ColorParams{})
 		}
@@ -328,11 +416,14 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 		s := r.strokeOf(st)
 		// The box a gradient in objectBoundingBox units is a fraction of is
 		// the shape's own, which SVG 1.1 7.11 says the stroke is not part of.
-		if g := r.server(st.strokeServer, p.Bounds(raster.Identity), st); g != nil {
+		g, empty := r.server(st.strokeServer, p.Bounds(raster.Identity), st)
+		switch {
+		case g != nil:
 			r.dev.ClipStrokePath(p, s, ctm, raster.InfiniteRect)
 			r.dev.FillShade(g, ctm, strokeAlpha*g.alpha(), gfx.ColorParams{})
 			r.dev.PopClip()
-		} else {
+		case empty:
+		default:
 			c := st.stroke.color
 			r.dev.StrokePath(p, s, ctm, gfx.DeviceRGB, c[:], strokeAlpha, gfx.ColorParams{})
 		}

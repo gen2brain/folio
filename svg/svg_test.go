@@ -264,16 +264,21 @@ func FuzzSVG(fu *testing.F) {
 	})
 }
 
-// TestGradientStops covers the ramp: the stops are sorted, an offset never
-// goes backwards, and a gradient with none of its own takes the ones it was
-// written as a variation of.
+// TestGradientStops covers the ramp: an offset that steps backwards is pulled
+// up to the one before it rather than sorted into place, and a gradient with
+// no stops of its own takes the ones it was written as a variation of.
 func TestGradientStops(t *testing.T) {
 	d, err := Load([]byte(`<svg>
 	  <linearGradient id="base">
-	    <stop offset="1" stop-color="red"/>
 	    <stop offset="0" stop-color="#00f"/>
+	    <stop offset="1" stop-color="red"/>
 	  </linearGradient>
 	  <linearGradient id="heir" href="#base" x1="0" x2="10"/>
+	  <linearGradient id="back">
+	    <stop offset="0" stop-color="#00f"/>
+	    <stop offset="0.7" stop-color="red"/>
+	    <stop offset="0.1" stop-color="#0f0"/>
+	  </linearGradient>
 	  <rect width="10" height="10" fill="url(#heir)"/>
 	</svg>`))
 	if err != nil {
@@ -281,7 +286,7 @@ func TestGradientStops(t *testing.T) {
 	}
 	r := &runner{doc: d}
 	st := initialState(100, 100)
-	g := r.server("url(#heir)", raster.Rect{X1: 10, Y1: 10}, st)
+	g, _ := r.server("url(#heir)", raster.Rect{X1: 10, Y1: 10}, st)
 	if g == nil {
 		t.Fatal("the gradient did not resolve")
 	}
@@ -299,8 +304,19 @@ func TestGradientStops(t *testing.T) {
 	if c := g.at(0.5); !near(c[0], 0.5) || !near(c[2], 0.5) {
 		t.Errorf("the middle of the ramp is %v, want half of each end", c)
 	}
-	if g := r.server("url(#nothing)", raster.Rect{X1: 1, Y1: 1}, st); g != nil {
+	if g, ok := r.server("url(#nothing)", raster.Rect{X1: 1, Y1: 1}, st); g != nil || ok {
 		t.Error("a reference to nothing resolved")
+	}
+
+	b, _ := r.server("url(#back)", raster.Rect{X1: 10, Y1: 10}, st)
+	if b == nil {
+		t.Fatal("the second gradient did not resolve")
+	}
+	if got := []float32{b.stops[0].offset, b.stops[1].offset, b.stops[2].offset}; got[2] != 0.7 {
+		t.Errorf("stops at %v, want the last pulled up to 0.7", got)
+	}
+	if b.stops[2].color != ([3]float32{0, 1, 0}) {
+		t.Errorf("the last stop is %v, want it kept where it was written", b.stops[2].color)
 	}
 }
 
@@ -658,7 +674,7 @@ func TestGradientSpread(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := &runner{doc: d}
-		g := r.server("url(#g)", raster.Rect{X1: 100, Y1: 10}, initialState(100, 10))
+		g, _ := r.server("url(#g)", raster.Rect{X1: 100, Y1: 10}, initialState(100, 10))
 		if g == nil {
 			t.Fatal("the gradient did not resolve")
 		}
