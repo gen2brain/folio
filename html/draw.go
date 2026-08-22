@@ -1,8 +1,6 @@
 package html
 
 import (
-	"sync"
-
 	"github.com/gen2brain/folio/font"
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
@@ -392,7 +390,7 @@ func (p *painter) rect(x, y, w, h float32, c Color) {
 // clipped to the box itself.
 func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 	s := b.style
-	iw, ih := float32(b.back.w), float32(b.back.h)
+	iw, ih := float32(b.back.W), float32(b.back.H)
 	if iw <= 0 || ih <= 0 {
 		return
 	}
@@ -462,27 +460,7 @@ func colorOf(c Color) ([]float32, float32) {
 
 // subst is a font program a device draws glyphs from, which is all a
 // substitute face needs to be.
-type subst struct{ prog *font.Font }
 
-// FontName implements gfx.Font.
-func (f *subst) FontName() string { return f.prog.Name }
-
-// Program implements gfx.Font.
-func (f *subst) Program() *font.Font { return f.prog }
-
-// EmBox implements gfx.Font.
-func (f *subst) EmBox() (float32, float32) { return f.prog.Ascent, f.prog.Descent }
-
-// RunGlyph implements gfx.Font. A substitute always has a program, so there
-// is nothing for it to run.
-func (f *subst) RunGlyph(gfx.Device, int, raster.Matrix, *gfx.ColorSpace, []float32, float32, int) {}
-
-var substCache sync.Map
-
-func substFont(prog *font.Font) gfx.Font {
-	if v, ok := substCache.Load(prog); ok {
-		return v.(*subst)
-	}
-	v, _ := substCache.LoadOrStore(prog, &subst{prog: prog})
-	return v.(*subst)
-}
+// substFont is gfx.FontOf, which wraps a program as a font a device can draw
+// glyphs out of.
+func substFont(prog *font.Font) gfx.Font { return gfx.FontOf(prog) }

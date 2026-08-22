@@ -3,6 +3,8 @@ package html
 import (
 	"math"
 	"strings"
+
+	"github.com/gen2brain/folio/gfx"
 )
 
 // Unit is what a Length is measured in once the cascade has computed it.
@@ -786,8 +788,8 @@ func (v value) color() (Color, bool) {
 		if name == "transparent" {
 			return Color{}, true
 		}
-		c, ok := namedColors[name]
-		return c, ok
+		r, g, b, ok := gfx.NamedColor(name)
+		return Color{r, g, b, 255}, ok
 	case cssFunction:
 		args, rest, ok := parseArgs(v.toks)
 		if !ok || len(skipSpace(rest)) != 0 {

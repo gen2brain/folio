@@ -180,7 +180,7 @@ func (d *Document) imagePart(it Item, cw, ch float32) (*laidPart, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", it.Path, err)
 	}
-	w, h := float32(pic.w), float32(pic.h)
+	w, h := float32(pic.W), float32(pic.H)
 	if s := min(cw/w, ch/h); s < 1 {
 		w, h = w*s, h*s
 	}
