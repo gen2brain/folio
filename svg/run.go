@@ -98,8 +98,8 @@ const maxOps = 1 << 20
 // Run draws the page onto a device under ctm.
 func (p *Page) Run(dev Device, ctm raster.Matrix) error { return p.run(dev, ctm, 0) }
 
-// run is Run with the nesting a drawing reached to get here, so that one that
-// puts itself in an image element stops.
+// run is Run with the nesting a drawing reached to get here, which bounds one
+// that puts itself in an image element.
 func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	if depth >= maxNesting {
 		return nil
@@ -599,7 +599,9 @@ func (r *runner) style(n *node, st state) state {
 	case "nonzero":
 		st.fillEvenOdd = false
 	}
-	if v, ok := length(r.prop(n, "font-size"), st.em, st.em); ok && v > 0 {
+	if v, ok := namedSize(r.prop(n, "font-size")); ok {
+		st.em = v
+	} else if v, ok := length(r.prop(n, "font-size"), st.em, st.em); ok && v > 0 {
 		st.em = v
 	}
 	if v, ok := length(r.prop(n, "stroke-width"), diagonal(st.vw, st.vh), st.em); ok {
@@ -702,6 +704,28 @@ func paintOf(v string, was paint, wasServer string, current paint) (paint, strin
 		return was, wasServer
 	}
 	return p, ""
+}
+
+// namedSize is one of the seven absolute sizes CSS Fonts 3 names, on the
+// scale a medium of sixteen pixels sets.
+func namedSize(v string) (float32, bool) {
+	switch strings.TrimSpace(v) {
+	case "xx-small":
+		return 9, true
+	case "x-small":
+		return 10, true
+	case "small":
+		return 13, true
+	case "medium":
+		return 16, true
+	case "large":
+		return 18, true
+	case "x-large":
+		return 24, true
+	case "xx-large":
+		return 32, true
+	}
+	return 0, false
 }
 
 // blendMode is the mode mix-blend-mode names, and false for the one that

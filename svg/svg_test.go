@@ -331,7 +331,7 @@ func TestTextLayout(t *testing.T) {
 		}
 		r := &runner{doc: d}
 		c := &textCursor{}
-		r.textRun(d.root.kids[0], initialState(300, 300), c, 0)
+		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		return c.glyphs
 	}
 
@@ -429,7 +429,7 @@ func TestTextSpacing(t *testing.T) {
 		}
 		r := &runner{doc: d}
 		c := &textCursor{}
-		r.textRun(d.root.kids[0], initialState(300, 300), c, 0)
+		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		if len(c.glyphs) < 2 {
 			t.Fatalf("%d glyphs", len(c.glyphs))
 		}
@@ -446,7 +446,7 @@ func TestTextSpacing(t *testing.T) {
 		d, _ := Load([]byte(markup))
 		r := &runner{doc: d}
 		c := &textCursor{}
-		r.textRun(d.root.kids[0], initialState(300, 300), c, 0)
+		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		return len(c.glyphs)
 	}
 	if n := count(`<svg><text font-size="16">a   b</text></svg>`); n != 3 {
@@ -461,7 +461,7 @@ func TestTextSpacing(t *testing.T) {
 		d, _ := Load([]byte(`<svg><text y="50" font-size="20" dominant-baseline="` + v + `">a</text></svg>`))
 		r := &runner{doc: d}
 		c := &textCursor{}
-		r.textRun(d.root.kids[0], initialState(300, 300), c, 0)
+		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		shiftBaseline(c.glyphs)
 		return c.glyphs[0].y
 	}
@@ -857,7 +857,7 @@ func TestTspanPositions(t *testing.T) {
 	}
 	r := &runner{doc: d}
 	c := &textCursor{}
-	r.textRun(d.root.kids[0], initialState(300, 300), c, 0)
+	r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 
 	// The white space a text element ends with is dropped, and the space
 	// between the two tspans sits where the pen was left rather than taking
@@ -1011,6 +1011,78 @@ func TestFilter(t *testing.T) {
 		`<rect width="20" height="20" fill="red"/></svg>`)
 	if r, g, b, _ := at(10, 10); r > 8 || g < 240 || b > 8 {
 		t.Errorf("a filter on the root drew %d,%d,%d, want green", r, g, b)
+	}
+}
+
+// TestViewportAndConditions covers what an element that establishes a
+// viewport or chooses between its children does: the clip a nested svg puts
+// on what overflows it, the first child of a switch whose conditions hold,
+// and a font size read once rather than once per pass over the element.
+func TestViewportAndConditions(t *testing.T) {
+	at := func(src string) func(x, y int) (uint8, uint8, uint8) {
+		t.Helper()
+		d, err := Load([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		p, _ := d.Page(0)
+		img, err := p.ImageDPI(96)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return func(x, y int) (uint8, uint8, uint8) {
+			o := y*img.Stride + x*4
+			return img.Pix[o], img.Pix[o+1], img.Pix[o+2]
+		}
+	}
+
+	// A nested svg is a viewport, and overflow hides what reaches past it.
+	px := at(`<svg width="40" height="40">` +
+		`<svg x="10" y="10" width="10" height="10">` +
+		`<rect width="40" height="40" fill="black"/></svg></svg>`)
+	if r, _, _ := px(15, 15); r > 8 {
+		t.Errorf("inside the nested viewport is %d, want black", r)
+	}
+	if r, _, _ := px(25, 15); r < 248 {
+		t.Errorf("past the nested viewport is %d, want the page", r)
+	}
+
+	// overflow: visible turns the clip off.
+	px = at(`<svg width="40" height="40">` +
+		`<svg x="10" y="10" width="10" height="10" overflow="visible">` +
+		`<rect width="40" height="40" fill="black"/></svg></svg>`)
+	if r, _, _ := px(25, 15); r > 8 {
+		t.Errorf("past a visible viewport is %d, want black", r)
+	}
+
+	// A switch draws the first child it may, and only that one.
+	px = at(`<svg width="40" height="40"><switch>` +
+		`<rect width="40" height="40" fill="#ff0000" requiredExtensions="urn:x"/>` +
+		`<rect width="40" height="40" fill="#00ff00"/>` +
+		`<rect width="40" height="40" fill="#ff0000"/></switch></svg>`)
+	if r, g, b := px(20, 20); r > 8 || g < 240 || b > 8 {
+		t.Errorf("the switch drew %d,%d,%d, want the second child", r, g, b)
+	}
+
+	// A relative font size is a fraction of what the element inherited, and
+	// the element's own style is read once however many passes reach it.
+	d, err := Load([]byte(`<svg width="100" height="40">` +
+		`<g font-size="10"><text id="t" font-size="200%">M</text></g></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	r := &runner{doc: d}
+	c := &textCursor{}
+	st := r.style(d.root.kids[0], initialState(100, 40))
+	st = r.style(d.root.kids[0].kids[0], st)
+	r.textRun(d.root.kids[0].kids[0], st, c, 0, true)
+	if st.em != 20 {
+		t.Errorf("the font size is %v, want twice the ten it inherited", st.em)
+	}
+	if len(c.glyphs) != 1 || c.glyphs[0].st.em != 20 {
+		t.Errorf("the glyph was placed at %v", c.glyphs)
 	}
 }
 

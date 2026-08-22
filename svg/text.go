@@ -49,7 +49,9 @@ func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 		return
 	}
 	c := &textCursor{}
-	r.textRun(n, st, c, 0)
+	// The element's own style is already in st: applying it again would read
+	// a relative font size twice.
+	r.textRun(n, st, c, 0, true)
 	c.glyphs = trimTrailing(c.glyphs)
 	if len(c.glyphs) == 0 {
 		return
@@ -78,13 +80,15 @@ func trimTrailing(g []glyph) []glyph {
 
 // textRun walks one element of a text, placing its characters and following
 // its tspans.
-func (r *runner) textRun(n *node, st state, c *textCursor, depth int) {
+func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled bool) {
 	if depth > maxNesting {
 		return
 	}
-	st = r.style(n, st)
-	if st.hidden {
-		return
+	if !styled {
+		st = r.style(n, st)
+		if st.hidden {
+			return
+		}
 	}
 	// An absolute position starts a new chunk, and a relative one only moves
 	// the pen.
@@ -119,7 +123,7 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int) {
 		case "":
 			i = r.place(c, k.chars, st, face, xs, ys, dxs, dys, i)
 		case "tspan", "textPath", "a":
-			r.textRun(k, st, c, depth+1)
+			r.textRun(k, st, c, depth+1, false)
 		}
 	}
 }
