@@ -25,7 +25,7 @@ type layout struct {
 	// floats are the boxes taken out of the flow, which the line boxes
 	// beside them work around.
 	floats []exclusion
-	pics   map[string]*picture
+	pics   map[string]*visual
 	errs   []error
 	// budget bounds the trial layouts a table and a float measure with,
 	// which nest and would otherwise multiply.
@@ -39,6 +39,9 @@ type layout struct {
 	// and takes one from what it holds. CSS 2.1 10.5 says a percentage of
 	// that is auto.
 	cbh float32
+	// pw and ph are the page box, which is what a percentage size on the
+	// root element of a drawing measures against.
+	pw, ph float32
 	// fonts are the faces the book brings with it for this part.
 	fonts *fontSet
 	// root is the tree run laid out.
@@ -561,17 +564,17 @@ func (l *layout) release(c *inlineCtx, x, w float32, upto int) {
 // imageBlock lays a picture out as a block of its own, which an image that is
 // floated or block level is.
 func (l *layout) imageBlock(b *box, x, w float32) {
-	pic := l.picture(b)
-	if pic == nil {
+	vis := l.picture(b)
+	if vis == nil {
 		return
 	}
-	iw, ih := pictureSize(b, pic, w, l.cbh)
+	iw, ih := pictureSize(b, vis, w, l.cbh)
 	if iw <= 0 || ih <= 0 {
 		return
 	}
 	l.apply()
 	line := lineBox{y: l.y, h: ih, baseline: ih, natural: iw,
-		frags: []frag{{x: x, w: iw, h: ih, img: pic, style: b.style}}}
+		frags: []frag{{x: x, w: iw, h: ih, vis: vis, style: b.style}}}
 	b.lines = append(b.lines, line)
 	l.spans = append(l.spans, lineSpan{top: line.y, bottom: line.y + line.h, force: l.next})
 	l.next = false
@@ -592,7 +595,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	for _, p := range c.pieces(lo, hi) {
 		it := &c.items[p.item]
 		a, d := itemBox(it)
-		if it.sub != nil || it.img != nil {
+		if it.sub != nil || it.vis != nil {
 			total += it.iw
 		} else {
 			total += it.face.width(c.str[p.lo:p.hi])
@@ -661,8 +664,8 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 			line.frags = append(line.frags, f)
 			continue
 		}
-		if it.img != nil {
-			f.img, f.w, f.h = it.img, it.iw, it.ih
+		if it.vis != nil {
+			f.vis, f.w, f.h = it.vis, it.iw, it.ih
 			cx += it.iw
 			line.frags = append(line.frags, f)
 			continue
@@ -698,7 +701,7 @@ func itemBox(it *inlineItem) (above, below float32) {
 	switch {
 	case it.sub != nil:
 		return it.ib, it.ih - it.ib
-	case it.img != nil:
+	case it.vis != nil:
 		return it.ih, 0
 	}
 	return strut(it.style, it.face)
@@ -778,7 +781,7 @@ type inlineItem struct {
 	start  int
 	style  *Style
 	face   face
-	img    *picture
+	vis    *visual
 	iw, ih float32
 	// sub is the box an inline-block contributes, and ib how far its own
 	// baseline sits below its top.
@@ -875,12 +878,12 @@ func (c *inlineCtx) gather(b *box) {
 
 // open starts an item unless the last one is already the same element drawn
 // with the same face.
-func (c *inlineCtx) open(s *Style, f face, img *picture) {
-	if n := len(c.items); img == nil && n > 0 &&
-		c.items[n-1].style == s && c.items[n-1].face == f && c.items[n-1].img == nil {
+func (c *inlineCtx) open(s *Style, f face, vis *visual) {
+	if n := len(c.items); vis == nil && n > 0 &&
+		c.items[n-1].style == s && c.items[n-1].face == f && c.items[n-1].vis == nil {
 		return
 	}
-	c.items = append(c.items, inlineItem{start: c.text.Len(), style: s, face: f, img: img})
+	c.items = append(c.items, inlineItem{start: c.text.Len(), style: s, face: f, vis: vis})
 }
 
 func (c *inlineCtx) flushSpace() {
@@ -999,16 +1002,16 @@ func (c *inlineCtx) addBreak(s *Style) {
 const objectChar = "￼"
 
 func (c *inlineCtx) addImage(b *box) {
-	pic := c.l.picture(b)
-	if pic == nil {
+	vis := c.l.picture(b)
+	if vis == nil {
 		return
 	}
 	c.flushSpace()
-	c.open(b.style, c.l.face(b.style), pic)
+	c.open(b.style, c.l.face(b.style), vis)
 	c.text.WriteString(objectChar)
 	c.begun = true
 	n := len(c.items) - 1
-	c.items[n].iw, c.items[n].ih = pictureSize(b, pic, c.avail, c.l.cbh)
+	c.items[n].iw, c.items[n].ih = pictureSize(b, vis, c.avail, c.l.cbh)
 	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: c.l.face(b.style)})
 }
 
@@ -1094,7 +1097,7 @@ func (c *inlineCtx) pieces(lo, hi int) []piece {
 func (c *inlineCtx) measure(lo, hi int) float32 {
 	w := float32(0)
 	for _, p := range c.pieces(lo, hi) {
-		if it := &c.items[p.item]; it.img != nil || it.sub != nil {
+		if it := &c.items[p.item]; it.vis != nil || it.sub != nil {
 			w += it.iw
 		} else {
 			w += it.face.width(c.str[p.lo:p.hi])

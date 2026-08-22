@@ -1,6 +1,7 @@
 package svg
 
 import (
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -33,16 +34,28 @@ type simple struct {
 
 type decl struct{ name, value string }
 
-// readStyles collects every style element of the drawing, in the order they
-// were written.
-func (d *Document) readStyles() {
+// readStyles collects every sheet the drawing names, in the order they are
+// read: the files an xml-stylesheet instruction points at first, then every
+// style element of the tree.
+func (d *Document) readStyles(sheets []string) {
+	for _, href := range sheets {
+		b := d.sheetBytes(href)
+		if len(b) == 0 {
+			continue
+		}
+		rules, faces := parseSheet(string(b), len(d.rules))
+		d.rules = append(d.rules, rules...)
+		d.faces = append(d.faces, faces...)
+	}
 	var walk func(n *node, depth int)
 	walk = func(n *node, depth int) {
 		if depth > maxNesting*4 {
 			return
 		}
 		if n.name == "style" {
-			d.rules = append(d.rules, parseSheet(text(n), len(d.rules))...)
+			rules, faces := parseSheet(text(n), len(d.rules))
+			d.rules = append(d.rules, rules...)
+			d.faces = append(d.faces, faces...)
 		}
 		for _, k := range n.kids {
 			walk(k, depth+1)
@@ -72,11 +85,30 @@ func text(n *node) string {
 	return b.String()
 }
 
-// parseSheet reads the rules of a sheet, skipping what it does not know: an
-// at-rule, and a selector with anything in it this cannot match.
-func parseSheet(s string, order int) []rule {
+// sheetBytes reads a stylesheet the drawing names, which is a file beside it
+// or one the container it came out of holds.
+func (d *Document) sheetBytes(href string) []byte {
+	href = strings.TrimSpace(href)
+	if href == "" || d.open == nil || strings.Contains(href, "://") {
+		return nil
+	}
+	if u, err := url.PathUnescape(href); err == nil {
+		href = u
+	}
+	b, err := d.open(href)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// parseSheet reads the rules of a sheet and the faces it brings with it,
+// skipping what it does not know: an at-rule other than font-face, and a
+// selector with anything in it this cannot match.
+func parseSheet(s string, order int) ([]rule, []faceRule) {
 	s = stripComments(s)
 	var out []rule
+	var faces []faceRule
 	for len(s) > 0 {
 		i := strings.IndexByte(s, '{')
 		if i < 0 {
@@ -91,6 +123,11 @@ func parseSheet(s string, order int) []rule {
 		body := rest[:j]
 		s = rest[j+1:]
 		if strings.HasPrefix(head, "@") {
+			if strings.EqualFold(strings.TrimSpace(head[1:]), "font-face") {
+				if f, ok := readFaceRule(parseDecls(body)); ok {
+					faces = append(faces, f)
+				}
+			}
 			continue
 		}
 		decls := parseDecls(body)
@@ -106,7 +143,7 @@ func parseSheet(s string, order int) []rule {
 			order++
 		}
 	}
-	return out
+	return out, faces
 }
 
 func stripComments(s string) string {

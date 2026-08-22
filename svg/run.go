@@ -76,6 +76,9 @@ type runner struct {
 	// far, which a use may draw many times.
 	faces map[faceKey]*font.Font
 	pics  map[string]gfx.Image
+	// fbs are the faces a character the chosen one cannot draw has fallen
+	// back to, which is the same answer for every element that asks.
+	fbs map[fallbackKey]*font.Font
 	// open is the elements being drawn, outermost first, which is what a
 	// descendant selector is matched against.
 	open []*node

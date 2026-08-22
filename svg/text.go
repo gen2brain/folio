@@ -47,6 +47,7 @@ type textCursor struct {
 func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 	c := &textCursor{}
 	r.textRun(n, st, c, 0)
+	c.glyphs = trimTrailing(c.glyphs)
 	if len(c.glyphs) == 0 {
 		return
 	}
@@ -57,6 +58,19 @@ func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 	shiftBaseline(c.glyphs)
 	r.drawGlyphs(c.glyphs, ctm)
 	r.decorate(c.glyphs, ctm)
+}
+
+// trimTrailing drops the space a text element ends with, which SVG 1.1 10.15
+// removes and the eager collapse below has left with nothing after it.
+func trimTrailing(g []glyph) []glyph {
+	for len(g) > 0 {
+		last := g[len(g)-1]
+		if last.r != ' ' || last.st.preserve {
+			break
+		}
+		g = g[:len(g)-1]
+	}
+	return g
 }
 
 // textRun walks one element of a text, placing its characters and following
@@ -100,7 +114,7 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int) {
 	for _, k := range n.kids {
 		switch k.name {
 		case "":
-			i = c.place(k.chars, st, face, xs, ys, dxs, dys, i)
+			i = r.place(c, k.chars, st, face, xs, ys, dxs, dys, i)
 		case "tspan", "textPath", "a":
 			r.textRun(k, st, c, depth+1)
 		}
@@ -109,7 +123,7 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int) {
 
 // place lays out one run of characters, taking the per glyph positions the
 // element carried lists of. i is how many of those have been used.
-func (c *textCursor) place(s string, st state, face *font.Font, xs, ys, dxs, dys []float32, i int) int {
+func (r *runner) place(c *textCursor, s string, st state, face *font.Font, xs, ys, dxs, dys []float32, i int) int {
 	if face == nil {
 		return i
 	}
@@ -127,10 +141,16 @@ func (c *textCursor) place(s string, st state, face *font.Font, xs, ys, dxs, dys
 		if i < len(dys) {
 			c.y += dys[i]
 		}
-		gid := face.GIDForRune(ch)
+		f := face
+		gid := f.GIDForRune(ch)
+		if gid <= 0 {
+			if alt, g := r.fallback(ch, st); alt != nil {
+				f, gid = alt, g
+			}
+		}
 		// Advance is in the glyph space of the program, which its matrix
 		// takes to the text space one unit of the font size is.
-		adv := face.Advance(gid)*face.Matrix.A*st.em + st.letter
+		adv := f.Advance(gid)*f.Matrix.A*st.em + st.letter
 		if ch == ' ' {
 			adv += st.word
 		}
@@ -140,7 +160,7 @@ func (c *textCursor) place(s string, st state, face *font.Font, xs, ys, dxs, dys
 			c.rotateAt++
 		}
 		c.glyphs = append(c.glyphs, glyph{
-			r: ch, gid: gid, face: face, size: st.em, adv: adv,
+			r: ch, gid: gid, face: f, size: st.em, adv: adv,
 			x: c.x, y: c.y, chunk: c.chunk, turn: turn, st: st,
 		})
 		c.x += adv
@@ -152,6 +172,11 @@ func (c *textCursor) place(s string, st state, face *font.Font, xs, ys, dxs, dys
 // collapse turns the white space of a text element into the single spaces
 // xml:space default asks for, SVG 1.1 10.15. Preserved white space keeps
 // every character, with the ones that are not a space becoming one.
+//
+// The space a run of white space collapses to belongs to the run it was
+// written in, not to whatever comes next. Between two tspans that is the text
+// element itself, and a space held over until the next one would take the
+// first of the positions that tspan lists for its own characters.
 func collapse(s string, preserve bool, space, begun *bool) []rune {
 	var out []rune
 	for _, r := range s {
@@ -164,11 +189,11 @@ func collapse(s string, preserve bool, space, begun *bool) []rune {
 			continue
 		}
 		if unicode.IsSpace(r) {
+			if *begun && !*space {
+				out = append(out, ' ')
+			}
 			*space = true
 			continue
-		}
-		if *space && *begun {
-			out = append(out, ' ')
 		}
 		*space = false
 		*begun = true
@@ -390,7 +415,11 @@ func (r *runner) face(st state) *font.Font {
 		case "serif", "sans-serif", "monospace", "cursive", "fantasy":
 			f = font.SystemFont(generic(name), st.bold, st.italic)
 		default:
-			f = font.SystemFont(name, st.bold, st.italic)
+			// A face the drawing brings with it comes before one the
+			// machine has under the same name.
+			if f = r.doc.embedded(name, st.bold, st.italic); f == nil {
+				f = font.SystemFont(name, st.bold, st.italic)
+			}
 		}
 		if f != nil {
 			break
@@ -404,6 +433,39 @@ func (r *runner) face(st state) *font.Font {
 	}
 	r.faces[key] = f
 	return f
+}
+
+// fallback is a face the machine has that can draw a character the one the
+// drawing asked for cannot, which is what keeps a word whole when a book
+// brings a font that covers only part of it.
+func (r *runner) fallback(ch rune, st state) (*font.Font, int) {
+	if ch == ' ' || ch < 0x20 {
+		return nil, 0
+	}
+	key := fallbackKey{r: ch, bold: st.bold, italic: st.italic}
+	if f, ok := r.fbs[key]; ok {
+		if f == nil {
+			return nil, 0
+		}
+		return f, f.GIDForRune(ch)
+	}
+	f := font.Fallback(ch, st.bold, st.italic)
+	if f != nil && f.GIDForRune(ch) <= 0 {
+		f = nil
+	}
+	if r.fbs == nil {
+		r.fbs = map[fallbackKey]*font.Font{}
+	}
+	r.fbs[key] = f
+	if f == nil {
+		return nil, 0
+	}
+	return f, f.GIDForRune(ch)
+}
+
+type fallbackKey struct {
+	r            rune
+	bold, italic bool
 }
 
 // generic is a face the machine is likely to have for one of the five family

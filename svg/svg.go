@@ -17,7 +17,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/gen2brain/folio/font"
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
 )
@@ -55,12 +57,21 @@ type Document struct {
 	align         string
 	slice         bool
 	// rules are what the style elements declare, in the order a match takes
-	// them: least specific first.
+	// them: least specific first, and faces what the @font-face blocks
+	// among them bring with them.
 	rules []rule
-	// dir is the directory the drawing was read from, which is where a
-	// picture it names is looked for. It is empty for one read out of
-	// memory, and nothing is then looked up at all.
-	dir string
+	faces []faceRule
+	// fonts are the programs those faces have been read into, which every
+	// element that names one asks for again.
+	fontMu sync.Mutex
+	fonts  map[string]*font.Font
+	// pw and ph are the box a container places the drawing in, which a
+	// percentage size on the root element measures against. They are the
+	// default page when the caller does not say.
+	pw, ph float32
+	// open resolves an address the drawing names. It is nil for one read out
+	// of memory with no loader, and nothing is then looked up at all.
+	open func(name string) ([]byte, error)
 }
 
 // maxNesting bounds how deep a use may reach, which a file that refers to
@@ -86,17 +97,39 @@ func Open(name string) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	d, err := Load(b)
-	if err != nil {
-		return nil, err
+	return LoadWith(b, &LoadOptions{Open: dirLoader(filepath.Dir(name))})
+}
+
+// LoadOptions are what a caller says about a drawing before it is read. A nil
+// pointer, and a zero field, is the default.
+type LoadOptions struct {
+	// Open resolves an address the drawing names, relative to the drawing
+	// itself, which is how one inside a container reaches a picture beside
+	// it. A nil Open resolves nothing but a data URL.
+	Open func(name string) ([]byte, error)
+	// Width and Height are the box the drawing is placed in, which is what a
+	// percentage size on the root element measures against.
+	Width, Height float32
+}
+
+// dirLoader reads a file beside the drawing. An address that leaves the
+// directory is not followed, and nothing is fetched over a network.
+func dirLoader(dir string) func(string) ([]byte, error) {
+	return func(name string) ([]byte, error) {
+		if filepath.IsAbs(name) || strings.Contains(name, "..") {
+			return nil, fmt.Errorf("%w: %s leaves the drawing", ErrInvalid, name)
+		}
+		return os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
 	}
-	d.dir = filepath.Dir(name)
-	return d, nil
 }
 
 // Load reads an SVG drawing out of memory.
-func Load(b []byte) (*Document, error) {
-	root, err := parseXML(b)
+func Load(b []byte) (*Document, error) { return LoadWith(b, nil) }
+
+// LoadWith reads an SVG drawing out of memory, resolving what it names
+// through a loader and sizing it against the box a container gives it.
+func LoadWith(b []byte, o *LoadOptions) (*Document, error) {
+	root, sheets, err := parseXML(b)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +137,12 @@ func Load(b []byte) (*Document, error) {
 		return nil, fmt.Errorf("%w: no svg element", ErrInvalid)
 	}
 	d := &Document{root: root, byID: map[string]*node{}}
+	if o != nil {
+		d.open = o.Open
+		d.pw, d.ph = o.Width, o.Height
+	}
 	d.index(root, 0)
-	d.readStyles()
+	d.readStyles(sheets)
 	d.readSize()
 	return d, nil
 }
@@ -142,6 +179,12 @@ func (d *Document) index(n *node, depth int) {
 // width nor a height is the size of its viewBox, and one that gives either is
 // measured against a page.
 func (d *Document) readSize() {
+	if d.pw <= 0 {
+		d.pw = defWidth
+	}
+	if d.ph <= 0 {
+		d.ph = defHeight
+	}
 	d.box = numbers(d.root.attr["viewBox"])
 	if len(d.box) != 4 || d.box[2] <= 0 || d.box[3] <= 0 {
 		d.box = nil
@@ -155,11 +198,11 @@ func (d *Document) readSize() {
 	if wa == "" && ha == "" && d.box != nil {
 		d.width, d.height = d.box[2], d.box[3]
 	} else {
-		d.width, d.height = defWidth, defHeight
-		if v, ok := length(wa, defWidth, defFontSize); ok {
+		d.width, d.height = d.pw, d.ph
+		if v, ok := length(wa, d.pw, defFontSize); ok {
 			d.width = v
 		}
-		if v, ok := length(ha, defHeight, defFontSize); ok {
+		if v, ok := length(ha, d.ph, defFontSize); ok {
 			d.height = v
 		}
 	}
@@ -173,13 +216,14 @@ func (d *Document) readSize() {
 
 // parseXML reads the tree, keeping only elements in no namespace or in the
 // SVG one: a file may carry metadata from any other.
-func parseXML(b []byte) (*node, error) {
+func parseXML(b []byte) (*node, []string, error) {
 	dec := xml.NewDecoder(strings.NewReader(string(b)))
 	dec.Strict = false
 	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 	var stack []*node
 	var root *node
+	var sheets []string
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -189,12 +233,12 @@ func parseXML(b []byte) (*node, error) {
 			if root != nil {
 				break
 			}
-			return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+			return nil, nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			if len(stack) > maxNesting*4 {
-				return nil, fmt.Errorf("%w: elements nested too deeply", ErrInvalid)
+				return nil, nil, fmt.Errorf("%w: elements nested too deeply", ErrInvalid)
 			}
 			n := &node{name: t.Name.Local, attr: make(map[string]string, len(t.Attr))}
 			for _, a := range t.Attr {
@@ -225,9 +269,41 @@ func parseXML(b []byte) (*node, error) {
 				continue
 			}
 			p.kids = append(p.kids, &node{chars: string(t)})
+		case xml.ProcInst:
+			// An SVG may hold its CSS in a file beside it, which it names
+			// with an xml-stylesheet instruction rather than an element.
+			if t.Target == "xml-stylesheet" {
+				if href := pseudoAttr(string(t.Inst), "href"); href != "" {
+					sheets = append(sheets, href)
+				}
+			}
 		}
 	}
-	return root, nil
+	return root, sheets, nil
+}
+
+// pseudoAttr reads one of the name="value" pairs a processing instruction
+// carries, which are not attributes and are not parsed as any.
+func pseudoAttr(s, name string) string {
+	for {
+		i := strings.Index(s, name)
+		if i < 0 {
+			return ""
+		}
+		s = strings.TrimSpace(s[i+len(name):])
+		if !strings.HasPrefix(s, "=") {
+			continue
+		}
+		s = strings.TrimSpace(s[1:])
+		if len(s) == 0 || (s[0] != '"' && s[0] != '\'') {
+			continue
+		}
+		q := s[0]
+		if j := strings.IndexByte(s[1:], q); j >= 0 {
+			return s[1 : 1+j]
+		}
+		return ""
+	}
 }
 
 // Page is the drawing.

@@ -2726,3 +2726,83 @@ func TestLayoutInlineBlock(t *testing.T) {
 			block.y, k.y)
 	}
 }
+
+// TestSVGInSpine covers a book whose spine items are drawings rather than
+// documents, which is how a pre-paginated book is written, and an img that
+// names one from inside a chapter.
+func TestSVGInSpine(t *testing.T) {
+	const svgPkg = `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub">
+ <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Drawn</dc:title></metadata>
+ <manifest>
+  <item id="one" href="p1.svg" media-type="image/svg+xml"/>
+  <item id="two" href="text/two.xhtml" media-type="application/xhtml+xml"/>
+  <item id="art" href="art.svg" media-type="image/svg+xml"/>
+ </manifest>
+ <spine><itemref idref="one"/><itemref idref="two"/></spine>
+</package>`
+	// The drawing is half as wide as it is tall, so a square page fits it to
+	// the height and centres it, leaving the page either side.
+	const page1 = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="200" viewBox="0 0 100 200">` +
+		`<rect width="100" height="200" fill="red"/>` +
+		`<text x="5" y="100" font-size="20">Drawn page</text></svg>`
+	const art = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="blue"/></svg>`
+
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       svgPkg,
+		"EPUB/p1.svg":            page1,
+		"EPUB/art.svg":           art,
+		"EPUB/text/two.xhtml":    `<html><body><p><img src="../art.svg"/></p></body></html>`,
+	})
+	n, err := d.Layout(&LayoutOptions{Width: 200, Height: 200, Margin: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("%d pages, want one for the drawing and one for the chapter", n)
+	}
+
+	// The drawing is a page of the book, and the text in it is what the page
+	// says even though no box tree holds it.
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Path(); got != "EPUB/p1.svg" {
+		t.Errorf("page 0 came out of %q", got)
+	}
+	if s := p.Text(); !strings.Contains(s, "Drawn page") {
+		t.Errorf("the drawn page reads %q, want the text of the drawing", s)
+	}
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// It is fitted to the page: the whole height, half the width, centred.
+	if r, _, _, _ := img.At(100, 190).RGBA(); r>>8 < 200 {
+		t.Errorf("the middle of the drawing is %v, want it red", img.At(100, 190))
+	}
+	if r, g, b, _ := img.At(10, 100).RGBA(); r>>8 != 255 || g>>8 != 255 || b>>8 != 255 {
+		t.Errorf("beside the drawing is %v, want the page", img.At(10, 100))
+	}
+
+	// A chapter that names a drawing draws it at the size the file asks for.
+	p, err = d.Page(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err = p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blue := 0
+	for i := 0; i < len(img.Pix); i += 4 {
+		if img.Pix[i] < 64 && img.Pix[i+2] > 200 {
+			blue++
+		}
+	}
+	if blue < 40*20/2 {
+		t.Errorf("the drawing an img named covers %d pixels, want about %d", blue, 40*20)
+	}
+}

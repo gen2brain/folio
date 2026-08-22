@@ -33,11 +33,10 @@ type box struct {
 	x, y, w, h float32
 	// lines are the line boxes of a block whose children are inline.
 	lines []lineBox
-	// marker is what a list item draws before its first line, img the
-	// picture an image box draws, and back the picture behind any box.
+	// marker is what a list item draws before its first line, and back what
+	// is painted behind any box.
 	marker string
-	img    *picture
-	back   *picture
+	back   *visual
 	// natural is how wide a table came out, which its lines do not say, and
 	// markerFace what a list item draws its marker with.
 	natural    float32
@@ -85,8 +84,8 @@ type frag struct {
 	// sub is the box an inline-block put on the line, which is laid out on
 	// its own and moved to where the line ended up.
 	sub *box
-	// img is set for a picture, and h its height.
-	img *picture
+	// vis is set for a picture or a drawing, and h its height.
+	vis *visual
 	h   float32
 }
 

@@ -16,6 +16,7 @@ type painter struct {
 	path        raster.Path
 	// vertical is a page whose lines run down it.
 	vertical bool
+	errs     []error
 }
 
 func (p *painter) walk(b *box) {
@@ -76,8 +77,8 @@ func (p *painter) line(ln *lineBox) {
 	mid := ln.y + ln.h/2
 	for i := range ln.frags {
 		f := &ln.frags[i]
-		if f.img != nil {
-			p.image(f.img, f.x, base-f.dy-f.h, f.w, f.h)
+		if f.vis != nil {
+			p.visual(f.vis, f.x, base-f.dy-f.h, f.w, f.h)
 			continue
 		}
 		p.text(f.text, f.face, f.style, f.x, base-f.dy, mid, f.extra)
@@ -390,7 +391,7 @@ func (p *painter) rect(x, y, w, h float32, c Color) {
 // clipped to the box itself.
 func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 	s := b.style
-	iw, ih := float32(b.back.W), float32(b.back.H)
+	iw, ih := b.back.w, b.back.h
 	if iw <= 0 || ih <= 0 {
 		return
 	}
@@ -436,7 +437,7 @@ func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 	p.dev.ClipPath(&p.path, false, p.ctm, raster.InfiniteRect)
 	for i := range ny {
 		for j := range nx {
-			p.image(b.back, x+float32(j)*w, y+float32(i)*h, w, h)
+			p.visual(b.back, x+float32(j)*w, y+float32(i)*h, w, h)
 		}
 	}
 	p.dev.PopClip()
@@ -446,12 +447,42 @@ func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 // with, which a picture a fraction of a pixel wide would otherwise run to.
 const maxTiles = 1 << 14
 
-func (p *painter) image(pic *picture, x, y, w, h float32) {
+// visual draws a picture or a drawing into a rectangle of the page. A
+// drawing runs onto the device under a matrix that fits it to the rectangle,
+// so it stays a drawing all the way down rather than becoming pixels here.
+func (p *painter) visual(v *visual, x, y, w, h float32) {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	if v.art != nil {
+		if v.w <= 0 || v.h <= 0 {
+			return
+		}
+		m := raster.Concat(raster.Matrix{A: w / v.w, D: h / v.h, E: x, F: y}, p.ctm)
+		p.dev.ClipPath(p.box(x, y, w, h), false, p.ctm, raster.InfiniteRect)
+		p.err(v.art.Run(p.dev, m))
+		p.dev.PopClip()
+		return
+	}
+	if v.pic == nil {
+		return
+	}
 	m := raster.Concat(raster.Matrix{A: w, D: h, E: x, F: y}, p.ctm)
-	p.dev.FillImage(pic, m, 1, gfx.ColorParams{})
+	p.dev.FillImage(v.pic, m, 1, gfx.ColorParams{})
+}
+
+// box is a rectangle of the page as a path, reusing the painter's own so a
+// clip costs no allocation.
+func (p *painter) box(x, y, w, h float32) *raster.Path {
+	p.path.Reset()
+	p.path.Rect(x, y, w, h)
+	return &p.path
+}
+
+func (p *painter) err(err error) {
+	if err != nil && len(p.errs) < 32 {
+		p.errs = append(p.errs, err)
+	}
 }
 
 func colorOf(c Color) ([]float32, float32) {

@@ -161,3 +161,44 @@ func (p *Page) RenderTo(dst draw.Image, ctm raster.Matrix, o *Options) error {
 	draw.Draw(dst, src.Bounds().Add(image.Pt(px.X, px.Y)), src, src.Bounds().Min, draw.Over)
 	return err
 }
+
+// The structured text model comes from the gfx package.
+type (
+	// TextPage is a drawing's text: blocks of lines of characters.
+	TextPage = gfx.TextPage
+	// TextBlock is a paragraph of text, or one image.
+	TextBlock = gfx.TextBlock
+	// TextLine is a run of characters along one baseline.
+	TextLine = gfx.TextLine
+	// TextChar is one character where it was drawn.
+	TextChar = gfx.TextChar
+	// TextOptions configure what StructuredTextOptions collects.
+	TextOptions = gfx.TextOptions
+	// Quad is the four corners of what a character occupies.
+	Quad = gfx.Quad
+)
+
+// StructuredText returns the drawing's text with the box every character,
+// line and block occupies, in the coordinates the drawing is written in.
+func (p *Page) StructuredText() (*TextPage, error) {
+	return p.StructuredTextOptions(nil)
+}
+
+// StructuredTextOptions is StructuredText with options.
+func (p *Page) StructuredTextOptions(o *TextOptions) (*TextPage, error) {
+	st := &TextPage{Bounds: p.Bounds()}
+	dev := gfx.NewTextDevice(st, o)
+	err := p.Run(dev, raster.Identity)
+	dev.Close()
+	return st, err
+}
+
+// Text returns the drawing's text: a newline after every line and a blank
+// line after every block.
+func (p *Page) Text() (string, error) {
+	st, err := p.StructuredText()
+	if st == nil {
+		return "", err
+	}
+	return st.Text(), err
+}

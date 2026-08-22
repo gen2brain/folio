@@ -120,7 +120,7 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 			colw, pageLen = ch, cw
 		}
 		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets), vertical: vertical,
-			cbh: pageLen}
+			cbh: pageLen, pw: colw, ph: pageLen}
 		l.run(buildBoxes(root, st), colw)
 		errs = append(errs, l.errs...)
 		if len(l.spans) == 0 {
@@ -167,27 +167,34 @@ func writingOf(root *Node, st Styles) Writing {
 }
 
 // imagePart makes a page of a spine item that is a picture rather than a
-// document, which is how a comic and a picture book are written.
+// document, which is how a comic and a picture book are written, and of one
+// that is a drawing, which is how a pre-paginated book puts SVG in its spine.
 func (d *Document) imagePart(it Item, cw, ch float32) (*laidPart, error) {
-	if !strings.HasPrefix(it.Type, "image/") || strings.Contains(it.Type, "svg") {
+	if !strings.HasPrefix(it.Type, "image/") {
 		return nil, nil
 	}
 	raw, err := d.Read(it.Path)
 	if err != nil {
 		return nil, err
 	}
-	pic, err := decodePicture(raw)
+	vis, err := d.visualOf(it.Path, raw, cw, ch)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", it.Path, err)
+		return nil, err
 	}
-	w, h := float32(pic.W), float32(pic.H)
-	if s := min(cw/w, ch/h); s < 1 {
+	w, h := vis.w, vis.h
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("%w: %s is empty", ErrInvalid, it.Path)
+	}
+	// A drawing is scaled up to the page as well as down: it is the page,
+	// not a picture placed on one, and it loses nothing by being enlarged.
+	s := min(cw/w, ch/h)
+	if s < 1 || vis.art != nil {
 		w, h = w*s, h*s
 	}
 	root := &box{style: &Style{}, w: cw, h: ch}
 	root.lines = []lineBox{{
 		h: h, baseline: h,
-		frags: []frag{{x: (cw - w) / 2, w: w, h: h, img: pic, style: root.style}},
+		frags: []frag{{x: (cw - w) / 2, w: w, h: h, vis: vis, style: root.style}},
 	}}
 	return &laidPart{path: it.Path, root: root, tops: []float32{0}, height: h}, nil
 }
@@ -264,7 +271,7 @@ func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
 	m := raster.Concat(page, ctm)
 	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom, vertical: p.part.vertical}
 	r.walk(p.part.root)
-	return nil
+	return errors.Join(r.errs...)
 }
 
 // ImageDPI renders the page at a resolution.
@@ -320,7 +327,15 @@ func (t *textCollector) walk(b *box) {
 			}
 			n := t.b.Len()
 			for j := range ln.frags {
-				t.b.WriteString(ln.frags[j].text)
+				f := &ln.frags[j]
+				t.b.WriteString(f.text)
+				// A drawing carries text of its own, which is all a page
+				// whose spine item is one has to say.
+				if f.vis != nil && f.vis.art != nil {
+					if s, err := f.vis.art.Text(); err == nil {
+						t.b.WriteString(s)
+					}
+				}
 			}
 			if t.b.Len() > n {
 				t.b.WriteByte('\n')

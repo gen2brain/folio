@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -763,5 +764,117 @@ func TestRenderTo(t *testing.T) {
 	}
 	if _, _, b, _ := dst.At(5, 5).RGBA(); b>>8 < 200 {
 		t.Errorf("what was already there became %v", dst.At(5, 5))
+	}
+}
+
+// TestLoadWith covers what a drawing inside a container needs: a loader for
+// the files it names, and a box to measure a percentage size against.
+func TestLoadWith(t *testing.T) {
+	files := map[string][]byte{
+		"sheet.css": []byte(`.big { font-size: 40px; } @font-face { font-family: Carried; src: url(face.ttf); }`),
+	}
+	opened := map[string]int{}
+	load := func(name string) ([]byte, error) {
+		opened[name]++
+		b, ok := files[name]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return b, nil
+	}
+
+	const markup = `<?xml version="1.0"?>` +
+		`<?xml-stylesheet href="sheet.css" type="text/css"?>` +
+		`<svg width="50%" height="25%"><text class="big">a</text></svg>`
+	d, err := LoadWith([]byte(markup), &LoadOptions{Open: load, Width: 400, Height: 800})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A percentage on the root is a percentage of the box it was given, not
+	// of the default page.
+	if b := (&Page{doc: d}).Bounds(); b.X1 != 200 || b.Y1 != 200 {
+		t.Errorf("bounds %v, want 200x200", b)
+	}
+	if opened["sheet.css"] != 1 {
+		t.Errorf("the sheet was read %d times, want 1", opened["sheet.css"])
+	}
+	// The sheet the instruction named is cascaded, and the @font-face in it
+	// is a face the drawing brings rather than a rule.
+	if len(d.rules) != 1 {
+		t.Fatalf("%d rules, want 1", len(d.rules))
+	}
+	if len(d.faces) != 1 || d.faces[0].family != "Carried" {
+		t.Fatalf("faces %+v, want one for Carried", d.faces)
+	}
+	// The face names a file the loader does not have, so it resolves to
+	// nothing rather than failing, and is not read twice.
+	if d.embedded("Carried", false, false) != nil {
+		t.Error("a face read from nothing came back")
+	}
+	d.embedded("Carried", false, false)
+	if opened["face.ttf"] != 1 {
+		t.Errorf("the face was read %d times, want 1", opened["face.ttf"])
+	}
+
+	// A drawing with no loader looks nothing up at all.
+	plain, err := Load([]byte(markup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain.rules) != 0 || len(plain.faces) != 0 {
+		t.Error("a drawing with no loader read a sheet")
+	}
+}
+
+// TestTspanPositions covers the per character positions an exporter writes,
+// and the space between two tspans, which belongs to the element that wrote
+// it and must not take the first position the next tspan lists.
+func TestTspanPositions(t *testing.T) {
+	const markup = `<svg><text font-size="10">
+		<tspan x="0,10,20">abc</tspan>
+		<tspan x="100,110">de</tspan>
+	</text></svg>`
+	d, err := Load([]byte(markup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{doc: d}
+	c := &textCursor{}
+	r.textRun(d.root.kids[0], initialState(300, 300), c, 0)
+
+	// The white space a text element ends with is dropped, and the space
+	// between the two tspans sits where the pen was left rather than taking
+	// the first position the second tspan lists.
+	var got []string
+	for _, g := range trimTrailing(c.glyphs) {
+		got = append(got, string(g.r))
+	}
+	if s := strings.Join(got, ""); s != "abc de" {
+		t.Errorf("placed %q, want %q", s, "abc de")
+	}
+	for i, want := range []float32{0, 10, 20, 24.8, 100, 110} {
+		if x := c.glyphs[i].x; !near(x, want) {
+			t.Errorf("glyph %d %q at %v, want %v", i, c.glyphs[i].r, x, want)
+		}
+	}
+}
+
+// TestPageText reads a drawing back as text, which is what a container asks
+// for when the drawing is a page of a book.
+func TestPageText(t *testing.T) {
+	d, err := Load([]byte(`<svg width="200" height="60"><text x="10" y="30" font-size="20">Hello</text></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := p.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s, "Hello") {
+		t.Errorf("the drawing reads %q, want Hello in it", s)
 	}
 }

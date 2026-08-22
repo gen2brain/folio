@@ -3,8 +3,6 @@ package svg
 import (
 	"encoding/base64"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gen2brain/folio/gfx"
@@ -105,19 +103,16 @@ func (r *runner) imageBytes(href string) []byte {
 		}
 		return []byte(s)
 	}
-	// A drawing read out of memory has no directory to look in, and an
-	// address that leaves it is not followed.
-	if r.doc.dir == "" || strings.Contains(href, "://") {
+	// A drawing read out of memory with no loader has nowhere to look, and
+	// an address that leaves the drawing is not followed.
+	if r.doc.open == nil || strings.Contains(href, "://") {
 		return nil
 	}
 	name := href
 	if u, err := url.PathUnescape(href); err == nil {
 		name = u
 	}
-	if filepath.IsAbs(name) || strings.Contains(name, "..") {
-		return nil
-	}
-	b, err := os.ReadFile(filepath.Join(r.doc.dir, filepath.FromSlash(name)))
+	b, err := r.doc.open(name)
 	if err != nil {
 		return nil
 	}

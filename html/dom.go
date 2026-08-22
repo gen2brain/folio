@@ -33,20 +33,33 @@ func (d *Document) Text() (string, error) {
 	var b strings.Builder
 	var first error
 	for _, item := range d.Spine() {
-		if !item.IsChapter() {
-			continue
-		}
-		root, err := d.ParsePart(item.Path)
-		if err != nil {
-			if first == nil {
-				first = err
+		var text string
+		switch {
+		case item.IsChapter():
+			root, err := d.ParsePart(item.Path)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				continue
 			}
-			continue
+			text = NodeText(root)
+		default:
+			// A drawing in the spine is a page of the book and says what it
+			// draws, which no box tree holds.
+			s, err := d.drawnText(item)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				continue
+			}
+			text = s
 		}
 		if b.Len() > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(NodeText(root))
+		b.WriteString(text)
 	}
 	return b.String(), first
 }
