@@ -45,6 +45,9 @@ type node struct {
 	chars string
 }
 
+// svgNS is the namespace an element has to be in to be part of the drawing.
+const svgNS = "http://www.w3.org/2000/svg"
+
 func isXlink(space string) bool {
 	return space == "xlink" || space == "http://www.w3.org/1999/xlink"
 }
@@ -223,11 +226,15 @@ func (d *Document) readSize() {
 // parseXML reads the tree, keeping only elements in no namespace or in the
 // SVG one: a file may carry metadata from any other.
 func parseXML(b []byte) (*node, []string, error) {
+	b = expandEntities(b)
 	dec := xml.NewDecoder(strings.NewReader(string(b)))
 	dec.Strict = false
 	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 	var stack []*node
+	// skip counts how deep inside an element of another vocabulary the
+	// reader is.
+	skip := 0
 	var root *node
 	var sheets []string
 	for {
@@ -243,6 +250,16 @@ func parseXML(b []byte) (*node, []string, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			// An element in another vocabulary is not a drawing, and neither
+			// is anything inside it.
+			if skip > 0 {
+				skip++
+				continue
+			}
+			if s := t.Name.Space; s != "" && s != svgNS {
+				skip = 1
+				continue
+			}
 			if len(stack) > maxNesting*4 {
 				return nil, nil, fmt.Errorf("%w: elements nested too deeply", ErrInvalid)
 			}
@@ -273,10 +290,17 @@ func parseXML(b []byte) (*node, []string, error) {
 			}
 			stack = append(stack, n)
 		case xml.EndElement:
+			if skip > 0 {
+				skip--
+				continue
+			}
 			if len(stack) > 0 {
 				stack = stack[:len(stack)-1]
 			}
 		case xml.CharData:
+			if skip > 0 {
+				continue
+			}
 			// Character data is a child of its own so that the text either
 			// side of a tspan keeps its place in the order.
 			if len(stack) == 0 {

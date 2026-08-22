@@ -650,6 +650,18 @@ func (r *runner) style(n *node, st state) state {
 		st.join = raster.JoinBevel
 	}
 	st.dash, st.phase = r.dashes(n, st)
+	// The shorthand is read before the properties it stands for, so that one
+	// written as well as it wins.
+	if size, family, ok := fontShorthand(r.prop(n, "font")); ok {
+		if v, ok := namedSize(size); ok {
+			st.em = v
+		} else if v, ok := length(size, st.em, st.em); ok && v > 0 {
+			st.em = v
+		}
+		if family != "" {
+			st.family = family
+		}
+	}
 	if v := strings.TrimSpace(r.prop(n, "font-family")); v != "" {
 		st.family = v
 	}
@@ -730,6 +742,11 @@ func (st state) paintOf(v string, was paint, wasServer string) (paint, string) {
 	}
 	p, ok := parsePaint(v, st.color)
 	if id := serverID(v); id != "" {
+		// A reference with a fallback that is not a paint is not a paint
+		// either, however good the reference is.
+		if !ok && fallbackOf(v) != "" {
+			return was, wasServer
+		}
 		if !ok {
 			p = noPaint
 		}
@@ -767,6 +784,31 @@ const (
 	superShift = 0.4
 )
 
+// fontShorthand splits the font property into the size and the family, which
+// are the two of the six it carries that a drawing is laid out by. The size
+// is the last word before the family and may be written with a line height
+// after a slash, CSS Fonts 3 3.7.
+func fontShorthand(v string) (size, family string, ok bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", "", false
+	}
+	f := strings.Fields(v)
+	for i, w := range f {
+		w, _, _ = strings.Cut(w, "/")
+		if _, named := namedSize(w); !named {
+			if _, isLen := length(w, 1, 1); !isLen {
+				continue
+			}
+		}
+		if i+1 >= len(f) {
+			return w, "", true
+		}
+		return w, strings.Join(f[i+1:], " "), true
+	}
+	return "", "", false
+}
+
 // namedSize is one of the seven absolute sizes CSS Fonts 3 names, on the
 // scale a medium of sixteen pixels sets.
 func namedSize(v string) (float32, bool) {
@@ -787,6 +829,16 @@ func namedSize(v string) (float32, bool) {
 		return 32, true
 	}
 	return 0, false
+}
+
+// fallbackOf is what a paint wrote after the reference, and empty for one
+// that wrote nothing.
+func fallbackOf(v string) string {
+	i := strings.IndexByte(v, ')')
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(v[i+1:])
 }
 
 // blendMode is the mode mix-blend-mode names, and false for the one that

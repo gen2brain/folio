@@ -100,10 +100,10 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 	}
 	// An absolute position starts a new chunk, and a relative one only moves
 	// the pen.
-	xs := numbers(r.prop(n, "x"))
-	ys := numbers(r.prop(n, "y"))
-	dxs := numbers(r.prop(n, "dx"))
-	dys := numbers(r.prop(n, "dy"))
+	xs := lengths(r.prop(n, "x"), st.vw, st.em)
+	ys := lengths(r.prop(n, "y"), st.vh, st.em)
+	dxs := lengths(r.prop(n, "dx"), st.vw, st.em)
+	dys := lengths(r.prop(n, "dy"), st.vh, st.em)
 	if len(xs) > 0 || len(ys) > 0 {
 		if len(xs) > 0 {
 			c.x = xs[0]
@@ -112,12 +112,6 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 			c.y = ys[0]
 		}
 		c.chunk++
-	}
-	if len(dxs) > 0 {
-		c.x += dxs[0]
-	}
-	if len(dys) > 0 {
-		c.y += dys[0]
 	}
 	if v := numbers(r.prop(n, "rotate")); len(v) > 0 {
 		c.rotate = v

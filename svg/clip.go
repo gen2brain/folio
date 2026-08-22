@@ -111,6 +111,9 @@ func (r *runner) clipShape(n *node, st state) *raster.Path {
 // shapeBounds is the box an element's own geometry covers, which a clip and a
 // gradient in the units of the object are fractions of.
 func (r *runner) shapeBounds(n *node, st state) raster.Rect {
+	if strings.TrimSpace(r.prop(n, "display")) == "none" {
+		return raster.Rect{}
+	}
 	var p *raster.Path
 	switch n.name {
 	case "path":
@@ -127,6 +130,29 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 		p = polyPath(n, false)
 	case "polygon":
 		p = polyPath(n, true)
+	case "text":
+		// The box a text covers is the one its characters cover, which is
+		// only known by laying them out.
+		if r.depth >= maxNesting {
+			return raster.Rect{}
+		}
+		r.depth++
+		c := &textCursor{}
+		r.textRun(n, st, c, 0, true)
+		c.glyphs = onPath(c.glyphs)
+		r.depth--
+		out := raster.EmptyRect
+		for _, g := range c.glyphs {
+			if g.face == nil {
+				continue
+			}
+			out = out.AddPoint(raster.Point{X: g.x, Y: g.y - g.face.Ascent*g.size})
+			out = out.AddPoint(raster.Point{X: g.x + g.adv, Y: g.y - g.face.Descent*g.size})
+		}
+		if out.IsEmpty() {
+			return raster.Rect{}
+		}
+		return out
 	case "image":
 		x, _ := r.length(n, "x", st.vw, st)
 		y, _ := r.length(n, "y", st.vh, st)

@@ -114,6 +114,23 @@ func (p *scanner) name() string {
 
 // numbers reads a whole attribute as a list of numbers, which is what points
 // and the dash pattern are.
+// lengths reads a list of lengths, which is what the positions a text element
+// gives each of its characters are written as.
+func lengths(s string, ref, em float32) []float32 {
+	f := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]float32, 0, len(f))
+	for _, t := range f {
+		v, ok := length(t, ref, em)
+		if !ok {
+			return out
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 // numberList is a filter's own list of plain numbers, which is nothing at all
 // when one of them carries a unit.
 func numberList(s string) []float32 {

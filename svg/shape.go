@@ -25,8 +25,8 @@ func rectPath(n *node, st state) *raster.Path {
 	if !wok || !hok || w <= 0 || h <= 0 {
 		return nil
 	}
-	rx, rxok := length(n.attr["rx"], st.vw, st.em)
-	ry, ryok := length(n.attr["ry"], st.vh, st.em)
+	rx, rxok := positive(n.attr["rx"], st.vw, st.em)
+	ry, ryok := positive(n.attr["ry"], st.vh, st.em)
 	switch {
 	case !rxok && !ryok:
 		rx, ry = 0, 0
@@ -69,8 +69,8 @@ func circlePath(n *node, st state) *raster.Path {
 func ellipsePath(n *node, st state) *raster.Path {
 	cx, _ := length(n.attr["cx"], st.vw, st.em)
 	cy, _ := length(n.attr["cy"], st.vh, st.em)
-	rx, xok := length(n.attr["rx"], st.vw, st.em)
-	ry, yok := length(n.attr["ry"], st.vh, st.em)
+	rx, xok := positive(n.attr["rx"], st.vw, st.em)
+	ry, yok := positive(n.attr["ry"], st.vh, st.em)
 	// SVG 2 lets one radius stand for both, and a file that gives neither
 	// draws nothing.
 	switch {
@@ -89,6 +89,17 @@ func ellipsePath(n *node, st state) *raster.Path {
 
 // ellipseAt is four cubics, which is the shape every renderer draws a circle
 // as and is within a thousandth of the curve.
+// positive reads a length that is no length at all when it is negative,
+// which is what an invalid radius comes to: SVG 2 lets the other one stand
+// for it.
+func positive(s string, ref, em float32) (float32, bool) {
+	v, ok := length(s, ref, em)
+	if !ok || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
 func ellipseAt(cx, cy, rx, ry float32) *raster.Path {
 	ox, oy := rx*kappa, ry*kappa
 	p := &raster.Path{}

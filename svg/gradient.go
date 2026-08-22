@@ -442,9 +442,14 @@ func (r *runner) stops(n *node, st state, depth int) []stop {
 		if v, ok := opacity(r.prop(k, "offset")); ok {
 			s.offset = v
 		}
+		// stop-color is not an inherited property, so the word inherit takes
+		// what the gradient itself declares and nothing from above it.
 		v := strings.TrimSpace(r.prop(k, "stop-color"))
-		if v == "inherit" {
-			v = r.ancestral(k.up, "stop-color")
+		if v == "inherit" && k.up != nil {
+			v = strings.TrimSpace(r.prop(k.up, "stop-color"))
+			if v == "inherit" {
+				v = ""
+			}
 		}
 		c, ok := parseColor(v, cur)
 		if !ok {
