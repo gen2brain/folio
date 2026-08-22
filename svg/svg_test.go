@@ -1,6 +1,9 @@
 package svg
 
 import (
+	"image"
+	"image/color"
+	"image/draw"
 	"math"
 	"strconv"
 	"strings"
@@ -737,5 +740,28 @@ func TestImageSize(t *testing.T) {
 	}
 	if _, err := p.ImageSize(0, 0); err == nil {
 		t.Error("no size at all rendered")
+	}
+}
+
+// TestRenderTo covers compositing a drawing onto an image the caller already
+// has, which is what putting an icon on something drawn wants.
+func TestRenderTo(t *testing.T) {
+	d, err := Load([]byte(`<svg width="10" height="10"><rect width="10" height="10" fill="black"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	dst := image.NewRGBA(image.Rect(0, 0, 20, 10))
+	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.RGBA{0, 0, 255, 255}), image.Point{}, draw.Src)
+	if err := p.RenderTo(dst, raster.Translate(10, 0), &Options{Alpha: true}); err != nil {
+		t.Fatal(err)
+	}
+	// The half it was drawn on is the drawing and the other half is untouched.
+	if r, _, b, _ := dst.At(15, 5).RGBA(); r>>8 > 8 || b>>8 > 8 {
+		t.Errorf("the drawing landed as %v", dst.At(15, 5))
+	}
+	if _, _, b, _ := dst.At(5, 5).RGBA(); b>>8 < 200 {
+		t.Errorf("what was already there became %v", dst.At(5, 5))
 	}
 }

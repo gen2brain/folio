@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"io"
 
 	"github.com/gen2brain/folio/gfx"
@@ -146,4 +147,17 @@ func (p *Page) ImageSize(w, h int) (*image.RGBA, error) {
 		return nil, err
 	}
 	return gfx.ToRGBA(px), err
+}
+
+// RenderTo draws the drawing into a destination the caller owns, with ctm
+// mapping it onto that image's coordinates. This is how an icon is composited
+// onto something already drawn rather than handed back on its own.
+func (p *Page) RenderTo(dst draw.Image, ctm raster.Matrix, o *Options) error {
+	px, err := p.Render(ctm, o)
+	if px == nil {
+		return err
+	}
+	src := gfx.ToRGBA(px)
+	draw.Draw(dst, src.Bounds().Add(image.Pt(px.X, px.Y)), src, src.Bounds().Min, draw.Over)
+	return err
 }
