@@ -290,12 +290,40 @@ const smallCapsScale = 0.8
 
 // width is how much room a run of text takes.
 func (f face) width(s string) float32 {
+	if gs, ok := f.shape(s, false); ok {
+		w := float32(0)
+		for _, g := range gs {
+			w += float32(g.XAdvance)
+		}
+		return w*f.prog.Matrix.A*f.size + float32(len(gs))*f.track
+	}
 	w, n := float32(0), 0
 	for _, r := range s {
 		w += f.m.advance(r)
 		n++
 	}
 	return w*f.size + float32(n)*f.track
+}
+
+// shape runs the text through the font's own layout tables, which is what a
+// script whose letters join or carry marks needs. Plain text is measured a
+// character at a time, which is the same answer and much less work.
+func (f face) shape(s string, rtl bool) ([]font.Glyph, bool) {
+	if f.prog == nil || f.vertical || !f.prog.Shaped() || !needsShaping(s) {
+		return nil, false
+	}
+	return f.prog.Shape([]rune(s), rtl), true
+}
+
+// needsShaping reports text a font has to lay out itself: anything with a
+// combining mark in it, and every script above the Latin range.
+func needsShaping(s string) bool {
+	for _, r := range s {
+		if r >= 0x0300 {
+			return true
+		}
+	}
+	return false
 }
 
 // advance is what a character takes along its line, which for one that stands

@@ -3332,7 +3332,7 @@ func TestBidiLayout(t *testing.T) {
 	if !first.rtl {
 		t.Fatalf("the first fragment is %q and not right to left", first.text)
 	}
-	if got := drawText(&first); got != "םולש" {
+	if got := visualText(first.text, first.rtl); got != "םולש" {
 		t.Errorf("drawn as %q, want it reversed", got)
 	}
 	for i := range frags {
@@ -3343,14 +3343,14 @@ func TestBidiLayout(t *testing.T) {
 		}
 	}
 	// Rule L4 draws a bracket that runs right to left as the other one.
-	if got := drawText(&frag{text: "(", rtl: true}); got != ")" {
+	if got := visualText("(", true); got != ")" {
 		t.Errorf("a bracket is drawn as %q, want %q", got, ")")
 	}
 	// The line as it is drawn, which is what fribidi makes of the same text.
 	slices.SortFunc(frags, func(a, b frag) int { return cmp.Compare(a.x, b.x) })
 	var vis strings.Builder
 	for i := range frags {
-		vis.WriteString(drawText(&frags[i]))
+		vis.WriteString(visualText(frags[i].text, frags[i].rtl))
 	}
 	if got, want := vis.String(), "םולש (abc) םולש"; got != want {
 		t.Errorf("drawn as %q, want %q", got, want)

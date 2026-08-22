@@ -245,6 +245,11 @@ func FuzzParse(fu *testing.F) {
 		for gid := 0; gid < f.NumGlyphs() && gid < 20; gid++ {
 			f.GlyphPath(gid)
 		}
+		// The layout tables are offsets into offsets, all of them the file's
+		// own, so shaping is where a broken font is most likely to be read
+		// off the end of.
+		f.Shape([]rune("مها شَدّ שָׁ áb fi"), true)
+		f.Shape([]rune("مها fi"), false)
 	})
 }
 
@@ -583,6 +588,108 @@ func TestWOFF2(t *testing.T) {
 	for i := range src {
 		if _, err := Parse(src[:i]); err == nil {
 			t.Errorf("%d bytes of the web font parsed whole", i)
+		}
+	}
+}
+
+// TestJoining covers the form a cursive letter takes from what stands either
+// side of it, which is what the four Arabic features pick between.
+func TestJoining(t *testing.T) {
+	for _, tc := range []struct {
+		r    rune
+		want joinType
+	}{
+		{'م', joinDual},           // meem joins both ways
+		{'ا', joinRight},          // alef joins only backwards
+		{0x0640, joinCausing},     // tatweel
+		{0x064E, joinTransparent}, // fatha, a mark
+		{'A', joinNone},
+	} {
+		if got := joinTypeOf(tc.r); got != tc.want {
+			t.Errorf("U+%04X is %d, want %d", tc.r, got, tc.want)
+		}
+	}
+
+	// In "مها" the meem opens, the heh is in the middle and the alef ends.
+	text := []rune("مها")
+	b := &buffer{items: make([]item, len(text))}
+	for i := range b.items {
+		b.items[i].mask = 1
+	}
+	b.joining(text)
+	want := []int{formInit, formMedi, formFina}
+	for i, w := range want {
+		if b.items[i].mask&(1<<uint(w)) == 0 {
+			t.Errorf("%q took the wrong form, mask %b", text[i], b.items[i].mask)
+		}
+	}
+	// A letter on its own stands alone.
+	one := []rune("م")
+	b = &buffer{items: []item{{mask: 1}}}
+	b.joining(one)
+	if b.items[0].mask&(1<<formIsol) == 0 {
+		t.Errorf("a letter on its own took mask %b", b.items[0].mask)
+	}
+}
+
+// TestMarkOrder covers the order the marks of one cluster are put in, which
+// is not the order their combining classes alone would give: the fixed
+// position classes of Hebrew and Arabic are permuted first.
+func TestMarkOrder(t *testing.T) {
+	// A shin dot is written after a qamats and drawn before it.
+	runes := []rune{0x05E9, 0x05B8, 0x05C1}
+	clusters := []int{0, 0, 0}
+	sortMarks(runes, clusters)
+	if want := []rune{0x05E9, 0x05C1, 0x05B8}; string(runes) != string(want) {
+		t.Errorf("sorted to %04X, want %04X", runes, want)
+	}
+	// A shadda comes before the vowel it is written after.
+	runes = []rune{0x0628, 0x064E, 0x0651}
+	clusters = []int{0, 0, 0}
+	sortMarks(runes, clusters)
+	if want := []rune{0x0628, 0x0651, 0x064E}; string(runes) != string(want) {
+		t.Errorf("sorted to %04X, want %04X", runes, want)
+	}
+	// A mark keeps the cluster it came in with.
+	if clusters[0] != 0 || clusters[2] != 0 {
+		t.Errorf("clusters came out %v", clusters)
+	}
+}
+
+// TestDecompose covers what a font with no glyph for a precomposed character
+// is handed instead.
+func TestDecompose(t *testing.T) {
+	a, b, ok := decomposeRune('á')
+	if !ok || a != 'a' || b != 0x0301 {
+		t.Errorf("decomposed to %04X %04X %v", a, b, ok)
+	}
+	if _, _, ok := decomposeRune('a'); ok {
+		t.Error("a plain letter decomposed")
+	}
+}
+
+// TestShapeArabic shapes a run through whatever Arabic face the machine has
+// and checks the letters joined, which is the whole point of the tables.
+func TestShapeArabic(t *testing.T) {
+	f := Fallback('م', false, false)
+	if f == nil || !f.Shaped() {
+		t.Skip("no Arabic face with layout tables")
+	}
+	nominal := f.GIDForRune('م')
+	gs := f.Shape([]rune("مها"), true)
+	if len(gs) != 3 {
+		t.Fatalf("%d glyphs, want 3", len(gs))
+	}
+	// The run comes back in the order it is drawn, so the meem is last.
+	if gs[2].Cluster != 0 || gs[0].Cluster != 2 {
+		t.Errorf("clusters %d %d %d, want the run reversed", gs[0].Cluster, gs[1].Cluster, gs[2].Cluster)
+	}
+	if gs[2].GID == nominal {
+		t.Errorf("the meem is still glyph %d, want the joined form", nominal)
+	}
+	for _, g := range gs {
+		if g.GID <= 0 {
+			t.Errorf("glyph %d is not there", g.GID)
 		}
 	}
 }

@@ -120,6 +120,8 @@ func parseSFNT(data []byte) (*Font, error) {
 		}
 		inner.readHmtx(s)
 		inner.readVertical(s)
+		inner.readScripts(s)
+		inner.readLayout(s)
 		return inner, nil
 	}
 
@@ -131,7 +133,16 @@ func parseSFNT(data []byte) (*Font, error) {
 	f.readHmtx(s)
 	f.readVertical(s)
 	f.readScripts(s)
+	f.readLayout(s)
 	return f, nil
+}
+
+// readLayout takes the tables that say how the glyphs of a run fit together.
+func (f *Font) readLayout(s *sfnt) {
+	f.gsub = readLayout(s.tables["GSUB"])
+	f.gpos = readLayout(s.tables["GPOS"])
+	f.gdef = readGDEF(s.tables["GDEF"])
+	f.kern = s.tables["kern"]
 }
 
 // readVertical reads the em box out of hhea, or the OS/2 typo metrics.

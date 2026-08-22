@@ -62,6 +62,14 @@ type Font struct {
 	type1  *type1Font
 	glyphs int
 
+	// gsub, gpos and gdef are the OpenType layout tables, and plans the
+	// lookups each script has resolved to.
+	gsub, gpos *otLayout
+	gdef       *gdef
+	kern       []byte
+	shapeMu    sync.Mutex
+	plans      map[string]*shapePlan
+
 	advances []int16
 
 	// mu guards the two caches a Font fills as it is used. The program

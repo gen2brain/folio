@@ -81,7 +81,7 @@ func (p *painter) line(ln *lineBox) {
 			p.visual(f.vis, f.x, base-f.dy-f.h, f.w, f.h)
 			continue
 		}
-		p.text(drawText(f), f.face, f.style, f.x, base-f.dy, mid, f.extra)
+		p.text(f.text, f.face, f.style, f.x, base-f.dy, mid, f.extra, f.rtl)
 	}
 }
 
@@ -93,26 +93,40 @@ func (p *painter) marker(b *box, ln *lineBox) {
 		return
 	}
 	w := f.width(b.marker)
-	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, ln.y+ln.h/2, 0)
+	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, ln.y+ln.h/2, 0, false)
 }
 
-// drawText is a fragment in the order it is drawn: a right to left run is
-// reversed and mirrored, L2 and L4. The fragment keeps the text as written.
-func drawText(f *frag) string {
-	if !f.rtl {
-		return f.text
+// visualText is a run in the order its characters are drawn: one that runs
+// right to left is mirrored, rule L4, and reversed, rule L2.
+func visualText(s string, rtl bool) string {
+	if !rtl {
+		return s
 	}
-	r := []rune(f.text)
+	r := []rune(s)
+	for i := range r {
+		r[i] = bidiMirror(r[i])
+	}
 	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
-		r[i], r[j] = bidiMirror(r[j]), bidiMirror(r[i])
-	}
-	if len(r)&1 != 0 {
-		r[len(r)/2] = bidiMirror(r[len(r)/2])
+		r[i], r[j] = r[j], r[i]
 	}
 	return string(r)
 }
 
-func (p *painter) text(s string, f face, st *Style, x, y, mid, extra float32) {
+// mirrorText is a run with rule L4 applied and nothing else, which is what
+// the shaper is handed: it puts the glyphs in the order they are drawn
+// itself.
+func mirrorText(s string, rtl bool) string {
+	if !rtl {
+		return s
+	}
+	r := []rune(s)
+	for i := range r {
+		r[i] = bidiMirror(r[i])
+	}
+	return string(r)
+}
+
+func (p *painter) text(s string, f face, st *Style, x, y, mid, extra float32, rtl bool) {
 	if s == "" || f.prog == nil {
 		return
 	}
@@ -121,7 +135,29 @@ func (p *painter) text(s string, f face, st *Style, x, y, mid, extra float32) {
 	span := gfx.TextSpan{Font: prog, Trm: raster.Matrix{A: f.size, D: -f.size}}
 	up := false
 	start := x
-	for _, r := range s {
+	if gs, ok := f.shape(mirrorText(s, rtl), rtl); ok {
+		scale := f.prog.Matrix.A * f.size
+		for _, g := range gs {
+			adv := float32(g.XAdvance)*scale + f.track
+			if g.GID > 0 {
+				span.Items = append(span.Items, gfx.TextItem{
+					X: x + float32(g.XOffset)*scale, Y: y - float32(g.YOffset)*scale,
+					GID: g.GID, Adv: adv / f.size,
+				})
+			}
+			x += adv
+		}
+		if len(span.Items) > 0 {
+			t := &gfx.Text{Spans: []gfx.TextSpan{span}}
+			col, alpha := colorOf(st.Color)
+			p.dev.FillText(t, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
+		}
+		if st.Decoration != 0 {
+			p.decorate(st, f, start, x, y)
+		}
+		return
+	}
+	for _, r := range visualText(s, rtl) {
 		adv := f.advance(r)
 		if f.standsUp(r) != up && len(span.Items) > 0 {
 			spans = append(spans, span)
