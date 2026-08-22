@@ -25,6 +25,9 @@ Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors, and from WOFF2
 Authors, both licensed under the MIT license, including the RFC 7932 static
 dictionary and word transforms.
 
+The LZX decoder is derived from lzxd (https://github.com/Lonami/lzxd),
+Copyright (c) 2020 Lonami, licensed under the MIT license.
+
 The Adobe Glyph List and the Adobe CMap resources are Copyright Adobe Inc.,
 licensed under the BSD-3-Clause license.
 

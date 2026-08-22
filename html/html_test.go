@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"cmp"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3079,6 +3081,168 @@ func TestPlainTextBook(t *testing.T) {
 	// The lines of a text file are kept, which is what pre asks for.
 	if got := p.Text(); !strings.Contains(got, "One line.\n") {
 		t.Fatalf("the page reads %q", got)
+	}
+}
+
+// buildCHM assembles an ITSF archive out of uncompressed files, so that a
+// test can exercise the directory without a compressor.
+func buildCHM(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	const blockLen = 4096
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var data []byte
+	chunk := make([]byte, blockLen)
+	copy(chunk, "PMGL")
+	binary.LittleEndian.PutUint32(chunk[12:], ^uint32(0))
+	binary.LittleEndian.PutUint32(chunk[16:], ^uint32(0))
+	at := 0x14
+	word := func(v uint64) {
+		var b [10]byte
+		n := len(b)
+		for {
+			n--
+			b[n] = byte(v & 0x7f)
+			v >>= 7
+			if v == 0 {
+				break
+			}
+		}
+		for i := n; i < len(b)-1; i++ {
+			b[i] |= 0x80
+		}
+		at += copy(chunk[at:], b[n:])
+	}
+	for _, n := range names {
+		word(uint64(len(n)))
+		at += copy(chunk[at:], n)
+		word(0)
+		word(uint64(len(data)))
+		word(uint64(len(files[n])))
+		data = append(data, files[n]...)
+	}
+	binary.LittleEndian.PutUint32(chunk[4:], uint32(blockLen-at))
+
+	itsp := make([]byte, 0x54)
+	copy(itsp, "ITSP")
+	binary.LittleEndian.PutUint32(itsp[4:], 1)
+	binary.LittleEndian.PutUint32(itsp[8:], 0x54)
+	binary.LittleEndian.PutUint32(itsp[0x10:], blockLen)
+	binary.LittleEndian.PutUint32(itsp[0x2c:], 1)
+
+	head := make([]byte, 0x60)
+	copy(head, "ITSF")
+	binary.LittleEndian.PutUint32(head[4:], 3)
+	binary.LittleEndian.PutUint32(head[8:], 0x60)
+	binary.LittleEndian.PutUint64(head[0x48:], 0x60)
+	binary.LittleEndian.PutUint64(head[0x50:], uint64(len(itsp)+len(chunk)))
+	binary.LittleEndian.PutUint64(head[0x58:], uint64(0x60+len(itsp)+len(chunk)))
+
+	out := append([]byte(nil), head...)
+	out = append(out, itsp...)
+	out = append(out, chunk...)
+	return append(out, data...)
+}
+
+// TestCHM covers the container: the directory it lists its files in, the
+// sitemap it takes a spine and a table of contents from, and the case a path
+// may be written in either of.
+func TestCHM(t *testing.T) {
+	const hhc = `<html><body><ul>` +
+		`<li><object type="text/sitemap"><param name="Name" value="One">` +
+		`<param name="Local" value="Pages/one.htm"></object>` +
+		`<ul><li><object type="text/sitemap"><param name="Name" value="Two">` +
+		`<param name="Local" value="pages\two.htm#mid"></object></li></ul></li>` +
+		`</ul></body></html>`
+	system := make([]byte, 4)
+	binary.LittleEndian.PutUint32(system, 3)
+	for _, e := range []struct {
+		code uint16
+		v    string
+	}{{3, "A Title"}, {2, "/Pages/one.htm"}} {
+		var h [4]byte
+		binary.LittleEndian.PutUint16(h[:], e.code)
+		binary.LittleEndian.PutUint16(h[2:], uint16(len(e.v)))
+		system = append(system, h[:]...)
+		system = append(system, e.v...)
+	}
+	raw := buildCHM(t, map[string][]byte{
+		"/#SYSTEM":       system,
+		"/book.hhc":      []byte(hhc),
+		"/Pages/one.htm": []byte(`<html><body><p>First page.</p></body></html>`),
+		"/Pages/two.htm": []byte(`<html><body><p>Second page.</p></body></html>`),
+		"/Pages/pic.png": {0x89, 'P', 'N', 'G'},
+	})
+
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Kind() != KindCHM {
+		t.Fatalf("opened as %s", d.Kind())
+	}
+	if got := d.Metadata().Title; got != "A Title" {
+		t.Errorf("the title is %q", got)
+	}
+	// A CHM is case insensitive, and the sitemap writes the separator either
+	// way round.
+	if b, err := d.Read("pages/ONE.htm"); err != nil || !bytes.Contains(b, []byte("First")) {
+		t.Errorf("reading a part by another case gave %q, %v", b, err)
+	}
+	var spine []string
+	for _, it := range d.Spine() {
+		spine = append(spine, it.Path)
+	}
+	if want := []string{"Pages/one.htm", "Pages/two.htm"}; !slices.Equal(spine, want) {
+		t.Errorf("the spine is %q, want %q", spine, want)
+	}
+	// The picture is in the manifest and not in the spine, and the metadata
+	// files are in neither.
+	for _, it := range d.Manifest() {
+		if strings.HasPrefix(it.Path, "#") {
+			t.Errorf("%q reached the manifest", it.Path)
+		}
+	}
+	toc := d.Outline()
+	if len(toc) != 1 || toc[0].Title != "One" || len(toc[0].Children) != 1 {
+		t.Fatalf("the outline is %+v", toc)
+	}
+	if c := toc[0].Children[0]; c.Title != "Two" || c.Path != "pages/two.htm" || c.Fragment != "mid" {
+		t.Errorf("the nested entry is %+v", c)
+	}
+}
+
+// TestLZXRaw covers the framing around a block the compressor gave up on: the
+// header the first frame carries, the offsets a raw block restates, and the
+// translation of an x86 call the compressor rewrote.
+func TestLZXRaw(t *testing.T) {
+	d, err := newLZX(15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No translation, one raw block of three bytes.
+	in := []byte{0x00, 0x30, 0x30, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+		0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 'a', 'b', 'c', 0x00}
+	out := make([]byte, 3)
+	if err := d.frame(in, out); err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "abc" {
+		t.Errorf("decoded %q, want abc", out)
+	}
+
+	// The same stream cannot be read twice without a reset, and can with one.
+	if err := d.frame(in, out); err == nil {
+		t.Error("a second frame read the header again")
+	}
+	d.reset()
+	if err := d.frame(in, out); err != nil || string(out) != "abc" {
+		t.Errorf("after a reset the frame gave %q, %v", out, err)
 	}
 }
 
