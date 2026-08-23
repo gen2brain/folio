@@ -91,6 +91,20 @@ func NewReaderPassword(r io.ReaderAt, size int64, password string) (*Document, e
 	return newDocument(f), nil
 }
 
+// NewStream reads a document from a stream that cannot be seeked, which means
+// reading all of it into memory first. A caller with an untrusted source
+// bounds it with io.LimitReader.
+func NewStream(r io.Reader) (*Document, error) { return NewStreamPassword(r, "") }
+
+// NewStreamPassword is NewStream for an encrypted document.
+func NewStreamPassword(r io.Reader, password string) (*Document, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return Load(b, password)
+}
+
 // Load reads a document from a buffer, which it takes ownership of.
 func Load(buf []byte, password string) (*Document, error) {
 	f, err := syntax.Load(buf, password)

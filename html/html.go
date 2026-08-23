@@ -237,6 +237,17 @@ func NewReader(r io.ReaderAt, size int64) (*Document, error) {
 // Load reads a book from a buffer.
 func Load(b []byte) (*Document, error) { return NewReader(newByteReader(b), int64(len(b))) }
 
+// NewStream reads a document from a stream that cannot be seeked, which means
+// reading all of it into memory first. A caller with an untrusted source
+// bounds it with io.LimitReader.
+func NewStream(r io.Reader) (*Document, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return Load(b)
+}
+
 // Close releases what the document holds.
 func (d *Document) Close() error {
 	if d.close == nil {

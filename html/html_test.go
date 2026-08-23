@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"unicode/utf8"
 )
 
@@ -3440,6 +3441,33 @@ func TestPPTX(t *testing.T) {
 		if b := p.Bounds(); b.X1-b.X0 != 720 || b.Y1-b.Y0 != 540 {
 			t.Errorf("the slide is %v, want 720 by 540 points", b)
 		}
+	}
+}
+
+// TestNewStream covers reading a document from a stream that cannot be
+// seeked, which is what a caller with a pipe or a network body has.
+func TestNewStream(t *testing.T) {
+	raw := buildEPUB(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml":    "<html><body><p>One</p></body></html>",
+		"EPUB/text/two.xhtml":    "<html><body><p>Two</p></body></html>",
+		"EPUB/images/cover.png":  "\x89PNG",
+	})
+	d, err := NewStream(iotest.OneByteReader(bytes.NewReader(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if got := d.Metadata().Title; got != "A Book" {
+		t.Errorf("the title is %q", got)
+	}
+	if n := len(d.Spine()); n != 3 {
+		t.Errorf("%d spine parts, want three", n)
+	}
+	if _, err := NewStream(bytes.NewReader(nil)); err == nil {
+		t.Error("an empty stream opened")
 	}
 }
 

@@ -152,6 +152,28 @@ func dirLoader(dir string) func(string) ([]byte, error) {
 // Load reads an SVG drawing out of memory.
 func Load(b []byte) (*Document, error) { return LoadWith(b, nil) }
 
+// NewReader reads a drawing from a reader.
+func NewReader(r io.ReaderAt, size int64) (*Document, error) {
+	if size < 0 {
+		return nil, fmt.Errorf("%w: %d bytes", ErrInvalid, size)
+	}
+	return NewStream(io.NewSectionReader(r, 0, size))
+}
+
+// NewStream reads a drawing from a stream that cannot be seeked, which means
+// reading all of it into memory first. A caller with an untrusted source
+// bounds it with io.LimitReader.
+func NewStream(r io.Reader) (*Document, error) { return NewStreamWith(r, nil) }
+
+// NewStreamWith is NewStream with the options LoadWith takes.
+func NewStreamWith(r io.Reader, o *LoadOptions) (*Document, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return LoadWith(b, o)
+}
+
 // LoadWith reads an SVG drawing out of memory, resolving what it names
 // through a loader and sizing it against the box a container gives it.
 func LoadWith(b []byte, o *LoadOptions) (*Document, error) {

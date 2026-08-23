@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/gen2brain/folio/raster"
@@ -994,6 +995,26 @@ func TestType3Cycle(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("a glyph that shows itself did not stop")
+	}
+}
+
+// TestNewStream covers reading a document from a stream that cannot be
+// seeked.
+func TestNewStream(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "testdata", "minimal.pdf"))
+	if err != nil {
+		t.Skip("no minimal.pdf")
+	}
+	d, err := NewStream(iotest.OneByteReader(bytes.NewReader(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if n := d.NumPages(); n != 1 {
+		t.Errorf("%d pages", n)
+	}
+	if _, err := NewStream(bytes.NewReader(nil)); err == nil {
+		t.Error("an empty stream opened")
 	}
 }
 

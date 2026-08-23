@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/gen2brain/folio/raster"
 )
@@ -1236,6 +1237,32 @@ func TestBidiText(t *testing.T) {
 		if g[i].y != want {
 			t.Errorf("glyph %d sits at %v, want %v", i, g[i].y, want)
 		}
+	}
+}
+
+// TestNewStream covers reading a drawing from a stream and from a reader,
+// which is what a caller holding one inside another container has.
+func TestNewStream(t *testing.T) {
+	const src = `<svg width="40" height="20" xmlns="http://www.w3.org/2000/svg">` +
+		`<rect width="40" height="20" fill="#00ff00"/></svg>`
+	d, err := NewStream(iotest.OneByteReader(strings.NewReader(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if b := d.Page0().Bounds(); b.X1 != 40 || b.Y1 != 20 {
+		t.Errorf("the drawing is %v", b)
+	}
+	r, err := NewReader(strings.NewReader(src), int64(len(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if b := r.Page0().Bounds(); b.X1 != 40 {
+		t.Errorf("the drawing read from a reader is %v", b)
+	}
+	if _, err := NewStream(strings.NewReader("")); err == nil {
+		t.Error("an empty stream opened")
 	}
 }
 
