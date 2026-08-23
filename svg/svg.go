@@ -94,6 +94,24 @@ const (
 	defFontSize = 12
 )
 
+// title is what the drawing calls itself, which is the title element the root
+// carries.
+func (d *Document) title() string {
+	if d == nil || d.root == nil {
+		return ""
+	}
+	for _, k := range d.root.kids {
+		if k.name == "title" {
+			var b strings.Builder
+			for _, t := range k.kids {
+				b.WriteString(t.chars)
+			}
+			return strings.TrimSpace(b.String() + k.chars)
+		}
+	}
+	return ""
+}
+
 // Open reads an SVG file.
 func Open(name string) (*Document, error) {
 	f, err := os.Open(name)

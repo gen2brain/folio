@@ -997,6 +997,34 @@ func TestType3Cycle(t *testing.T) {
 	}
 }
 
+// TestPageHTML covers a page as HTML: the text where it was drawn, in a
+// division of its own, escaped.
+func TestPageHTML(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R" +
+			" /Resources << /Font << /F 5 0 R >> >> >>",
+		streamObj("", "BT /F 12 Tf 20 50 Td (a < b & c) Tj ET"),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<!DOCTYPE html>", `<div id="page0"`,
+		"width:200pt", "height:100pt", "position:absolute", "a &lt; b &amp; c",
+		"font-family:Helvetica"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the HTML has no %q: %s", want, out)
+		}
+	}
+}
+
 // TestNestedColorIsolation checks that a form, a pattern or a glyph procedure
 // setting a color does not reach back into the state that invoked it. The
 // color operators write their operands into the slice the graphics state

@@ -1,6 +1,8 @@
 package svg
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -191,6 +193,39 @@ func (p *Page) StructuredTextOptions(o *TextOptions) (*TextPage, error) {
 	err := p.Run(dev, raster.Identity)
 	dev.Close()
 	return st, err
+}
+
+// WriteSVG writes the drawing back out as SVG: the shapes it draws, resolved,
+// with what it referred to drawn in place.
+func (p *Page) WriteSVG(w io.Writer) error {
+	dev := gfx.NewSVGDevice(w, p.Bounds())
+	err := p.Run(dev, raster.Identity)
+	return errors.Join(err, dev.Close())
+}
+
+// SVG returns the drawing as SVG.
+func (p *Page) SVG() (string, error) {
+	var b bytes.Buffer
+	err := p.WriteSVG(&b)
+	return b.String(), err
+}
+
+// WriteHTML writes the drawing's text as HTML, where it was drawn and in the
+// face and the colour it was drawn with.
+func (p *Page) WriteHTML(w io.Writer) error {
+	st, err := p.StructuredText()
+	if st == nil {
+		return err
+	}
+	_, werr := io.WriteString(w, gfx.HTMLDocument(p.doc.title(), st.HTML("drawing")))
+	return errors.Join(err, werr)
+}
+
+// HTML returns the drawing's text as HTML.
+func (p *Page) HTML() (string, error) {
+	var b bytes.Buffer
+	err := p.WriteHTML(&b)
+	return b.String(), err
 }
 
 // Text returns the drawing's text: a newline after every line and a blank

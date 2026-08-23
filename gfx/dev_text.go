@@ -1,7 +1,9 @@
 package gfx
 
 import (
+	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -59,6 +61,117 @@ type TextChar struct {
 	Size   float32
 	Font   Font
 	Color  [3]uint8
+}
+
+// HTML writes the page as absolutely positioned text, the words where they
+// were drawn. id names the division the page becomes.
+func (p *TextPage) HTML(id string) string {
+	var b strings.Builder
+	w, h := p.Bounds.X1-p.Bounds.X0, p.Bounds.Y1-p.Bounds.Y0
+	fmt.Fprintf(&b, `<div id=%q style="position:relative;width:%vpt;height:%vpt">`+"\n",
+		id, htmlNum(w), htmlNum(h))
+	for i := range p.Blocks {
+		bl := &p.Blocks[i]
+		if bl.Lines == nil {
+			continue
+		}
+		for j := range bl.Lines {
+			ln := &bl.Lines[j]
+			if len(ln.Chars) == 0 {
+				continue
+			}
+			c := &ln.Chars[0]
+			fmt.Fprintf(&b, `<p style="position:absolute;left:%vpt;top:%vpt;`+
+				`font-size:%vpt;white-space:pre">`,
+				htmlNum(ln.Bounds.X0-p.Bounds.X0), htmlNum(ln.Bounds.Y0-p.Bounds.Y0),
+				htmlNum(c.Size))
+			b.WriteString(htmlLine(ln))
+			b.WriteString("</p>\n")
+		}
+	}
+	b.WriteString("</div>\n")
+	return b.String()
+}
+
+// htmlLine writes one line, opening a span wherever the face, the size or the
+// colour of the characters changes.
+func htmlLine(ln *TextLine) string {
+	var b strings.Builder
+	open := false
+	var face Font
+	var size float32
+	var col [3]uint8
+	for i := range ln.Chars {
+		c := &ln.Chars[i]
+		if !open || c.Font != face || c.Size != size || c.Color != col {
+			if open {
+				b.WriteString("</span>")
+			}
+			face, size, col = c.Font, c.Size, c.Color
+			fmt.Fprintf(&b, `<span style="font-size:%vpt;color:#%02x%02x%02x`,
+				htmlNum(size), col[0], col[1], col[2])
+			if face != nil {
+				fmt.Fprintf(&b, ";font-family:%s", htmlFamily(face.FontName()))
+			}
+			b.WriteString(`">`)
+			open = true
+		}
+		b.WriteString(htmlEscape(c.Rune))
+	}
+	if open {
+		b.WriteString("</span>")
+	}
+	return b.String()
+}
+
+// htmlFamily is the name a font is asked for by, less the subset tag a PDF
+// puts in front of it.
+func htmlFamily(name string) string {
+	if len(name) > 7 && name[6] == '+' {
+		name = name[7:]
+	}
+	if i := strings.IndexAny(name, ",+"); i > 0 {
+		name = name[:i]
+	}
+	if name == "" {
+		return "serif"
+	}
+	if strings.ContainsAny(name, " ;:'\"") {
+		return "'" + strings.ReplaceAll(name, "'", "") + "'"
+	}
+	return name
+}
+
+func htmlNum(v float32) string {
+	return strconv.FormatFloat(float64(int(v*100+0.5))/100, 'f', -1, 32)
+}
+
+func htmlEscape(r rune) string {
+	switch r {
+	case '&':
+		return "&amp;"
+	case '<':
+		return "&lt;"
+	case '>':
+		return "&gt;"
+	}
+	return string(r)
+}
+
+// HTMLDocument wraps one page's division in the markup that makes it a page a
+// browser will show on its own.
+func HTMLDocument(title, body string) string {
+	return `<!DOCTYPE html>` + "\n" + `<html><head><meta charset="utf-8"/>` +
+		`<title>` + htmlText(title) + `</title></head><body style="margin:0">` + "\n" +
+		body + `</body></html>` + "\n"
+}
+
+func htmlText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteString(htmlEscape(r))
+	}
+	return b.String()
 }
 
 // TextOptions configure a TextDevice.

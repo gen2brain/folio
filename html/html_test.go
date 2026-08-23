@@ -3443,6 +3443,104 @@ func TestPPTX(t *testing.T) {
 	}
 }
 
+// TestPageLinks covers the links a page reports: where they are, what they
+// point at, and that a link broken over two lines comes back as two areas
+// while one written as two runs on the same line comes back as one.
+func TestPageLinks(t *testing.T) {
+	body := `<html><body style="font-size:16px"><p>` +
+		`<a href="https://example.com">out</a> and ` +
+		`<a href="two.xhtml#mid">in<b>side</b></a> and ` +
+		`<a href="#here">same</a></p></body></html>`
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml":    body,
+		"EPUB/text/two.xhtml":    "<html/>",
+		"EPUB/images/cover.png":  "\x89PNG",
+	})
+	// The book carries a cover that is not a picture, which the layout
+	// records and carries on past.
+	if n, _ := d.Layout(&LayoutOptions{Width: 800, Height: 1200, Margin: 40}); n == 0 {
+		t.Fatal("the book laid out to nothing")
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := p.Links()
+	if len(links) != 3 {
+		t.Fatalf("%d links, want three: %+v", len(links), links)
+	}
+	if links[0].URI != "https://example.com" || links[0].Path != "" {
+		t.Errorf("the outward link is %+v", links[0])
+	}
+	if links[1].URI != "" || links[1].Path != "EPUB/text/two.xhtml" || links[1].Fragment != "mid" {
+		t.Errorf("the inward link is %+v", links[1])
+	}
+	if links[2].Fragment != "here" || links[2].Path != "EPUB/text/one.xhtml" {
+		t.Errorf("the link to this part is %+v", links[2])
+	}
+	for i, l := range links {
+		if l.Rect.X1 <= l.Rect.X0 || l.Rect.Y1 <= l.Rect.Y0 {
+			t.Errorf("link %d covers nothing: %v", i, l.Rect)
+		}
+		if l.Rect.X0 < 0 || l.Rect.Y0 < 0 {
+			t.Errorf("link %d is off the page: %v", i, l.Rect)
+		}
+	}
+	// The three are side by side on one line, in the order they were written.
+	if !(links[0].Rect.X1 <= links[1].Rect.X0 && links[1].Rect.X1 <= links[2].Rect.X0) {
+		t.Errorf("the links are out of order: %v %v %v",
+			links[0].Rect, links[1].Rect, links[2].Rect)
+	}
+}
+
+// TestPageSVGAndHTML covers the two ways a page comes back as markup: the
+// drawing it is, and the text where it was laid out.
+func TestPageSVGAndHTML(t *testing.T) {
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml": `<html><body><h1 style="color:#ff0000">Red &amp; bold</h1>` +
+			`<p>Some words.</p></body></html>`,
+		"EPUB/text/two.xhtml":   "<html/>",
+		"EPUB/images/cover.png": "\x89PNG",
+	})
+	if n, _ := d.Layout(&LayoutOptions{Width: 400, Height: 600, Margin: 20}); n == 0 {
+		t.Fatal("the book laid out to nothing")
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svg, err := p.SVG()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(svg, "<svg") || !strings.Contains(svg, "</svg>") {
+		t.Errorf("the SVG is %.80q", svg)
+	}
+	if !strings.Contains(svg, "<use") && !strings.Contains(svg, "<path") {
+		t.Error("the SVG has no glyphs in it")
+	}
+
+	page, err := p.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<!DOCTYPE html>", `<div id="page0"`,
+		"position:absolute", "Red &amp; bold", "Some words.", "color:#ff0000"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the HTML has no %q", want)
+		}
+	}
+	if strings.Contains(page, "<h1") {
+		t.Error("the HTML is the markup of the part rather than the page as drawn")
+	}
+}
+
 // TestBidiLayout covers what the algorithm does to a line: the pieces are
 // placed in the order they are drawn, kept in the order they were written,
 // and a run that goes right to left is drawn backwards and mirrored.

@@ -43,7 +43,9 @@
 //
 // The page is given in CSS pixels, 96 to the inch, and Page.Bounds returns it
 // in points so that a page of a book measures the same way a page of a PDF
-// does. Page.Text is what the page says and Page.Run draws it through a
+// does. Page.Text is what the page says, Page.StructuredText is that with the
+// box every character covers, Page.Links is what it links to, Page.SVG and
+// Page.HTML are the page as markup, and Page.Run draws it through a
 // gfx.Device, which is the seam a PDF page draws through as well.
 //
 // A face comes from the book itself when an @font-face rule brings one, from

@@ -2,6 +2,8 @@ package pdf
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"image"
 	"io"
 
@@ -60,6 +62,25 @@ func (p *Page) WriteSVG(w io.Writer) error {
 func (p *Page) SVG() (string, error) {
 	var b bytes.Buffer
 	err := p.WriteSVG(&b)
+	return b.String(), err
+}
+
+// WriteHTML writes the page as HTML: the text where it was drawn, in the face
+// and the colour it was drawn with.
+func (p *Page) WriteHTML(w io.Writer) error {
+	st, err := p.StructuredText()
+	if st == nil {
+		return err
+	}
+	_, werr := io.WriteString(w, gfx.HTMLDocument(p.doc.Metadata().Title,
+		st.HTML(fmt.Sprintf("page%d", p.num))))
+	return errors.Join(err, werr)
+}
+
+// HTML returns the page as HTML.
+func (p *Page) HTML() (string, error) {
+	var b bytes.Buffer
+	err := p.WriteHTML(&b)
 	return b.String(), err
 }
 

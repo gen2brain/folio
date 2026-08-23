@@ -89,6 +89,8 @@ type frag struct {
 	h   float32
 	// rtl is a run drawn right to left.
 	rtl bool
+	// link is the address of the anchor the run is written inside.
+	link string
 }
 
 // buildBoxes turns a styled tree into the boxes that lay out.

@@ -660,7 +660,8 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	cx := x + indent + off
 	for _, p := range c.visual(c.pieces(lo, hi)) {
 		it := &c.items[p.item]
-		f := frag{x: cx, style: it.style, face: it.face, rtl: c.rightToLeft(p.lo)}
+		f := frag{x: cx, style: it.style, face: it.face, link: it.link,
+			rtl: c.rightToLeft(p.lo)}
 		a, d := itemBox(it)
 		switch it.style.VerticalAlign {
 		case AlignTop:
@@ -796,10 +797,12 @@ func paginate(spans []lineSpan, h float32) []float32 {
 // inlineItem is one run of an inline formatting context: the text of one
 // element, or one picture.
 type inlineItem struct {
-	start  int
-	style  *Style
-	face   face
-	vis    *visual
+	start int
+	style *Style
+	face  face
+	vis   *visual
+	// link is the address of the anchor the item is written inside.
+	link   string
 	iw, ih float32
 	// sub is the box an inline-block contributes, and ib how far its own
 	// baseline sits below its top.
@@ -852,6 +855,8 @@ type inlineCtx struct {
 	text  strings.Builder
 	str   string
 	items []inlineItem
+	// link is the anchor the content being gathered is written inside.
+	link string
 	// avail is the width a picture is scaled down to fit, floats are the
 	// boxes met so far that belong beside a line rather than on one, and
 	// nowrap the ranges of the text no line may break inside.
@@ -879,6 +884,11 @@ func (c *inlineCtx) gather(b *box) {
 		c.floats = append(c.floats, pendingFloat{box: b, at: c.text.Len()})
 		return
 	}
+	if href := hrefOf(b.node); href != "" {
+		was := c.link
+		c.link = href
+		defer func() { c.link = was }()
+	}
 	switch b.kind {
 	case textBox:
 		c.addText(b.text, b.style)
@@ -903,10 +913,12 @@ func (c *inlineCtx) gather(b *box) {
 // with the same face.
 func (c *inlineCtx) open(s *Style, f face, vis *visual) {
 	if n := len(c.items); vis == nil && n > 0 &&
-		c.items[n-1].style == s && c.items[n-1].face == f && c.items[n-1].vis == nil {
+		c.items[n-1].style == s && c.items[n-1].face == f &&
+		c.items[n-1].vis == nil && c.items[n-1].link == c.link {
 		return
 	}
-	c.items = append(c.items, inlineItem{start: c.text.Len(), style: s, face: f, vis: vis})
+	c.items = append(c.items, inlineItem{start: c.text.Len(), style: s, face: f,
+		vis: vis, link: c.link})
 }
 
 func (c *inlineCtx) flushSpace() {

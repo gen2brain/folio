@@ -266,22 +266,27 @@ func (d *Document) options() LayoutOptions {
 // points to the device.
 func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
 	o := p.doc.options()
-	page := raster.Matrix{
-		A: pxPerPoint, D: pxPerPoint,
-		E: o.Margin * pxPerPoint, F: (o.Margin - p.top) * pxPerPoint,
-	}
-	if p.part.vertical {
+	m := raster.Concat(p.pageMatrix(o), ctm)
+	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom, vertical: p.part.vertical}
+	r.walk(p.part.root)
+	return errors.Join(r.errs...)
+}
+
+// pageMatrix maps the column the part was laid out in onto the page, in
+// points.
+func (p *Page) pageMatrix(o LayoutOptions) raster.Matrix {
+	if p.part != nil && p.part.vertical {
 		// The lines run down the page and the pages run right to left: the
 		// column turns a quarter and starts at the right edge.
-		page = raster.Matrix{
+		return raster.Matrix{
 			B: pxPerPoint, C: -pxPerPoint,
 			E: (o.Width - o.Margin + p.top) * pxPerPoint, F: o.Margin * pxPerPoint,
 		}
 	}
-	m := raster.Concat(page, ctm)
-	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom, vertical: p.part.vertical}
-	r.walk(p.part.root)
-	return errors.Join(r.errs...)
+	return raster.Matrix{
+		A: pxPerPoint, D: pxPerPoint,
+		E: o.Margin * pxPerPoint, F: (o.Margin - p.top) * pxPerPoint,
+	}
 }
 
 // ImageDPI renders the page at a resolution.

@@ -1239,6 +1239,70 @@ func TestBidiText(t *testing.T) {
 	}
 }
 
+// TestDrawingLinks covers the anchors a drawing carries: where each one is
+// under the viewBox, and whether it points out of the drawing or inside it.
+func TestDrawingLinks(t *testing.T) {
+	d, err := Load([]byte(`<svg viewBox="0 0 100 100" width="200" height="200"` +
+		` xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">` +
+		`<a href="https://example.com"><rect x="10" y="10" width="20" height="20"/></a>` +
+		`<g transform="translate(50 0)">` +
+		`<a xlink:href="#target"><rect x="0" y="40" width="10" height="10"/></a></g>` +
+		`<rect id="target" x="0" y="90" width="5" height="5"/>` +
+		`</svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	links := p.Links()
+	if len(links) != 2 {
+		t.Fatalf("%d links, want two: %+v", len(links), links)
+	}
+	// The viewBox doubles the drawing, so the first anchor covers 20 to 60.
+	if l := links[0]; l.URI != "https://example.com" ||
+		!near(l.Rect.X0, 20) || !near(l.Rect.Y0, 20) ||
+		!near(l.Rect.X1, 60) || !near(l.Rect.Y1, 60) {
+		t.Errorf("the outward link is %+v", l)
+	}
+	// The group moves the second one, and it names an element rather than an
+	// address.
+	if l := links[1]; l.URI != "" || l.Fragment != "target" ||
+		!near(l.Rect.X0, 100) || !near(l.Rect.Y0, 80) {
+		t.Errorf("the inward link is %+v", l)
+	}
+}
+
+// TestDrawingHTML covers the drawing's text as HTML, which is what it says
+// where it says it.
+func TestDrawingHTML(t *testing.T) {
+	d, err := Load([]byte(`<svg width="200" height="100" xmlns="http://www.w3.org/2000/svg">` +
+		`<title>A Drawing</title><text x="10" y="50" font-size="20" fill="#0000ff">Hi &amp; bye</text>` +
+		`</svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	out, err := p.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<!DOCTYPE html>", "<title>A Drawing</title>",
+		`<div id="drawing"`, "position:absolute", "Hi &amp; bye", "color:#0000ff"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the HTML has no %q: %s", want, out)
+		}
+	}
+	// The drawing also comes back as itself, resolved.
+	svg, err := p.SVG()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(svg, "<svg") || !strings.Contains(svg, "</svg>") {
+		t.Errorf("the SVG is %.60q", svg)
+	}
+}
+
 // TestTransformOrigin covers the point a transform turns about: the keywords
 // and the lengths it is written as, and that the box they are a fraction of
 // is the viewport rather than the shape.
