@@ -303,7 +303,18 @@ func FuzzBook(fu *testing.F) {
 		"EPUB/text/one.xhtml":    "<html/>",
 	}))
 	fu.Add([]byte("plain text"))
+	fu.Add([]byte("<html><head><title>t</title></head><body><p>markup</p></body></html>"))
 	fu.Add(buildMOBI([]byte("<html><body>Hi</body></html>"), []byte{0x81}, []byte("\x89PNG\r\n\x1a\n0123456789")))
+	fu.Add(buildCHM(&testing.T{}, map[string][]byte{
+		"/#SYSTEM":       {0x03, 0x00, 0x00, 0x00},
+		"/Pages/one.htm": []byte(`<html><body><p>One.</p></body></html>`),
+	}))
+	fu.Add(buildOffice(&testing.T{}, map[string]string{
+		"word/document.xml": `<w:document ` + docxNS + `><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>`,
+	}))
+	fu.Add([]byte(`<?xml version="1.0" encoding="utf-8"?><FictionBook>` +
+		`<description><title-info><book-title>t</book-title></title-info></description>` +
+		`<body><section><p>x</p></section></body></FictionBook>`))
 	fu.Fuzz(func(t *testing.T, b []byte) {
 		d, err := Load(b)
 		if err != nil {
@@ -312,6 +323,7 @@ func FuzzBook(fu *testing.F) {
 		defer d.Close()
 		d.Metadata()
 		d.Text()
+		d.Markdown()
 		for _, it := range d.Spine() {
 			d.Read(it.Path)
 			d.ParsePart(it.Path)

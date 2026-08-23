@@ -684,18 +684,27 @@ type jbReader struct {
 }
 
 func newJBReader(data []byte, start, end int) *jbReader {
-	if start < 0 {
-		start = 0
-	}
-	if end > len(data) {
-		end = len(data)
-	}
+	start = min(max(start, 0), len(data))
+	end = min(max(end, start), len(data))
 	return &jbReader{data: data, pos: start, end: end, shift: -1}
+}
+
+// jbAdvance is pos moved on by n bytes, stopping at end. The sum is taken in
+// 64 bits: a segment may name a size of two thousand million, which overflows
+// an int where one is 32 bits wide and lands the reader before its own data.
+func jbAdvance(pos, n, end int) int {
+	if n <= 0 {
+		return pos
+	}
+	if int64(pos)+int64(n) >= int64(end) {
+		return end
+	}
+	return pos + n
 }
 
 func (r *jbReader) bit() uint32 {
 	if r.shift < 0 {
-		if r.pos >= r.end {
+		if r.pos < 0 || r.pos >= r.end {
 			r.eof = true
 			return 0
 		}
@@ -1421,7 +1430,7 @@ func jbSymbolDictionary(d *jbSymbolDict, input []*jbBitmap, t *jbSymbolTables, c
 			if size == 0 {
 				collective, err = jbUncompressedBitmap(r, totalWidth, currentHeight)
 			} else {
-				end := min(r.pos+int(size), r.end)
+				end := jbAdvance(r.pos, int(size), r.end)
 				sub := newJBReader(r.data, r.pos, end)
 				collective, err = jbMMRBitmap(c, sub, totalWidth, currentHeight, false)
 				r.pos = end
@@ -1538,7 +1547,7 @@ func jbRefinedSymbol(d *jbSymbolDict, t *jbSymbolTables, agg *jbTextTables, inpu
 	}
 	if d.huffman {
 		if size > 0 {
-			r.pos = min(r.pos+int(size), r.end)
+			r.pos = jbAdvance(r.pos, int(size), r.end)
 		} else {
 			r.pos = min(c.mq.bp+1, r.end)
 		}

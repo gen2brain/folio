@@ -180,3 +180,40 @@ func TestUnsupported(t *testing.T) {
 		t.Error("opening a file that is not there succeeded")
 	}
 }
+
+func FuzzDoc(fu *testing.F) {
+	fu.Add([]byte(onePagePDF))
+	fu.Add([]byte(oneDrawing))
+	fu.Add([]byte(oneBook))
+	fu.Add([]byte("Just some words.\n"))
+	fu.Add([]byte("PK\x03\x04rest of it"))
+	fu.Add([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"))
+	fu.Fuzz(func(t *testing.T, b []byte) {
+		Detect(b)
+		d, err := Load(b)
+		if err != nil {
+			return
+		}
+		defer d.Close()
+		d.Kind()
+		d.Metadata()
+		if d.Underlying() == nil {
+			t.Fatal("an open document has nothing underneath it")
+		}
+		n := d.NumPages()
+		if n < 0 {
+			t.Fatalf("%d pages", n)
+		}
+		if n == 0 {
+			return
+		}
+		p, err := d.Page(0)
+		if err != nil {
+			return
+		}
+		p.Bounds()
+		p.Text()
+		p.Links()
+		p.StructuredText()
+	})
+}

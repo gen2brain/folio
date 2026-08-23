@@ -31,5 +31,7 @@ Copyright (c) 2020 Lonami, licensed under the MIT license.
 The Adobe Glyph List and the Adobe CMap resources are Copyright Adobe Inc.,
 licensed under the BSD-3-Clause license.
 
-The line breaking tables are derived from the Unicode Character Database,
-Copyright Unicode, Inc., licensed under the Unicode License.
+The line breaking, bidirectional, Arabic shaping, combining mark, canonical
+decomposition, Indic syllable and vertical orientation tables are derived from
+the Unicode Character Database, Copyright Unicode, Inc., licensed under the
+Unicode License.
