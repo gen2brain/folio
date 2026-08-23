@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"testing/iotest"
+
+	"github.com/gen2brain/folio/font"
 	"unicode/utf8"
 )
 
@@ -2140,6 +2142,7 @@ func TestCSSWritingMode(t *testing.T) {
 // left, which is where the ink lands: the first line is against the right
 // edge and runs from the top.
 func TestLayoutVertical(t *testing.T) {
+	needsFaceFor(t, '\u65e5')
 	d, p := styledPage(t, `html { -epub-writing-mode: vertical-rl; font-size: 20px }
 		body, p { margin: 0 }`, `<p>日本語です</p>`,
 		&LayoutOptions{Width: 300, Height: 200, Margin: 0})
@@ -3873,6 +3876,7 @@ func TestPageSVGAndHTML(t *testing.T) {
 // and a run that goes right to left is drawn backwards and mirrored.
 func TestBidiLayout(t *testing.T) {
 	const heb = "שלום" // shalom
+	needsFaceFor(t, []rune(heb)[0])
 	d := openBook(t, map[string]string{
 		"META-INF/container.xml": container,
 		"EPUB/package.opf":       pkg,
@@ -3946,6 +3950,16 @@ func TestBidiLayout(t *testing.T) {
 	}
 	if got, want := vis.String(), "םולש (abc) םולש"; got != want {
 		t.Errorf("drawn as %q, want %q", got, want)
+	}
+}
+
+// needsFaceFor skips a test that draws a script the base fourteen have no
+// glyphs for, which needs a face from the machine and not every machine has
+// one. A bare CI runner is the case that matters.
+func needsFaceFor(t *testing.T, r rune) {
+	t.Helper()
+	if font.Fallback(r, false, false) == nil {
+		t.Skipf("no face on this machine for %q", r)
 	}
 }
 

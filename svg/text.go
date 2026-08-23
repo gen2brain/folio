@@ -519,11 +519,29 @@ func (r *runner) face(st state) *font.Font {
 	if f == nil {
 		f = font.Fallback('A', st.bold, st.italic)
 	}
+	if f == nil {
+		f = font.Standard(svgBase14(st))
+	}
 	if r.faces == nil {
 		r.faces = map[faceKey]*font.Font{}
 	}
 	r.faces[key] = f
 	return f
+}
+
+// svgBase14 is the substitute a drawing gets when neither it nor the machine
+// brings a face, the same fourteen a PDF and a book fall back to.
+func svgBase14(st state) string {
+	name := "Helvetica"
+	switch {
+	case st.bold && st.italic:
+		name += "-BoldOblique"
+	case st.bold:
+		name += "-Bold"
+	case st.italic:
+		name += "-Oblique"
+	}
+	return name
 }
 
 // fallback is a face the machine has that can draw a character the one the

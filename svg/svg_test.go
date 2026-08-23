@@ -873,10 +873,20 @@ func TestTspanPositions(t *testing.T) {
 	if s := strings.Join(got, ""); s != "abc de" {
 		t.Errorf("placed %q, want %q", s, "abc de")
 	}
-	for i, want := range []float32{0, 10, 20, 24.8, 100, 110} {
-		if x := g[i].x; !near(x, want) {
-			t.Errorf("glyph %d %q at %v, want %v", i, g[i].r, x, want)
+	// Every position but the space is one the markup lists. The space is
+	// wherever the pen was left after the c, which is a width the face
+	// decides, so it is checked for being past the c and short of the next
+	// tspan rather than for a number the machine happens to give.
+	for _, c := range []struct {
+		i    int
+		want float32
+	}{{0, 0}, {1, 10}, {2, 20}, {4, 100}, {5, 110}} {
+		if x := g[c.i].x; !near(x, c.want) {
+			t.Errorf("glyph %d %q at %v, want %v", c.i, g[c.i].r, x, c.want)
 		}
+	}
+	if x := g[3].x; x <= 20 || x >= 100 {
+		t.Errorf("the space is at %v, want it after the c at 20 and before the next tspan at 100", x)
 	}
 }
 

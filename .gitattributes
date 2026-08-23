@@ -1,0 +1,4 @@
+# Every file is taken as it was committed. A PDF is mostly ASCII and git will
+# rewrite its line endings on a Windows checkout otherwise, which moves every
+# offset its cross-reference table names.
+* -text
