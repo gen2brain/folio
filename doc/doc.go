@@ -17,8 +17,8 @@
 package doc
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"image"
 	"io"
 	"os"
@@ -37,9 +37,10 @@ var ErrUnsupported = errors.New("doc: unsupported document")
 // Kind is what a file turned out to be.
 type Kind int
 
-// The kinds a file may open as.
+// The kinds a file may open as, and KindUnknown for one that is none of them.
 const (
-	KindPDF Kind = iota + 1
+	KindUnknown Kind = iota
+	KindPDF
 	KindSVG
 	KindBook
 )
@@ -66,10 +67,13 @@ type Metadata struct {
 }
 
 // Link is where a link on a page leads, as much of it as the three formats
-// have in common. Rect is in page space at 72 dots per inch.
+// have in common.
 type Link struct {
+	// Rect is the area the link covers, in the page's own space.
 	Rect raster.Rect
-	URI  string
+	// URI is where a link out of the document points, and "" for one inside
+	// it, which only the underlying document can resolve.
+	URI string
 }
 
 // Document is an open document of any of the three kinds.
@@ -93,11 +97,13 @@ type Document interface {
 
 // Page is one page of a document.
 type Page interface {
-	// Bounds is the page in points.
+	// Bounds is the page in its own space: points for a PDF or a book, CSS
+	// pixels for a drawing, which is what ImageDPI(72) and ImageDPI(96)
+	// render one to one.
 	Bounds() raster.Rect
-	// Image renders the page at its natural resolution and ImageDPI at the
-	// one asked for.
+	// Image renders the page at its natural resolution.
 	Image() (*image.RGBA, error)
+	// ImageDPI renders it at the resolution asked for.
 	ImageDPI(dpi float64) (*image.RGBA, error)
 	// Text is what the page says.
 	Text() (string, error)
@@ -105,8 +111,9 @@ type Page interface {
 	StructuredText() (*gfx.TextPage, error)
 	// Links is where the page leads.
 	Links() []Link
-	// SVG and HTML are the page as markup.
+	// SVG is the page as a drawing.
 	SVG() (string, error)
+	// HTML is the page as markup, laid out where it was drawn.
 	HTML() (string, error)
 	// Run draws the page through a device.
 	Run(dev gfx.Device, ctm raster.Matrix) error
@@ -132,7 +139,7 @@ func Open(name string) (Document, error) {
 }
 
 // Load reads a document from a buffer.
-func Load(b []byte) (Document, error) { return NewReader(newByteReader(b), int64(len(b))) }
+func Load(b []byte) (Document, error) { return NewReader(bytes.NewReader(b), int64(len(b))) }
 
 // NewStream reads a document from a reader that cannot be seeked, buffering it.
 func NewStream(r io.Reader) (Document, error) {
@@ -148,11 +155,12 @@ func NewReader(r io.ReaderAt, size int64) (Document, error) {
 	return newReader(r, size, nil)
 }
 
-// newReader is NewReader with a file the document takes ownership of.
+// newReader is NewReader with a file for the document to close, which the
+// caller closes itself when this fails.
 func newReader(r io.ReaderAt, size int64, c io.Closer) (Document, error) {
 	var head [1024]byte
 	n, err := r.ReadAt(head[:], 0)
-	if n == 0 && err != nil && err != io.EOF {
+	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	switch kindOf(head[:n]) {
@@ -175,9 +183,9 @@ func newReader(r io.ReaderAt, size int64, c io.Closer) (Document, error) {
 		}
 		return bookDoc{d, c}, nil
 	}
-	return nil, fmt.Errorf("%w", ErrUnsupported)
+	return nil, ErrUnsupported
 }
 
-// Detect reports what the head of a file says it is, and zero for none of the
-// three.
+// Detect reports what the head of a file says it is, and KindUnknown for none
+// of the three. A kilobyte is enough of it.
 func Detect(head []byte) Kind { return kindOf(head) }

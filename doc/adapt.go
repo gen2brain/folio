@@ -9,6 +9,15 @@ import (
 	"github.com/gen2brain/folio/svg"
 )
 
+var (
+	_ Document = pdfDoc{}
+	_ Document = bookDoc{}
+	_ Document = svgDoc{}
+	_ Page     = pdfPage{}
+	_ Page     = bookPage{}
+	_ Page     = svgPage{}
+)
+
 func closeBoth(err error, c io.Closer) error {
 	if c == nil {
 		return err

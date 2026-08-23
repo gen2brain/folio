@@ -40,8 +40,12 @@ func TestDetect(t *testing.T) {
 		{"zip", "PK\x03\x04rest of it", KindBook},
 		{"chm", "ITSF and the rest", KindBook},
 		{"fictionbook", `<?xml version="1.0"?><FictionBook><body/></FictionBook>`, KindBook},
-		{"binary", "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", 0},
-		{"empty", "", 0},
+		{"binary", "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", KindUnknown},
+		{"empty", "", KindUnknown},
+		{"html holding a drawing", `<!DOCTYPE html><html><body><svg width="4" height="4"/><p>Hi</p></body></html>`, KindBook},
+		{"xhtml", `<?xml version="1.0"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><body><p>Hi</p></body></html>`, KindBook},
+		{"text naming a drawing", "I drew it with <svg> once.\n", KindBook},
+		{"a drawing after a doctype", "<?xml version=\"1.0\"?>\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"x.dtd\">\n" + oneDrawing, KindSVG},
 	} {
 		if got := Detect([]byte(c.data)); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
@@ -50,7 +54,7 @@ func TestDetect(t *testing.T) {
 }
 
 func TestKindString(t *testing.T) {
-	for k, want := range map[Kind]string{KindPDF: "PDF", KindSVG: "SVG", KindBook: "book", 0: "unknown"} {
+	for k, want := range map[Kind]string{KindPDF: "PDF", KindSVG: "SVG", KindBook: "book", KindUnknown: "unknown"} {
 		if got := k.String(); got != want {
 			t.Errorf("Kind(%d) = %q, want %q", k, got, want)
 		}

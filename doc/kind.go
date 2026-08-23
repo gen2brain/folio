@@ -2,16 +2,15 @@ package doc
 
 import (
 	"bytes"
-	"io"
 	"unicode/utf8"
 )
 
-// kindOf reads the head of a file for what it is, and zero for none of the
-// three. A file none of the magic numbers claims is a book when it reads as
-// text, which is what a plain text document is.
+// kindOf reads the head of a file for what it is, and KindUnknown for none of
+// the three. A file none of the magic numbers claims is a book when it reads
+// as text, which is what a plain text or a loose HTML document is.
 func kindOf(b []byte) Kind {
 	if len(b) == 0 {
-		return 0
+		return KindUnknown
 	}
 	if bytes.Contains(b, []byte("%PDF-")) {
 		return KindPDF
@@ -23,66 +22,66 @@ func kindOf(b []byte) Kind {
 		bytes.Contains(b, []byte("<FictionBook")):
 		return KindBook
 	}
-	if hasElement(b, "svg") {
+	if bytes.EqualFold(rootElement(b), []byte("svg")) {
 		return KindSVG
 	}
-	if isText(b) {
+	if readsAsText(b) {
 		return KindBook
 	}
-	return 0
+	return KindUnknown
 }
 
-// hasElement reports a start tag of the named element, which for a root is as
-// far into the file as the declaration, the doctype and the comments before
-// it reach.
-func hasElement(b []byte, name string) bool {
-	for i := 0; ; {
-		j := bytes.IndexByte(b[i:], '<')
-		if j < 0 {
-			return false
+// rootElement is the name of the first element of an XML or HTML file, which
+// is as far in as the declaration, the doctype and the comments before it
+// reach. It is nil for a file that begins with anything else.
+func rootElement(b []byte) []byte {
+	for {
+		b = bytes.TrimLeft(b, " \t\r\n\f\v")
+		if len(b) < 2 || b[0] != '<' {
+			return nil
 		}
-		i += j + 1
-		if i >= len(b) {
-			return false
-		}
-		if len(b)-i >= len(name) && bytes.EqualFold(b[i:i+len(name)], []byte(name)) {
-			if k := i + len(name); k == len(b) || b[k] == '>' || b[k] == '/' ||
-				b[k] == ' ' || b[k] == '\t' || b[k] == '\n' || b[k] == '\r' {
-				return true
+		switch {
+		case b[1] == '?': // <?xml ... ?>
+			b = skipPast(b, "?>")
+		case bytes.HasPrefix(b[1:], []byte("!--")):
+			b = skipPast(b, "-->")
+		case b[1] == '!': // <!DOCTYPE ...>
+			b = skipPast(b, ">")
+		default:
+			name := b[1:]
+			if i := bytes.IndexAny(name, " \t\r\n\f\v/>"); i >= 0 {
+				name = name[:i]
 			}
+			return name
+		}
+		if b == nil {
+			return nil
 		}
 	}
 }
 
-// isText reports bytes a plain text document could be made of.
-func isText(b []byte) bool {
-	if bytes.IndexByte(b, 0) >= 0 {
-		return false
+// skipPast is what follows the first sep in b, and nil when there is none.
+func skipPast(b []byte, sep string) []byte {
+	i := bytes.Index(b, []byte(sep))
+	if i < 0 {
+		return nil
 	}
-	if !utf8.Valid(b) {
-		// A truncated rune at the end of the head is not a binary file.
-		for n := 1; n < utf8.UTFMax && n < len(b); n++ {
-			if utf8.Valid(b[:len(b)-n]) {
-				return true
-			}
+	return b[i+len(sep):]
+}
+
+// readsAsText reports bytes a text document could be made of, which is what
+// the html package will accept as one.
+func readsAsText(b []byte) bool {
+	for len(b) > 0 {
+		r, n := utf8.DecodeRune(b)
+		if r == utf8.RuneError && n == 1 {
+			// A rune cut in half by the end of the head is not a binary file.
+			return len(b) < utf8.UTFMax
 		}
-		return false
+		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' && r != '\f' {
+			return false
+		}
+		b = b[n:]
 	}
 	return true
-}
-
-// byteReader is a buffer read at an offset.
-type byteReader struct{ b []byte }
-
-func newByteReader(b []byte) *byteReader { return &byteReader{b: b} }
-
-func (r *byteReader) ReadAt(p []byte, off int64) (int, error) {
-	if off < 0 || off >= int64(len(r.b)) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[off:])
-	if n < len(p) {
-		return n, io.EOF
-	}
-	return n, nil
 }
