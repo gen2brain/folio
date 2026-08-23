@@ -80,8 +80,7 @@ const (
 	AlignEnd
 )
 
-// Resolve turns the two alignments that depend on the direction into the two
-// that do not.
+// Resolve turns the two direction-dependent alignments into two that are not.
 func (a TextAlign) Resolve(d Direction) TextAlign {
 	switch a {
 	case AlignStart:
@@ -283,8 +282,7 @@ type Border struct {
 	Color Color
 }
 
-// Thickness is how much room the edge takes, which is none when nothing is
-// drawn there.
+// Thickness is how much room the edge takes, none when nothing is drawn.
 func (b Border) Thickness() float32 {
 	if b.Style == BorderNone || b.Style == BorderHidden || b.Width <= 0 {
 		return 0
@@ -330,8 +328,7 @@ type Style struct {
 	Decoration    Decoration
 	WhiteSpace    WhiteSpace
 	VerticalAlign VerticalAlign
-	// VerticalShift is how far AlignLength raises the box, a percentage of
-	// the line height.
+	// VerticalShift is how far AlignLength raises the box, in line heights.
 	VerticalShift Length
 	ListStyle     ListStyle
 
@@ -350,8 +347,7 @@ type Style struct {
 	Collapse           bool
 	SpacingX, SpacingY Length
 
-	// Radius is the corner radii of the border box, clockwise from the top
-	// left.
+	// Radius is the corner radii of the border box, clockwise from top left.
 	Radius [4]Corner
 
 	// Content is the text a rule generates before or after an element, and
@@ -362,8 +358,7 @@ type Style struct {
 	BreakBefore, BreakAfter PageBreak
 }
 
-// DefaultFontSize is what a medium font is, and what every relative size is
-// worked out from.
+// DefaultFontSize is a medium font, what every relative size works out from.
 const DefaultFontSize = 16
 
 func initialStyle() Style {
@@ -413,8 +408,7 @@ type Corner struct {
 func (c Corner) Zero() bool { return c.X.Value <= 0 || c.Y.Value <= 0 }
 
 // value carries what a declaration's tokens are read against: the element's
-// own font size for an em, the root's for a rem, and the parent's style for
-// an explicit inherit.
+// own font size for an em, the root's for a rem, the parent's for an inherit.
 type value struct {
 	toks []cssToken
 	// em is the element's own font size, rm the root element's and medium the
@@ -792,8 +786,7 @@ func (v value) families() ([]string, bool) {
 	return out, true
 }
 
-// lineHeight reads a line height, keeping a bare number as the multiple of
-// the font size it is.
+// lineHeight reads a line height, keeping a bare number as a multiple.
 func (v value) lineHeight() (Length, bool) {
 	if v.ident() == "normal" {
 		return Length{Value: 1.2, Unit: UnitScale}, true

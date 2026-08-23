@@ -115,8 +115,7 @@ func (p *Page) appearance(dict Dict) *Stream {
 	return nil
 }
 
-// matrix reads a six number array as a transform, or returns fallback when the
-// object is not one.
+// matrix reads a six number array as a transform, fallback when it is not one.
 func (d *Document) matrix(obj Object, fallback raster.Matrix) raster.Matrix {
 	m := d.f.GetFloats(obj)
 	if len(m) != 6 {

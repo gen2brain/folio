@@ -58,8 +58,7 @@ type Font struct {
 
 	// prog is the font program, embedded or substituted.
 	prog *font.Font
-	// substituted is true when prog is a stand in rather than the font the
-	// document asked for.
+	// substituted is true when prog stands in for the font the file asked for.
 	substituted bool
 	// viaUnicode is set for a substituted CID keyed font: the CIDs address
 	// the glyph order of the font the file did not embed, so the stand in is
@@ -70,10 +69,9 @@ type Font struct {
 	// cid2gid is the /CIDToGIDMap stream of a CIDFontType2.
 	toUnicode *CMap
 	// std is set when the stand in is one of the base fourteen, whose
-	// repertoire is Latin-1. A character outside it is looked for in a face
-	// the machine has; a font given a face for its collection keeps that face
-	// and shows nothing for what it does not have, which is what the other
-	// readers do.
+	// repertoire is Latin-1. A character outside it is looked for in a face the
+	// machine has; a font given a face for its collection keeps it and shows
+	// nothing for what it does not have, which is what the other readers do.
 	std bool
 	// fbMu guards fbFaces, which holds one wrapper per face a character the
 	// substitute has no glyph for was drawn out of. The pointer has to be the
@@ -203,8 +201,7 @@ func (d *Document) loadProgram(ft *Font, dict Dict) {
 }
 
 // substitute picks a face for a font the file did not embed: one the machine
-// has for a character collection the fourteen cannot draw, one of the fourteen
-// otherwise.
+// has for a collection the fourteen cannot draw, or one of the fourteen.
 func (d *Document) substitute(ft *Font) {
 	name := string(ft.Name)
 	ft.substituted = true
@@ -221,16 +218,14 @@ func (d *Document) substitute(ft *Font) {
 	}
 }
 
-// cjkSample is a character of each collection, which a face for it is asked
-// for by.
+// cjkSample is a character of each collection, to ask a face for it by.
 var cjkSample = map[string]rune{
 	"GB1": '\u4e00', "CNS1": '\u4e00', "Japan1": '\u3042', "Korea1": '\uac00', "KR": '\uac00',
 }
 
 // systemCJK finds a face the machine has for a character collection the base
-// fourteen have no glyphs for. The document's own name for the font comes
-// first: a file naming SimSun and not embedding it means the face, not a
-// substitute for it.
+// fourteen have no glyphs for. The document's own name comes first: a file
+// naming SimSun and not embedding it means the face, not a substitute.
 func (d *Document) systemCJK(name, ordering string, bold, italic bool) *font.Font {
 	sample, ok := cjkSample[ordering]
 	if !ok || d.noSystemFonts {
@@ -339,8 +334,7 @@ func (ft *Font) encodingNames(builtin *[256]string) [256]string {
 
 // glyphFor resolves one code. Every lookup it makes answers -1 when it has
 // nothing, so zero is a glyph like any other: a Type1 program has no glyph
-// order of its own and its CharStrings dictionary puts whichever glyph it
-// likes first.
+// order and its CharStrings dictionary puts whichever glyph it likes first.
 func (d *Document) glyphFor(ft *Font, code int, name string) int {
 	p := ft.prog
 
@@ -566,8 +560,7 @@ func (ft *Font) BaseFont() string { return ft.base }
 // Program returns the font program, embedded or substituted, or nil.
 func (ft *Font) Program() *font.Font { return ft.prog }
 
-// FontName is the name the font goes by, which is /BaseFont or, for a Type3
-// font, /Name.
+// FontName is the name the font goes by: /BaseFont, or /Name for a Type3.
 func (ft *Font) FontName() string { return string(ft.Name) }
 
 // EmBox is how far the font's em box reaches above and below the baseline,
@@ -582,8 +575,7 @@ func (ft *Font) EmBox() (ascent, descent float32) {
 	return 0.8, -0.2
 }
 
-// glyphKey names one glyph procedure, which is what the device holds while it
-// is being run.
+// glyphKey names one glyph procedure, which the device holds while it runs.
 type glyphKey struct {
 	font *Font
 	code int
@@ -644,12 +636,10 @@ func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, 
 	ip.finish()
 }
 
-// Substituted reports whether the program is a stand in for a font the file
-// did not embed.
+// Substituted reports a program standing in for a font the file left out.
 func (ft *Font) Substituted() bool { return ft.substituted }
 
-// Glyph returns the index of the glyph a character selects in the font
-// program, or -1.
+// Glyph is the index of the glyph a character selects, or -1 for none.
 func (ft *Font) Glyph(c Char) int {
 	if ft.Type3 {
 		if c.Code < 256 {
@@ -700,8 +690,7 @@ func (ft *Font) cidToGID(cid int) int {
 	return cid
 }
 
-// Text returns the characters a code stands for, which is more than one for a
-// ligature.
+// Text is the characters a code stands for, more than one for a ligature.
 func (ft *Font) Text(c Char) string {
 	if ft.toUnicode == nil {
 		return ""

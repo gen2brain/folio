@@ -54,8 +54,7 @@ func isXlink(space string) bool {
 // Document is one SVG file.
 type Document struct {
 	root *node
-	// byID is every element that carries one, which use and the paint
-	// servers refer to.
+	// byID is every element that carries one, for use and the paint servers.
 	byID map[string]*node
 	// width and height are the size the file asks to be drawn at, in CSS
 	// pixels, and box the coordinates it draws in.
@@ -285,8 +284,7 @@ func parseXML(b []byte) (*node, []string, error) {
 	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 	var stack []*node
-	// skip counts how deep inside an element of another vocabulary the
-	// reader is.
+	// skip counts how deep an element of another vocabulary has been entered.
 	skip := 0
 	var root *node
 	var sheets []string

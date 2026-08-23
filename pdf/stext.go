@@ -40,8 +40,7 @@ func (p *Page) StructuredTextOptions(o *TextOptions) (*TextPage, error) {
 	return st, err
 }
 
-// Text returns the page's text: a newline after every line and a blank line
-// after every block.
+// Text is the page's text: a newline after a line, a blank line after a block.
 func (p *Page) Text() (string, error) {
 	st, err := p.StructuredText()
 	if st == nil {

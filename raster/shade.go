@@ -11,10 +11,9 @@ type Shader interface {
 	Shade(x, y, w int, span []uint8)
 }
 
-// A RowShader can write its color straight into a destination row, leaving the
-// pixels it does not cover as it found them, which is what a shader whose
-// coverage is all or nothing can do instead of filling a span to be copied
-// out of.
+// A RowShader can write its color straight into a destination row, leaving
+// the pixels it does not cover as they were, which a shader whose coverage is
+// all or nothing can do instead of filling a span to be copied out of.
 type RowShader interface {
 	Shader
 	ShadeRow(dst *Pixmap, x, y, w int)
@@ -133,10 +132,9 @@ func (b *shaderBlitter) opaque(row, span []uint8, w, sn, n int) {
 }
 
 // GradientSpec describes an axial or radial gradient: the two circles it runs
-// between (an axial gradient ignores the radii and runs between the two
-// points), the table of 256 colors of N components it takes its color from,
-// the transform from its own space to the device, and whether it paints on
-// past each end.
+// between (an axial one ignores the radii and runs between the points), the
+// table of 256 colors of N components it takes its color from, the transform
+// from its own space to the device, and whether it paints on past each end.
 type GradientSpec struct {
 	Matrix Matrix
 	LUT    []uint8
@@ -184,9 +182,8 @@ type gradParams struct {
 	lo, hi         float32
 }
 
-// NewGradient prepares a gradient for drawing, nil if it degenerates to
-// nothing: an axial gradient of no length, or a transform that does not
-// invert.
+// NewGradient prepares a gradient for drawing, nil if it degenerates: an
+// axial gradient of no length, or a transform that does not invert.
 func NewGradient(s GradientSpec) *Gradient {
 	inv, ok := s.Matrix.Invert()
 	if !ok || s.N < 1 || len(s.LUT) < 256*s.N {
@@ -292,8 +289,7 @@ func (g *Gradient) shade(x, y, w int, out []uint8, n, m, ai int, blank bool) {
 }
 
 // indexScalar writes the entry of the color table each pixel of the span
-// takes, and -1 where the gradient does not reach it. It is what the kernels
-// are checked against.
+// takes, -1 where the gradient does not reach, and is what the kernels check.
 func (g *Gradient) indexScalar(x, y, w int, idx []int32) {
 	p := &g.p
 	fy := float32(y) + 0.5
@@ -359,8 +355,7 @@ func (g *Gradient) radialParam(px, py float32) (float32, bool) {
 	return g.clampRadial(s1)
 }
 
-// clampRadial applies the extend rules, and rejects a radius the parameter
-// would make negative.
+// clampRadial applies the extend rules and rejects a negative radius.
 func (g *Gradient) clampRadial(s float32) (float32, bool) {
 	if g.p.r0+float32(s*g.p.dr) < 0 {
 		return 0, false

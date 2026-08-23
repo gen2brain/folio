@@ -379,8 +379,7 @@ func (c *fb2) inline(b *strings.Builder, n *xnode, depth int) {
 
 func (c *fb2) image(n *xnode, block bool) { c.write(&c.body, n, block) }
 
-// write puts the picture an image element names, which is one of the binaries
-// the book carries.
+// write puts the picture an image element names, one of the book's binaries.
 func (c *fb2) write(b *strings.Builder, n *xnode, block bool) {
 	href := n.rel("href")
 	if href == "" {
@@ -540,8 +539,7 @@ func replaceEncoding(b []byte) []byte {
 	return []byte(head[:j] + `encoding="utf-8"` + rest[1+k+1:] + s[i:])
 }
 
-// latin1High is the upper half of ISO 8859-1, which is the code points
-// themselves.
+// latin1High is the upper half of ISO 8859-1, the code points themselves.
 var latin1High = func() [128]rune {
 	var t [128]rune
 	for i := range t {
@@ -571,8 +569,7 @@ var cp1251High = [128]rune{
 	0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
 }
 
-// koi8High is the upper half of KOI8-R, the other Cyrillic encoding a book
-// may be written in.
+// koi8High is the upper half of KOI8-R, the other Cyrillic encoding.
 var koi8High = [128]rune{
 	0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524,
 	0x252C, 0x2534, 0x253C, 0x2580, 0x2584, 0x2588, 0x258C, 0x2590,

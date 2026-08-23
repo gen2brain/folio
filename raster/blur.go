@@ -3,8 +3,7 @@ package raster
 import "math"
 
 // blurBox is 3*sqrt(2*pi)/4, the factor SVG 1.1 15.17 turns a deviation into
-// a box width with, and blurExact where that section stops allowing the
-// approximation.
+// a box width with, and blurExact where that section stops allowing it.
 const (
 	blurBox   = 1.8799712059732503
 	blurExact = 2
@@ -58,8 +57,7 @@ func Blur(p *Pixmap, sigmaX, sigmaY float32) {
 	}
 }
 
-// gaussKernel is the sampled kernel, and nil for a deviation the box
-// approximation covers.
+// gaussKernel is the sampled kernel, nil for a deviation the boxes cover.
 func gaussKernel(sigma float32) []float32 {
 	if sigma <= 0 || sigma >= blurExact || math.IsNaN(float64(sigma)) {
 		return nil

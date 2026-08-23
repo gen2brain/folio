@@ -5,8 +5,7 @@ import (
 	"sort"
 )
 
-// The joining types of the Arabic shaping file, in the order the generated
-// table numbers them.
+// The joining types of the Arabic shaping file, in the tables' order.
 type joinType uint8
 
 const (
@@ -32,8 +31,7 @@ func joinTypeOf(r rune) joinType {
 	return joinType(joinTable[lo].val)
 }
 
-// The forms a cursive letter takes, which are the four features that pick
-// them.
+// The forms a cursive letter takes, the four features that pick them.
 const (
 	formNone = iota
 	formIsol
@@ -92,12 +90,10 @@ type item struct {
 	cluster int
 	// mask says which features may touch this glyph.
 	mask uint32
-	// ligID and ligComp say which ligature a glyph came out of and which
-	// component of it.
+	// ligID and ligComp say which ligature a glyph came from and which part.
 	ligID, ligComp int
-	// syl is which syllable of an Indic run the glyph belongs to, counting
-	// from one, pos where in it, and ligated says the glyph is one the font
-	// made out of several.
+	// syl is which syllable of an Indic run the glyph is in, counting from
+	// one, pos where in it, and ligated says the font made it out of several.
 	syl     int
 	pos     uint8
 	ligated bool

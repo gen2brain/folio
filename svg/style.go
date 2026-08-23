@@ -9,9 +9,8 @@ import (
 // A style element carries CSS, and what a drawing needs of it is small: the
 // selectors an exporter writes are a type, a class, an id and lists of those.
 // The engine in html cascades onto the box tree of a document and knows the
-// properties of one, so it is not what an SVG wants; this reads the same
-// syntax and answers the one question an element asks, which is what a sheet
-// declares for it.
+// properties of one, so it is not what an SVG wants; this reads the syntax and
+// answers the one question an element asks, what a sheet declares for it.
 type rule struct {
 	sel   []simple
 	decls []decl
@@ -85,8 +84,7 @@ func (d *Document) readStyles(sheets []string) {
 	})
 }
 
-// text is the character data an element holds, which for a style element is
-// the sheet.
+// text is the character data an element holds, the sheet for a style.
 func text(n *node) string {
 	var b strings.Builder
 	for _, k := range n.kids {
@@ -300,8 +298,7 @@ func (r *runner) sheetProp(n *node, name string) (string, bool) {
 	return out, found
 }
 
-// matches walks a selector chain from its last compound backwards through the
-// open elements.
+// matches walks a selector chain backwards through the open elements.
 func (r *runner) matches(sel []simple, n *node) bool {
 	last := len(sel) - 1
 	if !matchOne(sel[last], n) {

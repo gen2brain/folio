@@ -6,9 +6,8 @@ import (
 )
 
 // BlendMode is one of the sixteen blend functions of ISO 32000-1 11.3.5, the
-// same set SVG and CSS use. The first twelve are separable, computed one
-// component at a time; the last four are defined on a color as a whole and go
-// through RGB.
+// same set SVG and CSS use. The first twelve are separable and run one
+// component at a time; the last four take a color as a whole, through RGB.
 type BlendMode int
 
 // The separable blend modes, then the four non-separable ones.
@@ -533,8 +532,7 @@ func (p *Pixmap) Mask(luminosity bool, table *[256]uint8) *Pixmap {
 	return m
 }
 
-// luminosityOf is the gray a color carries, which is what a luminosity soft
-// mask reads.
+// luminosityOf is the gray a color carries, which a luminosity soft mask reads.
 func luminosityOf(model Model, px []uint8, rgb *[3]uint8) uint8 {
 	switch len(px) {
 	case 0:

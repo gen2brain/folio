@@ -2,8 +2,7 @@ package html
 
 import "sync"
 
-// UserAgent returns the user agent stylesheet, restricted to the properties
-// the engine reads.
+// UserAgent is the user agent stylesheet, cut to the properties engine reads.
 func UserAgent() *Stylesheet { return uaSheet() }
 
 var uaSheet = sync.OnceValue(func() *Stylesheet { return ParseCSS([]byte(uaCSS), OriginUA) })

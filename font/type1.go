@@ -18,9 +18,8 @@ type type1Font struct {
 	matrix      raster.Matrix
 	bbox        []float32
 
-	// widths is filled by running a charstring, which is the only place a
-	// Type 1 glyph's advance is written down, so it is a cache and needs a
-	// lock of its own.
+	// widths is filled by running a charstring, the only place a Type 1
+	// glyph's advance is written down, so it is a cache and takes a lock.
 	widthMu sync.Mutex
 	widths  map[string]float32
 }

@@ -27,9 +27,8 @@ type DrawDevice struct {
 
 	clip  clipState
 	stack []drawFrame
-	// off counts the reasons not to draw, which is a group or a mask whose
-	// area came out empty. Clips are still tracked, so the stacks stay
-	// balanced.
+	// off counts the reasons not to draw, a group or a mask whose area came
+	// out empty. Clips are still tracked, so the stacks stay balanced.
 	off int
 	// knockout is set while the destination is a knockout group, whose
 	// elements replace one another rather than layering.
@@ -112,8 +111,7 @@ func (d *DrawDevice) fail(err error) {
 	}
 }
 
-// SetFlatness sets how far a flattened curve may stray from the true one, in
-// device pixels.
+// SetFlatness is how far a flattened curve may stray, in device pixels.
 func (d *DrawDevice) SetFlatness(tol float32) {
 	d.flat = tol
 	d.ras.SetFlatness(tol)
@@ -503,8 +501,7 @@ func (d *DrawDevice) runGlyph(f Font, gid int, m raster.Matrix, cs *ColorSpace, 
 	d.src = saved
 }
 
-// eachGlyph walks the glyphs of a text object, handing each its transform in
-// device space.
+// eachGlyph walks a text object, handing each glyph its device transform.
 func (d *DrawDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(Font, *font.Font, int, raster.Matrix)) {
 	for i := range t.Spans {
 		sp := &t.Spans[i]
@@ -525,8 +522,7 @@ func (d *DrawDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(Font, *font.F
 	}
 }
 
-// drawGlyph stamps one glyph, from the cache when it is small enough to be
-// worth remembering.
+// drawGlyph stamps one glyph, from the cache when it is small enough to keep.
 func (d *DrawDevice) drawGlyph(prog *font.Font, gid int, m raster.Matrix, paint raster.Paint) {
 	d.stampGlyph(prog, gid, m, paint, nil, 0)
 }
@@ -704,8 +700,7 @@ func (d *DrawDevice) maskPixmap(img Image, shrink int) *raster.Pixmap {
 	return px.Coverage()
 }
 
-// drawImage rasterizes the square the image occupies and samples the image
-// through it.
+// drawImage rasterizes the square the image occupies and samples it through.
 func (d *DrawDevice) drawImage(src *raster.Pixmap, ctm raster.Matrix, paint raster.Paint, interpolate bool) {
 	if n := subsampleBy(src, ctm); n > 0 {
 		src = src.Subsample(n)
@@ -797,8 +792,7 @@ func (d *DrawDevice) space() *ColorSpace {
 }
 
 // decodeImage decodes an image into the destination's components, from the
-// document's cache when it is there. A nil space asks for the stencil of an
-// image mask.
+// document's cache when it is there. A nil space asks for a stencil.
 func (d *DrawDevice) decodeImage(img Image, dst *ColorSpace, shrink int) *raster.Pixmap {
 	if img == nil {
 		return nil

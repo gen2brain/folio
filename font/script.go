@@ -1,7 +1,6 @@
 package font
 
-// script is the writing system a character belongs to, as far as picking a
-// face for it goes.
+// script is the writing system a character belongs to, for picking a face.
 type script uint8
 
 // The scripts a fallback is chosen per.

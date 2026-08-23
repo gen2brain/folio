@@ -11,8 +11,7 @@ type otLayout struct {
 	look   int
 }
 
-// otLookup is one lookup of the list: what it does, what it skips, and where
-// its subtables are.
+// otLookup is one lookup: what it does, what it skips, and where it lives.
 type otLookup struct {
 	kind    int
 	flag    int
@@ -83,8 +82,7 @@ func (t *otLayout) lookup(i int) *otLookup {
 	return l
 }
 
-// scriptOffset is where a script's table sits, trying the tag asked for and
-// then the default one.
+// scriptOffset is where a script's table sits, by tag and then by default.
 func (t *otLayout) scriptOffset(want string) int {
 	b, at := t.data, t.script
 	n := be16(b, at)
@@ -105,8 +103,7 @@ func (t *otLayout) scriptOffset(want string) int {
 	return fallback
 }
 
-// langSys is the language system of a script, the default one when the tag is
-// not there.
+// langSys is the language system of a script, the default one for no tag.
 func (t *otLayout) langSys(script int, want string) int {
 	b := t.data
 	if script <= 0 || script+4 > len(b) {
@@ -130,8 +127,7 @@ func (t *otLayout) langSys(script int, want string) int {
 	return 0
 }
 
-// featureLookups is the lookups a feature of a language system names, and nil
-// when it names none.
+// featureLookups is the lookups a feature names, nil when it names none.
 func (t *otLayout) featureLookups(lang int, want string) []int {
 	b := t.data
 	if lang <= 0 || lang+6 > len(b) {
@@ -185,8 +181,7 @@ func (t *otLayout) lookupsOfFeature(i int) []int {
 	return out
 }
 
-// coverageIndex is where a glyph sits in a coverage table, and -1 when it is
-// not in it.
+// coverageIndex is where a glyph sits in a coverage table, -1 for none.
 func coverageIndex(b []byte, off, gid int) int {
 	if off <= 0 || off+4 > len(b) {
 		return -1
@@ -247,8 +242,7 @@ func coverageCount(b []byte, off int) int {
 	return 0
 }
 
-// classOf is the class a class definition table gives a glyph, zero when it
-// gives none.
+// classOf is the class a class definition table gives a glyph, zero for none.
 func classOf(b []byte, off, gid int) int {
 	if off <= 0 || off+4 > len(b) {
 		return 0
@@ -318,8 +312,7 @@ func (g *gdef) attachClass(gid int) int {
 	return classOf(g.data, g.markAttach, gid)
 }
 
-// inMarkSet reports a glyph in one of the mark glyph sets a lookup flag may
-// filter on.
+// inMarkSet reports a glyph in a mark glyph set a lookup flag may filter on.
 func (g *gdef) inMarkSet(set, gid int) bool {
 	if g == nil || g.markSets <= 0 {
 		return false
@@ -400,8 +393,7 @@ func (d *digest) addCoverage(b []byte, off int) {
 	}
 }
 
-// digestOf is the glyphs a lookup may match on, which is the coverage its
-// subtables start with.
+// digestOf is the glyphs a lookup may match, the coverage its subtables have.
 func (t *otLayout) digestOf(l *otLookup, gsub bool, depth int) digest {
 	var d digest
 	if depth > 2 {

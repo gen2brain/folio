@@ -42,8 +42,7 @@ import (
 var (
 	// ErrInvalid means the file is not a book, or is damaged past recovery.
 	ErrInvalid = errors.New("html: invalid document")
-	// ErrUnsupported means the file is well formed but uses something this
-	// package cannot read.
+	// ErrUnsupported is a well formed file this package cannot read.
 	ErrUnsupported = errors.New("html: unsupported document")
 	// ErrNotFound means the document has no part by that path.
 	ErrNotFound = errors.New("html: no such part")
@@ -271,8 +270,7 @@ func (d *Document) Metadata() Metadata { return d.meta }
 // Spine returns the parts to read, in order.
 func (d *Document) Spine() []Item { return d.spine }
 
-// Manifest returns every part the book carries, and nil for a container that
-// lists none.
+// Manifest is every part the book carries, nil for a container listing none.
 func (d *Document) Manifest() []Item { return d.manifest }
 
 // Outline returns the table of contents as the tree it is. A book that
@@ -295,8 +293,7 @@ func (d *Document) Read(p string) ([]byte, error) {
 }
 
 // Resolve turns a link inside one part into the path of another. An absolute
-// path stands on its own, a relative one is read against base, and a fragment
-// is dropped.
+// path stands alone, a relative one reads against base, a fragment is cut.
 func Resolve(base, ref string) string {
 	if i := strings.IndexAny(ref, "#?"); i >= 0 {
 		ref = ref[:i]

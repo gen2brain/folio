@@ -5,8 +5,7 @@ import (
 	"fmt"
 )
 
-// repair rebuilds the cross-reference table by scanning the whole file for
-// object headers.
+// repair rebuilds the cross-reference table by scanning for object headers.
 func (f *File) repair() error {
 	f.repaired = true
 	f.xref.ents = nil

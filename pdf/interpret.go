@@ -36,8 +36,7 @@ type interp struct {
 	// soft mask or a pattern run from inside one from building into it.
 	held    [maxNesting + 2]raster.Path
 	holding int
-	// clip is the pending clip set by W or W*, applied by the next painting
-	// operator.
+	// clip is the pending clip of W or W*, applied by the next paint operator.
 	clip    int
 	scissor raster.Rect
 
@@ -60,10 +59,9 @@ type interp struct {
 	hidden  int
 
 	depth int
-	// running is the form XObjects on the path from the page to here, so that
-	// one that reaches itself stops at the cycle rather than at the depth
-	// limit. It is unwound on the way out, so a form drawn twice side by side
-	// still draws twice.
+	// running is the form XObjects on the path from the page to here, so one
+	// that reaches itself stops at the cycle rather than at the depth limit.
+	// It unwinds on the way out, so a form drawn twice side by side still does.
 	running []Ref
 	ops     *int64
 }
@@ -151,8 +149,7 @@ func (ip *interp) run(data []byte) {
 	}
 }
 
-// num returns operand i counting from the end of the operand list, so num(0)
-// is the last one.
+// num is operand i counting from the end of the list, so num(0) is the last.
 func num(stack []syntax.Operand, i int) float32 {
 	i = len(stack) - 1 - i
 	if i < 0 || i >= len(stack) {

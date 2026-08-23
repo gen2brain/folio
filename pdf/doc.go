@@ -15,9 +15,8 @@ import (
 // Document is an open PDF file.
 //
 // A Document may be rendered from several goroutines at once, a Page each.
-// Configuration - SetLayers, SetUsage, GlyphCacheBytes, ImageCacheBytes,
-// ContentCacheOps - has to happen before they start, and Close after the last
-// of them finishes.
+// Configuration - SetLayers, SetUsage, GlyphCacheBytes, ImageCacheBytes and
+// ContentCacheOps - happens before they start, and Close after the last ends.
 type Document struct {
 	f *syntax.File
 
@@ -53,8 +52,7 @@ type Document struct {
 
 	// GlyphCacheBytes bounds the rendered glyph masks the document keeps,
 	// ImageCacheBytes the decoded images and ContentCacheOps the operands of
-	// parsed content streams. Zero means the default, negative means no cache
-	// at all.
+	// parsed content streams. Zero is the default, negative is no cache at all.
 	GlyphCacheBytes int
 	ImageCacheBytes int
 	ContentCacheOps int
@@ -289,9 +287,8 @@ func (d *Document) readOptionalContent() {
 	}
 }
 
-// applyUsage runs the usage application dictionaries of a configuration,
-// which is how a group says it is meant for the screen but not for paper.
-// ISO 32000-1 8.11.4.4.
+// applyUsage runs the usage application dictionaries of a configuration, how
+// a group says it is for the screen but not paper. ISO 32000-1 8.11.4.4.
 func (d *Document) applyUsage(cfg Dict) {
 	event := Name("View")
 	switch d.usage {
@@ -470,8 +467,7 @@ func (d *Document) optionalContentVisible(obj Object) bool {
 // Outline is one entry of the document outline, ISO 32000-1 12.3.3.
 type Outline struct {
 	Title string
-	// Page is the page the entry leads to, and -1 otherwise; Point is where
-	// on it.
+	// Page is the page the entry leads to, -1 otherwise, and Point where on it.
 	Page  int
 	Point raster.Point
 	// URI is where an entry leading out of the document points.
@@ -565,8 +561,7 @@ func (d *Document) Metadata() Metadata {
 	}
 }
 
-// parseDate reads a PDF date, ISO 32000-1 7.9.4, truncated anywhere after
-// the year.
+// parseDate reads a PDF date, ISO 32000-1 7.9.4, cut off after the year.
 func parseDate(s string) time.Time {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "D:")

@@ -329,8 +329,7 @@ func (f *Function) evalExponential(out []float64, in []float64) []float64 {
 	return out
 }
 
-// readStitching reads a type 3 function, which splits its domain between
-// several functions.
+// readStitching reads a type 3 function, which splits its domain up.
 func (d *Document) readStitching(fn *Function, depth int) error {
 	for _, sub := range d.f.GetArray(fn.dict["Functions"]) {
 		s := d.functionDepth(sub, depth+1)

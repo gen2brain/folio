@@ -370,8 +370,7 @@ func aesNoIV(key, data []byte) ([]byte, error) {
 	return out, nil
 }
 
-// cryptFor returns the decryptor for one object, or nil when the file is not
-// encrypted.
+// cryptFor is the decryptor for one object, nil when the file is not encrypted.
 func (f *File) cryptFor(ref Ref) *cryptFilter {
 	if f.enc == nil {
 		return nil
@@ -379,8 +378,7 @@ func (f *File) cryptFor(ref Ref) *cryptFilter {
 	return &cryptFilter{enc: f.enc, ref: ref}
 }
 
-// objectKey derives the per-object key of algorithm 1. AES-256 uses the file
-// key unchanged.
+// objectKey is the per-object key of algorithm 1, the file key under AES-256.
 func (c *cryptFilter) objectKey(m cryptMethod) []byte {
 	e := c.enc
 	if m == cryptAESV3 {

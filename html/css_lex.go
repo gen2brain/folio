@@ -48,8 +48,7 @@ type cssToken struct {
 	// delim is the code point of a delimiter, which is never above ASCII.
 	delim byte
 	// id is set for a hash that spells an identifier, integer for a number
-	// written without a fraction or an exponent, signed for one written with
-	// an explicit sign.
+	// with no fraction or exponent, signed for one written with a sign.
 	id      bool
 	integer bool
 	signed  bool
@@ -64,8 +63,7 @@ type cssLexer struct {
 
 func newCSSLexer(s string) *cssLexer { return &cssLexer{s: cssPreprocess(s)} }
 
-// cssPreprocess folds the line endings and replaces the nulls the tokenizer
-// is defined over.
+// cssPreprocess folds the line endings and replaces the nulls, as defined.
 func cssPreprocess(s string) string {
 	if strings.IndexAny(s, "\r\f\x00") < 0 {
 		return s
@@ -448,8 +446,7 @@ func hexValue(c byte) int {
 	return int(c-'a') + 10
 }
 
-// isNameStartByte covers every byte above ASCII: no non-ASCII code point is
-// anything but a name.
+// isNameStartByte covers every byte above ASCII: all of them start a name.
 func isNameStartByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c >= 0x80
 }

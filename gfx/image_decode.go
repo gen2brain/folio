@@ -170,8 +170,7 @@ func boundPicture(w, h int) error {
 }
 
 // DecodePicture reads one of the raster formats a document carries a picture
-// in, through a decoder RegisterPictureDecoder has installed for it or the
-// standard library's.
+// in, through a decoder RegisterPictureDecoder installed or the standard one.
 func DecodePicture(b []byte) (*Picture, error) {
 	var src image.Image
 	var err error

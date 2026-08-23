@@ -69,8 +69,7 @@ func skipPast(b []byte, sep string) []byte {
 	return b[i+len(sep):]
 }
 
-// readsAsText reports bytes a text document could be made of, which is what
-// the html package will accept as one.
+// readsAsText reports bytes the html package will accept as a text document.
 func readsAsText(b []byte) bool {
 	for len(b) > 0 {
 		r, n := utf8.DecodeRune(b)

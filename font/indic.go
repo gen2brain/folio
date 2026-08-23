@@ -2,8 +2,7 @@ package font
 
 import "math/bits"
 
-// The categories the syllable machine runs on, in the order the generated
-// table numbers them.
+// The categories the syllable machine runs on, in the tables' order.
 const (
 	inX = iota
 	inC
@@ -82,8 +81,7 @@ const (
 )
 
 // sylMatch walks the categories of a run and reports where a production may
-// end. The positions are a bitmask relative to base, so matching a syllable
-// allocates nothing.
+// end. The positions are a bitmask from base, so matching allocates nothing.
 type sylMatch func(cat []uint8, base int, in uint64) uint64
 
 // sylReach bounds how far ahead a syllable may run, which is the width of the
@@ -255,8 +253,7 @@ func (b *buffer) indicSyllable(cats, poss []uint8, start, end, kind, num int) {
 		reph = true
 	}
 
-	// The base is the last consonant that is not written below or after the
-	// one before it.
+	// The base is the last consonant not written below or after the previous.
 	base := end
 	seenBelow := false
 	for i := end - 1; i >= limit; i-- {
@@ -282,8 +279,7 @@ func (b *buffer) indicSyllable(cats, poss []uint8, start, end, kind, num int) {
 		}
 	}
 
-	// Everything before the base is written before it, and the base itself
-	// stands where it is.
+	// Everything before the base is written before it, and the base stands.
 	place := make([]uint8, end-start)
 	for i := start; i < end; i++ {
 		place[i-start] = poss[i]
@@ -428,8 +424,7 @@ func (b *buffer) indicReph(start, end int) {
 	b.items[at] = reph
 }
 
-// isHalant reports a glyph that was written as one, which the reordering
-// hangs the reph off.
+// isHalant reports a glyph written as one, which the reph hangs off.
 func (b *buffer) isHalant(i int) bool {
 	return b.items[i].pos == posEnd && !b.items[i].ligated
 }

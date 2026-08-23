@@ -28,8 +28,7 @@ type (
 	ColorParams = gfx.ColorParams
 	// DefaultColorSpaces is what the three device spaces mean.
 	DefaultColorSpaces = gfx.DefaultColorSpaces
-	// Text is what one text showing operator, or a run of them, hands to a
-	// device.
+	// Text is what a text showing operator, or a run of them, hands a device.
 	Text = gfx.Text
 	// TextSpan is a run of glyphs from one font under one text matrix.
 	TextSpan = gfx.TextSpan
@@ -85,8 +84,7 @@ var (
 var DefaultColorParams = gfx.DefaultColorParams
 
 // NewDrawDevice returns a device that renders a page of doc into dst. The
-// document is needed for the glyph cache and for the errors a damaged file
-// records on the way.
+// document holds the glyph cache and the errors a damaged file records.
 func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
 	d := gfx.NewDrawDevice(dst)
 	if doc != nil {
@@ -159,8 +157,7 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// transferTable evaluates a soft mask's /TR into the 256 values a sample can
-// take.
+// transferTable evaluates a soft mask's /TR into 256 values a sample takes.
 func transferTable(fn *Function) *[256]uint8 {
 	if fn == nil {
 		return nil

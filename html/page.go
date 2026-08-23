@@ -28,8 +28,7 @@ type LayoutOptions struct {
 	// FontSize is the size the reader is set to, which every relative length
 	// resolves against. Zero is 16.
 	FontSize float32
-	// UserSheet is a stylesheet applied over the user agent's and under the
-	// book's own.
+	// UserSheet is a stylesheet over the user agent's and under the book's own.
 	UserSheet *Stylesheet
 }
 
@@ -70,8 +69,7 @@ type laidPart struct {
 	tops []float32
 	// height is how far the column reaches.
 	height float32
-	// vertical is a part whose lines run down the page and whose pages run
-	// right to left.
+	// vertical is a part whose lines run down and whose pages run right to left.
 	vertical bool
 }
 
@@ -80,9 +78,8 @@ type Page struct {
 	doc  *Document
 	part *laidPart
 	num  int
-	// top and bottom bound the part of the column the page shows, in CSS
-	// pixels. bottom is where the next page starts, not top plus the page
-	// height.
+	// top and bottom bound the part of the column the page shows, in CSS pixels.
+	// bottom is where the next page starts, not top plus the page height.
 	top, bottom float32
 }
 
@@ -232,8 +229,7 @@ func (d *Document) NumPages() int {
 	return len(d.pages)
 }
 
-// Page returns one page of the book, laying it out first when NumPages or
-// Layout has not.
+// Page returns one page of the book, laying it out when nothing else has.
 func (d *Document) Page(i int) (*Page, error) {
 	d.autoLayout()
 	d.layoutMu.Lock()
@@ -280,8 +276,7 @@ func (d *Document) options() LayoutOptions {
 	return d.opt
 }
 
-// Run draws the page through a device, under a transform from page space in
-// points to the device.
+// Run draws the page through a device, from page space in points to the device.
 func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
 	o := p.doc.options()
 	m := raster.Concat(p.pageMatrix(o), ctm)
@@ -290,8 +285,7 @@ func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
 	return errors.Join(r.errs...)
 }
 
-// pageMatrix maps the column the part was laid out in onto the page, in
-// points.
+// pageMatrix maps the column the part was laid out in onto the page, in points.
 func (p *Page) pageMatrix(o LayoutOptions) raster.Matrix {
 	if p.part != nil && p.part.vertical {
 		// The lines run down the page and the pages run right to left: the
@@ -392,9 +386,8 @@ func (t *textCollector) walk(b *box) {
 				t.b.WriteByte('\n')
 			}
 		}
-		// The rest of the children are the inline boxes the lines were made
-		// of, and say nothing the lines do not, except the ones laid out on
-		// their own.
+		// The rest of the children are the inline boxes the lines were made of,
+		// and say nothing the lines do not, bar the ones laid out on their own.
 		for _, k := range b.kids {
 			if k.ownFlow() {
 				t.walk(k)

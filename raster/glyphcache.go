@@ -24,17 +24,15 @@ type GlyphKey struct {
 const SubPixels = 4
 
 // StrokeSubPixels is SubPixels for a stroked glyph, whose two edges lie close
-// enough together that a quarter pixel moves more coverage than it does under
-// a filled one.
+// enough together that a quarter pixel moves more coverage than under a fill.
 const StrokeSubPixels = 32
 
 // GlyphCache holds rendered glyph masks, bounded by their total size, and
 // drops the least recently used when it is full.
 type GlyphCache struct {
 	// mu guards everything below it. A cache is shared by every goroutine
-	// rendering the same document, and both halves of a lookup move the
-	// entry to the head of the list, so there is no read-only path to
-	// separate out.
+	// rendering the same document, and both halves of a lookup move the entry
+	// to the head of the list, so there is no read-only path to separate out.
 	mu         sync.Mutex
 	max, used  int
 	m          map[GlyphKey]*glyphEntry

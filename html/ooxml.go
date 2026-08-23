@@ -165,8 +165,7 @@ func (n *xnode) num(name string) (float64, bool) {
 	return f, err == nil
 }
 
-// ooxml is the archive an office document is, with the parts it has been
-// asked for held.
+// ooxml is the archive an office document is, holding the parts asked for.
 type ooxml struct {
 	files map[string]*zip.File
 	rels  map[string]map[string]string

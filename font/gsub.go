@@ -186,8 +186,7 @@ func (b *buffer) ligatureSub(d []byte, l *otLookup, off, at int) int {
 		if comps == 0 || lig+4+2*(comps-1) > len(d) {
 			continue
 		}
-		// The components after the first are matched through whatever the
-		// lookup skips.
+		// The components after the first match through whatever the lookup skips.
 		idx := []int{at}
 		p := at
 		ok := true

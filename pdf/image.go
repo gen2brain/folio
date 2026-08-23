@@ -320,8 +320,7 @@ func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	return i.samples(data, bpc, comps, decode, dst, cs, alpha, shrink)
 }
 
-// data returns the image bytes with the byte filters applied, and the image
-// filter that is left.
+// data is the image bytes with the byte filters applied, and what is left.
 func (i *Image) data() ([]byte, Name, Dict, error) {
 	if i.stream != nil {
 		return i.stream.ImageData()
@@ -371,8 +370,7 @@ func (i *Image) stencil(data []byte, bpc int, decode []float64, shrink int) (*ra
 	return sh.Pixmap(), nil
 }
 
-// samples unpacks the image and converts it, then hangs its transparency on
-// the result.
+// samples unpacks the image, converts it and hangs its transparency on it.
 func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte, shrink int) (*raster.Pixmap, error) {
 	if dst == nil {
 		dst = DeviceRGB
@@ -571,8 +569,7 @@ func (u *unpacker) run() {
 	}
 }
 
-// mapped is the palette path for byte samples, which index the table without
-// a bit reader.
+// mapped is the palette path for byte samples, which index without a reader.
 func (u *unpacker) mapped(lut []uint8, rowBytes int) {
 	i, px := u.img, u.px
 	n, m := px.Comps(), px.N
@@ -634,8 +631,7 @@ func (u *unpacker) mapped(lut []uint8, rowBytes int) {
 	}
 }
 
-// keyed reports the alpha of a sample that a one component color key may
-// declare transparent.
+// keyed is the alpha of a sample a one component color key may hide.
 func (u *unpacker) keyed(v uint32) uint8 {
 	if len(u.img.ColorKey) < 2 {
 		return 255
@@ -1025,8 +1021,7 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 	return pix, w, h, 3, nil
 }
 
-// chromaShift is how far a coordinate moves right to index the chroma planes
-// of a subsampled JPEG.
+// chromaShift is how far a coordinate shifts to index a subsampled plane.
 func chromaShift(r image.YCbCrSubsampleRatio) (h, v uint) {
 	switch r {
 	case image.YCbCrSubsampleRatio422:
@@ -1061,8 +1056,7 @@ func ycbcrSamples(m *image.YCbCr, w, h int) []byte {
 	return pix
 }
 
-// imageKey identifies a decoded image: the stream it came from and the shape
-// it was decoded into.
+// imageKey identifies a decoded image: its stream and the shape it took.
 type imageKey struct {
 	stream *syntax.Stream
 	comps  int

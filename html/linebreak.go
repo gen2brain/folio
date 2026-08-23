@@ -62,8 +62,7 @@ const (
 	lbIsPf      = 1 << 7
 	lbIsEast    = 1 << 8
 	lbIsPictUn  = 1 << 9
-	// lbIsDotted marks U+25CC DOTTED CIRCLE, which rule LB28a names on its
-	// own.
+	// lbIsDotted marks U+25CC DOTTED CIRCLE, which rule LB28a names alone.
 	lbIsDotted = 1 << 10
 	// lbIsUpright marks a character that stands upright in vertical text
 	// rather than turning with the line, which is UAX #50.
@@ -178,8 +177,7 @@ func resolve(s string) *lbText {
 	return t
 }
 
-// skipSP walks back over the spaces rules LB8, LB14, LB15a, LB16 and LB17
-// look through.
+// skipSP walks back over the spaces LB8, LB14, LB15a, LB16 and LB17 see past.
 func (t *lbText) skipSP(k int) int {
 	for k >= 0 && t.c[k] == lbSP {
 		k--
@@ -391,8 +389,7 @@ func (t *lbText) action(k int) int {
 	return lbAllowed
 }
 
-// number is rule LB25, which holds a number and the prefixes and postfixes
-// around it together.
+// number is rule LB25: a number and its prefixes and postfixes hold together.
 func (t *lbText) number(k int, a, b lbClass) bool {
 	switch {
 	case (a == lbCL || a == lbCP) && (b == lbPO || b == lbPR) && t.numBack(k-2):

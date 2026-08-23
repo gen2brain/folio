@@ -68,8 +68,7 @@ type entry struct {
 	family string
 	weight int
 	italic bool
-	// once guards the full parse, which happens only for a file that is
-	// chosen.
+	// once guards the full parse, which happens only for a file that is chosen.
 	once sync.Once
 	font *Font
 }
@@ -91,8 +90,7 @@ func (e *entry) load() *Font {
 	return e.font
 }
 
-// index is every font file the machine has, by family and in the order they
-// were found.
+// index is every font file the machine has, by family and in found order.
 type index struct {
 	all    []*entry
 	byName map[string][]*entry
@@ -280,9 +278,8 @@ func abs(v int) int {
 	return v
 }
 
-// Fallback returns a face the machine has that can draw r, and nil when it
-// has none. It is what a document naming a script the base fourteen cannot
-// draw leaves.
+// Fallback returns a face the machine has that can draw r, nil when it has
+// none. It is what a document in a script the base fourteen cannot draw needs.
 func Fallback(r rune, bold, italic bool) *Font {
 	k := scriptOf(r)
 	script := fallbackKey{k, bold, italic, 0}

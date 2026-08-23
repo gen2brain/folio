@@ -208,8 +208,7 @@ func (f *Font) Advance(gid int) float32 {
 	return 0
 }
 
-// GlyphName returns the name a glyph has in the program, or "" when it has
-// none.
+// GlyphName is the name a glyph has in the program, "" when it has none.
 func (f *Font) GlyphName(gid int) string {
 	switch f.Kind {
 	case KindCFF:

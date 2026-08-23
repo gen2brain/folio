@@ -53,8 +53,7 @@ type box struct {
 	inset       *[4]float32
 }
 
-// edgeLine is one segment of the grid a collapsed table draws, in absolute
-// CSS pixels.
+// edgeLine is one segment of the grid a collapsed table draws, in CSS pixels.
 type edgeLine struct {
 	e          Border
 	x, y, w, h float32
@@ -78,8 +77,7 @@ type frag struct {
 	face  face
 	// extra is what justification adds to each space of the run.
 	extra float32
-	// dy is how far vertical-align raises the run above the baseline of the
-	// line it is on.
+	// dy is how far vertical-align raises the run above the line's baseline.
 	dy float32
 	// sub is the box an inline-block put on the line, which is laid out on
 	// its own and moved to where the line ended up.
@@ -132,8 +130,7 @@ func build(n *Node, st Styles) *box {
 	}
 	b := &box{style: s, node: n}
 	// A float and an absolutely placed box are block level whatever display
-	// says, so an inline image can be floated out of the line it was written
-	// in.
+	// says, so an inline image can be floated out of the line it was in.
 	if n.Type == xhtml.ElementNode && s.Display == DisplayInline &&
 		s.Float == FloatNone && s.Position != PosAbsolute {
 		b.kind = inlineBox

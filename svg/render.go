@@ -13,8 +13,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// Options are what a caller may change about a render. A nil pointer is the
-// defaults.
+// Options are what a caller may change about a render; nil is the defaults.
 type Options struct {
 	// PixelLimit bounds the pixel area a drawing may allocate. Zero is the
 	// default of 2^28 and a negative number is no limit at all.
@@ -72,8 +71,7 @@ func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 	return px, err
 }
 
-// Image renders the drawing at the size it asks to be, one device pixel per
-// CSS pixel.
+// Image renders the drawing at the size it asks to be, a pixel per pixel.
 func (p *Page) Image() (*image.RGBA, error) { return p.ImageDPI(96) }
 
 // ImageDPI renders the drawing at a resolution, where 96 is the pixel its
@@ -128,9 +126,8 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 }
 
 // ImageSize renders the drawing into an image of exactly w by h pixels,
-// scaling it to fit and keeping its aspect ratio, which is what an icon drawn
-// at the size a caller has room for wants. A zero for either takes that side
-// from the other.
+// scaling it to fit and keeping its aspect ratio, which is what an icon at
+// the size a caller has room for wants. A zero side is taken from the other.
 func (p *Page) ImageSize(w, h int) (*image.RGBA, error) {
 	b := p.Bounds()
 	if b.X1 <= 0 || b.Y1 <= 0 || (w <= 0 && h <= 0) {

@@ -30,8 +30,7 @@ type xlsx struct {
 	o      *ooxml
 	shared []string
 	styles []xlsxStyle
-	// epoch is the day a serial number counts from, which a workbook may
-	// move to 1904.
+	// epoch is the day a serial number counts from, which may move to 1904.
 	epoch time.Time
 	pages map[string][]byte
 	sheet []byte
@@ -332,8 +331,7 @@ func (c *xlsx) columns(b *strings.Builder, root *xnode) {
 	}
 }
 
-// xlsxMerges is which cells a merged range covers and how far the one it
-// starts at reaches.
+// xlsxMerges is which cells a merged range covers and how far the first goes.
 func xlsxMerges(root *xnode) (map[[2]int]bool, map[[2]int]xlsxSpan) {
 	covered := map[[2]int]bool{}
 	spans := map[[2]int]xlsxSpan{}

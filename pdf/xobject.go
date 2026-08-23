@@ -161,8 +161,7 @@ func (ip *interp) popResources() {
 	}
 }
 
-// hasDefaults reports whether a resource dictionary names any default color
-// space.
+// hasDefaults reports a resource dictionary naming a default color space.
 func (d *Document) hasDefaults(res Dict) bool {
 	return d.f.GetDict(res["ColorSpace"]) != nil
 }

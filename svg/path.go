@@ -245,15 +245,13 @@ func arcTo(p *raster.Path, from raster.Point, rx, ry, rot float32, large, sweep 
 		delta += 2 * math.Pi
 	}
 
-	// A cubic holds a quarter turn to within a rounding error, so the arc is
-	// cut into that many.
+	// A cubic holds a quarter turn to a rounding error; the arc is cut so.
 	n := int(math.Ceil(math.Abs(delta) / (math.Pi / 2)))
 	if n < 1 {
 		n = 1
 	}
 	step := delta / float64(n)
-	// The control points of one segment, F.6a, which is where 4/3 tan(t/4)
-	// comes from.
+	// The control points of one segment, F.6a, where 4/3 tan(t/4) comes from.
 	k := 4.0 / 3.0 * math.Tan(step/4)
 	for i := 0; i < n; i++ {
 		a0 := theta + float64(i)*step

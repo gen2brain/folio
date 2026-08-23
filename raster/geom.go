@@ -203,9 +203,8 @@ func (m Matrix) Invert() (Matrix, bool) {
 	}, true
 }
 
-// Expansion is the square root of the absolute determinant: how much the
-// transform scales lengths on average. Line width and flatness are measured
-// with it.
+// Expansion is the square root of the absolute determinant: how much a
+// transform scales lengths on average, and what line width and flatness use.
 func (m Matrix) Expansion() float32 {
 	return float32(math.Sqrt(math.Abs(float64(m.Det()))))
 }

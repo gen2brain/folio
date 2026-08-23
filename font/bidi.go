@@ -2,8 +2,7 @@ package font
 
 import "slices"
 
-// The bidirectional character classes of UAX #9, in the order the generated
-// table numbers them.
+// The bidirectional classes of UAX #9, in the order the tables number them.
 type bidiClass uint8
 
 const (
@@ -85,8 +84,7 @@ func BidiLevels(text []rune, base int) []byte {
 	return bidiResolve(text, base).line(0, len(text))
 }
 
-// BidiOrder is the order a line of the given levels is drawn in, left to
-// right, rule L2.
+// BidiOrder is the order a line of the given levels draws in, rule L2.
 func BidiOrder(levels []byte) []int {
 	return bidiOrder(levels)
 }
@@ -172,8 +170,7 @@ func matchingPDI(class []bidiClass, at int) int {
 	return len(class)
 }
 
-// firstStrong is the level P2 and P3 give a range. What an isolate holds is
-// not looked at.
+// firstStrong is the level P2 and P3 give a range, ignoring isolates.
 func firstStrong(class []bidiClass, from, to int) byte {
 	for i := from; i < to; i++ {
 		switch c := class[i]; {
@@ -294,8 +291,7 @@ func (b *bidiText) explicit(class []bidiClass) {
 	}
 }
 
-// runSeq is one isolating run sequence and the directions X10 bounds it
-// with.
+// runSeq is one isolating run sequence and the directions X10 bounds it with.
 type runSeq struct {
 	pos      []int
 	sos, eos bidiClass
@@ -613,8 +609,7 @@ func bidiOrder(levels []byte) []int {
 	return order
 }
 
-// bidiMirror is what rule L4 draws in place of a character, or the character
-// itself.
+// bidiMirror is what rule L4 draws for a character, or the character itself.
 func bidiMirror(r rune) rune {
 	lo, hi := 0, len(bidiMirrored)
 	for lo < hi {

@@ -10,8 +10,7 @@ import (
 	"github.com/gen2brain/folio/svg"
 )
 
-// picture is a decoded raster image, which gfx holds because the SVG side
-// decodes them too.
+// picture is a decoded raster image, in gfx because the SVG side decodes too.
 type picture = gfx.Picture
 
 // visual is what an element draws: a raster picture, or a drawing that runs
@@ -158,8 +157,7 @@ func attrLength(n *Node, name string) float32 {
 	return float32(f)
 }
 
-// drawnText is what a spine item that is a drawing says, and nothing for one
-// that is a picture.
+// drawnText is what a spine item that is a drawing says, nothing for a picture.
 func (d *Document) drawnText(it Item) (string, error) {
 	raw, err := d.Read(it.Path)
 	if err != nil {

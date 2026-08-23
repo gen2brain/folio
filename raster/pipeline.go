@@ -1,7 +1,6 @@
 package raster
 
-// Paint is the source color of one drawing operation and everything that
-// modulates it.
+// Paint is the source color of a drawing operation and what modulates it.
 type Paint struct {
 	// Color has the destination's N components, straight, not premultiplied.
 	Color []uint8

@@ -65,10 +65,9 @@ func openMOBI(r io.ReaderAt, size int64) (*Document, error) {
 		manifest: []Item{item},
 		meta:     m.meta,
 	}
-	// The pictures are numbered from one, which is what a recindex holds.
-	// They belong to the file rather than to either half of a hybrid one, so
-	// they are counted from the record the first header names and over every
-	// record there is.
+	// The pictures are numbered from one, which is what a recindex holds. They
+	// belong to the file rather than either half of a hybrid one, so they count
+	// from the record the first header names and over every record there is.
 	if first <= 0 || first >= len(all) {
 		first, all = next, recs
 	}
@@ -284,8 +283,7 @@ func join(a, b string) string {
 	return a + ", " + b
 }
 
-// text decompresses the document and returns it with the index of the first
-// record after it.
+// text decompresses the document and the index of the first record after it.
 func (m mobi) text(recs [][]byte) ([]byte, int) {
 	n := m.records
 	if n <= 0 || n >= len(recs) {
@@ -361,8 +359,7 @@ func trailingSize(rec []byte) int {
 	return v
 }
 
-// palmDoc appends one record decompressed, which is LZ77 over the output so
-// far.
+// palmDoc appends one record decompressed, LZ77 over the output so far.
 func palmDoc(out, in []byte) []byte {
 	for i := 0; i < len(in); {
 		c := in[i]
@@ -439,8 +436,7 @@ func fromCP1252(b []byte) []byte {
 	return out
 }
 
-// exthNumber reads a numeric EXTH record, written in as many bytes as it
-// needs.
+// exthNumber reads a numeric EXTH record, in as many bytes as it needs.
 func exthNumber(b []byte) uint32 {
 	if len(b) == 0 || len(b) > 4 {
 		return 0
@@ -575,8 +571,7 @@ func mobiLink(tag []byte) []byte {
 	return tag
 }
 
-// base32Number reads the number KF8 names a resource by, whose digits run 0
-// to 9 and then A to V.
+// base32Number reads the number KF8 names a resource by, in digits 0 to V.
 func base32Number(b []byte) (uint32, bool) {
 	if len(b) == 0 || len(b) > 6 {
 		return 0, false
@@ -595,8 +590,7 @@ func base32Number(b []byte) (uint32, bool) {
 	return v, true
 }
 
-// mobiOwnTag reports a tag in one of the namespaces MOBI puts its own
-// elements in.
+// mobiOwnTag reports a tag in a namespace MOBI puts its own elements in.
 func mobiOwnTag(tag []byte) bool {
 	name := tag[1:]
 	if len(name) > 0 && name[0] == '/' {

@@ -2,13 +2,11 @@ package gfx
 
 import "github.com/gen2brain/folio/raster"
 
-// Shade is a smooth gradation of color filling an area: a PDF shading, or a
-// CSS gradient.
+// Shade is a smooth gradation of color over an area, a shading or a gradient.
 type Shade interface {
 	// Transform maps the shading's own space into the space ctm starts from.
 	Transform() raster.Matrix
-	// Bounds is the shading's own bounding box in its own space, and empty
-	// when it has none.
+	// Bounds is the shading's bounding box in its own space, empty for none.
 	Bounds() raster.Rect
 	// ColorSpace is the space the shading's colors are in.
 	ColorSpace() *ColorSpace

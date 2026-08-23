@@ -29,13 +29,11 @@ type Parser struct {
 func (p *Parser) Lexer() *Lexer { return p.lex }
 
 // AllowStreams sets whether a stream keyword may follow a dictionary. It is
-// false inside object streams and content streams, where a stream cannot
-// appear.
+// false inside object and content streams, where a stream cannot appear.
 func (p *Parser) AllowStreams(ok bool) { p.allowStreams = ok }
 
 // NewParser reads objects from a lexer. The file is what an indirect
-// reference is resolved against, and may be nil for a stream of objects that
-// refers to nothing.
+// reference resolves against, and may be nil for objects that refer to none.
 func NewParser(l *Lexer, f *File) *Parser {
 	p := &Parser{lex: l, doc: f, allowStreams: true}
 	p.refill()

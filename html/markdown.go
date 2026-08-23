@@ -240,8 +240,7 @@ func mdLoose(n *Node) bool {
 	return false
 }
 
-// table writes a pipe table, and the HTML itself for one Markdown cannot
-// hold.
+// table writes a pipe table, and the HTML itself for one Markdown cannot hold.
 func (w *md) table(n *Node, depth int) {
 	rows := mdRows(n, depth)
 	if rows == nil {
@@ -277,8 +276,7 @@ func (w *md) table(n *Node, depth int) {
 	w.block(b.String())
 }
 
-// mdRows is the cells of a table, and nothing for one a pipe table cannot
-// hold.
+// mdRows is the cells of a table, nothing for one a pipe table cannot hold.
 func mdRows(n *Node, depth int) [][]string {
 	var rows [][]string
 	ok := true
@@ -498,8 +496,7 @@ func mdLead(s string) string {
 	return s
 }
 
-// mdURL writes a link address, wrapping one with a space in angle
-// brackets.
+// mdURL writes a link address, wrapping one with a space in angle brackets.
 func mdURL(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.ContainsAny(s, " ()") {

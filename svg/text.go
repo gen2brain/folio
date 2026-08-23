@@ -144,8 +144,7 @@ func trimTrailing(cs []char) []char {
 	return cs
 }
 
-// textRun walks one element of a text, placing its characters and following
-// its tspans.
+// textRun walks one element of a text, placing its characters and its tspans.
 func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled bool) {
 	if depth > maxNesting {
 		return
@@ -156,8 +155,7 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 			return
 		}
 	}
-	// An absolute position starts a new chunk, and a relative one only moves
-	// the pen.
+	// An absolute position starts a chunk, a relative one only moves the pen.
 	xs := lengths(r.prop(n, "x"), st.vw, st.em)
 	ys := lengths(r.prop(n, "y"), st.vh, st.em)
 	dxs := lengths(r.prop(n, "dx"), st.vw, st.em)

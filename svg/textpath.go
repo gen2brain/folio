@@ -18,8 +18,7 @@ type pathSeg struct {
 	at, span float32
 }
 
-// pathFlatness is how far the polyline a character is placed on may stray
-// from the curve.
+// pathFlatness is how far a character's polyline may stray from the curve.
 const pathFlatness = 0.1
 
 // flattenPath measures a path into segments. A jump from one subpath to the

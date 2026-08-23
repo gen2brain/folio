@@ -282,8 +282,7 @@ func (d *Document) fromHeadings() []Outline {
 	return nest(flat, level)
 }
 
-// heading is what depth an element is a heading at, and zero for anything
-// else.
+// heading is what depth an element is a heading at, zero for anything else.
 func heading(a atom.Atom) int {
 	switch a {
 	case atom.H1:

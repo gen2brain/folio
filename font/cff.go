@@ -15,8 +15,7 @@ type cffFont struct {
 	localSubrs  [][]byte
 	strings     [][]byte
 
-	// charset maps a glyph to its name identifier, or to its CID in a CID
-	// keyed font.
+	// charset maps a glyph to its name identifier, or its CID in a CID font.
 	charset []uint16
 	enc     *[256]string
 

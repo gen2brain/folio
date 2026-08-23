@@ -13,8 +13,7 @@ type Options struct {
 	// Nil means DeviceRGB. It must have one, three or four components.
 	ColorSpace *ColorSpace
 
-	// Alpha adds an alpha channel, and the page then starts transparent
-	// rather than white.
+	// Alpha adds an alpha channel, and the page starts transparent, not white.
 	Alpha bool
 
 	// PixelLimit bounds the area a page may allocate, in pixels. Zero means

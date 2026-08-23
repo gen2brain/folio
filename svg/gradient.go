@@ -87,9 +87,8 @@ func (g *gradient) Shader(model raster.Model, ctm raster.Matrix, box raster.Rect
 }
 
 // ramp turns a fraction of the whole table into a fraction of one period,
-// which is what makes a repeated or a reflected gradient out of a padded one:
-// the table covers every period the shape reaches and the geometry is
-// stretched to match.
+// which makes a repeated or a reflected gradient out of a padded one: the
+// table covers every period the shape reaches and the geometry stretches.
 func (g *gradient) ramp(t float32) float32 {
 	if g.reps <= 1 {
 		return t
@@ -125,8 +124,7 @@ func (g *gradient) spread(mode string, lo, hi float32) {
 	}
 	g.first, g.reps, g.mirror = first, last-first, mode == "reflect"
 	if g.radial {
-		// A radial gradient repeats outwards from its center, so only the
-		// far end moves.
+		// A radial gradient repeats outwards from its center, so the far end moves.
 		g.r1 *= float32(g.reps)
 		return
 	}
@@ -185,8 +183,7 @@ func (g *gradient) axisRange(box raster.Rect) (lo, hi float32) {
 	return lo, hi
 }
 
-// at is the color a fraction along the ramp, which is the two stops either
-// side of it mixed.
+// at is the color a fraction along the ramp, the two stops either side mixed.
 func (g *gradient) at(t float32) [3]float32 {
 	s := g.stops
 	if t <= s[0].offset {
@@ -365,8 +362,7 @@ func (g *gradient) solid() {
 }
 
 // ancestral reads a property off an element or the nearest one it is written
-// inside, which is how a definition sees what it inherits without ever being
-// walked into.
+// inside, so a definition sees what it inherits without being walked into.
 func (r *runner) ancestral(n *node, name string) string {
 	for i := 0; n != nil && i < maxNesting*4; i++ {
 		if v := strings.TrimSpace(r.prop(n, name)); v != "" && v != "inherit" {
@@ -405,8 +401,7 @@ func gradGeom(name string) bool {
 	return false
 }
 
-// serverID is the element a url() paint names, and empty for a paint that
-// names none.
+// serverID is the element a url() paint names, empty for one that names none.
 func serverID(value string) string {
 	v := strings.TrimSpace(value)
 	if !strings.HasPrefix(v, "url(") {

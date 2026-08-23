@@ -136,9 +136,8 @@ type BaseDevice struct {
 }
 
 // EnterGlyph reports whether a glyph procedure may run and pushes it, and
-// LeaveGlyph pops it. A procedure that reaches itself stops at the cycle
-// rather than at the nesting limit, because the work a cycle does doubles at
-// every turn.
+// LeaveGlyph pops it. One that reaches itself stops at the cycle rather than
+// at the nesting limit, because the work a cycle does doubles every turn.
 func (b *BaseDevice) EnterGlyph(key any) bool {
 	if len(b.running) >= maxGlyphDepth {
 		return false

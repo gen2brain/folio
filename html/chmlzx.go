@@ -48,8 +48,7 @@ func lzxSlots(window int) int {
 	return window * 2
 }
 
-// lzxBits reads the stream as 16 bit little endian words, most significant
-// bit of each first.
+// lzxBits reads the stream as 16 bit little endian words, high bit first.
 type lzxBits struct {
 	buf  []byte
 	n    uint16

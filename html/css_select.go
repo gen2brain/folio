@@ -72,8 +72,7 @@ const (
 )
 
 // parseSelectors reads a comma separated selector list. It returns nothing
-// when any one of them fails: a rule with a selector this cannot read is
-// dropped whole.
+// when one of them fails: a rule with a selector this cannot read is dropped.
 func parseSelectors(toks []cssToken) ([]Selector, bool) {
 	if len(toks) == 0 {
 		return nil, false
@@ -150,8 +149,7 @@ func reverse(p []compound) {
 	}
 }
 
-// parseCompound reads one compound selector and counts it into the
-// specificity.
+// parseCompound reads one compound selector and counts its specificity.
 func parseCompound(toks []cssToken, a, b, c *int) (compound, []cssToken, bool) {
 	var cur compound
 	first, n := true, 0

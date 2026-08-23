@@ -25,8 +25,7 @@ type Styles struct {
 	after  map[*Node]*Style
 }
 
-// Of returns the style of an element, and of the nearest element above a
-// text node.
+// Of is the style of an element, or of the nearest element above a text node.
 func (s Styles) Of(n *Node) *Style {
 	for ; n != nil; n = n.Parent {
 		if st, ok := s.of[n]; ok {
@@ -255,8 +254,7 @@ type longhand struct {
 	toks []cssToken
 }
 
-// The sides a box property is written in, in the order one to four values
-// fill them.
+// The sides a box property is written in, in the order values fill them.
 var boxSides = [4]string{"-top", "-right", "-bottom", "-left"}
 
 // expand splits a shorthand into the longhands it sets.
@@ -543,8 +541,7 @@ func splitSlash(p []cssToken) ([]cssToken, []cssToken, bool) {
 
 func isSlash(t cssToken) bool { return t.kind == cssDelim && t.delim == '/' }
 
-// splitSpace cuts a value into the parts whitespace separates at the top
-// level.
+// splitSpace cuts a value into the parts space separates at the top level.
 func splitSpace(toks []cssToken) [][]cssToken {
 	var out [][]cssToken
 	start, depth := 0, 0

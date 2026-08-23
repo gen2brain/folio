@@ -116,8 +116,7 @@ func (c *docx) title() string {
 	return "Document"
 }
 
-// metadata reads what the document says about itself, which lives outside the
-// document part.
+// metadata reads what the document says about itself, outside its own part.
 func (c *docx) metadata() Metadata {
 	var m Metadata
 	root, err := c.o.part("docProps/core.xml")
@@ -142,8 +141,7 @@ func (c *docx) metadata() Metadata {
 	return m
 }
 
-// pageBox is the page the section asks for, which a caller may take instead
-// of choosing one.
+// pageBox is the page the section asks for, which a caller may take as is.
 func (c *docx) pageBox(body *xnode) LayoutOptions {
 	var o LayoutOptions
 	sect := body.child("sectPr")
@@ -199,8 +197,7 @@ func (c *docx) readStyles() {
 	}
 }
 
-// readNotes holds the footnotes and endnotes, which are written inline where
-// they are referred to.
+// readNotes holds the footnotes and endnotes, written inline where cited.
 func (c *docx) readNotes() {
 	c.notes = map[string]*xnode{}
 	for _, part := range []string{"word/footnotes.xml", "word/endnotes.xml"} {
@@ -263,8 +260,7 @@ func (c *docx) readNumbering() {
 	}
 }
 
-// writeStyles turns the document's own styles into the classes the generated
-// markup names.
+// writeStyles turns the document's styles into the classes the markup names.
 func (c *docx) writeStyles() {
 	if c.dpPr != nil || c.drPr != nil {
 		if v := c.rules(c.dpPr, c.drPr); v != "" {
@@ -476,8 +472,7 @@ func numID(pPr *xnode) string {
 	return ""
 }
 
-// listOf is which level of a list a paragraph sits at, and whether it is in
-// one at all.
+// listOf is which level of a list a paragraph sits at, and whether at all.
 func (c *docx) listOf(pPr *xnode) (int, bool) {
 	if pPr == nil {
 		return 0, false
@@ -710,8 +705,7 @@ var (
 	}
 )
 
-// emphasis is the elements a run's properties and its style mean, innermost
-// last.
+// emphasis is the elements a run's properties and style mean, innermost last.
 func (c *docx) emphasis(rPr *xnode, style string) []string {
 	var out []string
 	if c.monospaced(rPr, style, 0) {
@@ -740,8 +734,7 @@ func (c *docx) emphasis(rPr *xnode, style string) []string {
 	return out
 }
 
-// monospaced reports a run written as code, which a style names or a face
-// says.
+// monospaced reports a run written as code, by its style or by its face.
 func (c *docx) monospaced(rPr *xnode, style string, depth int) bool {
 	if depth > ooxmlMaxDepth {
 		return false
@@ -833,8 +826,7 @@ func emu(v string) float64 {
 	return round2(n / emuPerPixel)
 }
 
-// cssClass is the name a style identifier is written as, which has to be one
-// a selector may carry.
+// cssClass is the name a style identifier takes, one a selector may carry.
 func cssClass(id string) string {
 	var b strings.Builder
 	b.WriteString("s-")

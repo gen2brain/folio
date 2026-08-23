@@ -141,8 +141,7 @@ func (b *imageBlitter) blit(x, y, w int, flat uint8, cover []uint8) {
 }
 
 // compose puts one sampled pixel down. The source is premultiplied, so the
-// color takes the operation's alpha and only the destination takes the
-// source's.
+// color takes the operation's alpha and only the destination the source's.
 func (b *imageBlitter) compose(row, src []uint8, a uint8) {
 	n := b.dst.Comps()
 	if b.stencil {
@@ -174,8 +173,7 @@ func (b *imageBlitter) compose(row, src []uint8, a uint8) {
 }
 
 // sample reads one source pixel per destination pixel of the span. The sums
-// keep their association: a float32 sum that reassociates lands on a different
-// sample at the seams.
+// keep their association, or they land on a different sample at the seams.
 func (b *imageBlitter) sample(x, y, w int, out []uint8) {
 	n := b.src.Comps()
 	fy := float32(y) + 0.5
@@ -352,9 +350,8 @@ func ifloor32(v float32) int {
 	return i
 }
 
-// MulImage multiplies an alpha only pixmap by the alpha of src, sampled
-// through inv, which maps a pixel of p to a pixel of src. It is how a stencil
-// mask narrows a clip.
+// MulImage multiplies an alpha only pixmap by the alpha of src through inv,
+// which maps a pixel of p to one of src, and is how a stencil mask clips.
 func (p *Pixmap) MulImage(src *Pixmap, inv Matrix) {
 	if src == nil || src.W == 0 || src.H == 0 {
 		return

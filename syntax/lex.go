@@ -62,8 +62,7 @@ func (l *Lexer) skipSpace() {
 	}
 }
 
-// skipLine advances past the next end of line, which is where stream data
-// begins.
+// skipLine advances past the end of the line, where stream data begins.
 func (l *Lexer) skipLine() {
 	for l.pos < len(l.buf) {
 		c := l.buf[l.pos]
@@ -106,9 +105,8 @@ func (l *Lexer) Next() (obj Object, ok bool) {
 	return op.Object(), true
 }
 
-// An Operand is one token, with a number left as a number rather than boxed
-// into an Object. A content stream is almost entirely numbers, and boxing each
-// one is an allocation.
+// An Operand is one token, a number left as a number rather than boxed into
+// an Object, because a content stream is almost all numbers and boxing costs.
 type Operand struct {
 	// Num is the value when Obj is nil.
 	Num float64
@@ -433,8 +431,7 @@ func (l *Lexer) name() Name {
 	return Name(out)
 }
 
-// command reads a bare token: an operator, or true, false, null, or one of the
-// structural words.
+// command reads a bare token: an operator, true, false, null or a keyword.
 func (l *Lexer) command() Object {
 	start := l.pos
 	for l.pos < len(l.buf) && isRegular(l.buf[l.pos]) {

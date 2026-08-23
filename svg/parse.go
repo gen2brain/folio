@@ -27,8 +27,7 @@ func (p *scanner) space() {
 	}
 }
 
-// sep steps over the whitespace and the one comma a list may put between two
-// numbers.
+// sep steps over the space and the one comma a list may put between numbers.
 func (p *scanner) sep() {
 	p.space()
 	if p.i < len(p.s) && p.s[p.i] == ',' {
@@ -280,10 +279,9 @@ func tan32(deg float32) float32 {
 	return float32(math.Tan(float64(deg) * math.Pi / 180))
 }
 
-// atOrigin turns a transform about the point transform-origin names instead of
-// about the origin, CSS Transforms 1 section 8. The default reference box of
-// an SVG element is its viewport, so a keyword and a percentage are a fraction
-// of that.
+// atOrigin turns a transform about the point transform-origin names rather
+// than the origin, CSS Transforms 1 section 8. An SVG element's reference box
+// is its viewport, so a keyword and a percentage are a fraction of that.
 func atOrigin(m raster.Matrix, s string, vw, vh, em float32) raster.Matrix {
 	dx, dy, ok := origin(s, vw, vh, em)
 	if !ok || (dx == 0 && dy == 0) {

@@ -192,8 +192,8 @@ func (f *File) startXref() (int64, error) {
 	return int64(n), nil
 }
 
-// readXrefSection reads either a classic table or an xref stream at off and
-// returns its trailer.
+// readXrefSection reads a classic table or an xref stream at off, and the
+// trailer that comes with it.
 func (f *File) readXrefSection(off int64) (Dict, error) {
 	if off < 0 || off >= int64(len(f.buf)) {
 		return nil, fmt.Errorf("%w: xref offset %d out of range", ErrInvalid, off)
@@ -281,8 +281,7 @@ func readXrefEntry(l *Lexer) (off int64, gen int64, kind uint8, err error) {
 	return int64(v1), int64(v2), kind, nil
 }
 
-// readXrefStream reads a /Type /XRef stream, which is both the table and the
-// trailer.
+// readXrefStream reads a /Type /XRef stream, both the table and the trailer.
 func (f *File) readXrefStream(p *Parser, off int64) (Dict, error) {
 	obj, err := p.indirectAny()
 	if err != nil {

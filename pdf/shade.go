@@ -10,8 +10,7 @@ type Shade struct {
 	// Matrix is the pattern matrix when the shading came from a pattern, and
 	// the identity when it came from sh.
 	Matrix raster.Matrix
-	// BBox is the shading's own bounding box in its own space, empty when it
-	// has none.
+	// BBox is the shading's bounding box in its own space, empty for none.
 	BBox       raster.Rect
 	Background []float64
 	Coords     []float64
@@ -147,8 +146,7 @@ func (s *Shade) Coord6() [6]float32 {
 	return out
 }
 
-// Domain4 returns the /Domain of a type 1 shading, which defaults to the unit
-// square.
+// Domain4 is the /Domain of a type 1 shading, the unit square by default.
 func (s *Shade) Domain4() [4]float32 {
 	out := [4]float32{0, 1, 0, 1}
 	for i := 0; i < 4 && i < len(s.Domain); i++ {

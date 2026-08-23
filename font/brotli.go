@@ -904,8 +904,7 @@ func (s *brotliState) distance() (int, error) {
 	return d, nil
 }
 
-// ringDistance answers one of the sixteen short codes from the four
-// distances used last.
+// ringDistance answers one of the sixteen short codes from the last four.
 func (s *brotliState) ringDistance(code int) int {
 	if code <= 3 {
 		s.distContext = 1 >> code
@@ -959,8 +958,7 @@ func (s *brotliState) dictionaryWord(address, length, distance int) (int, error)
 	return len(s.out) - n, nil
 }
 
-// brotliTransform appends a dictionary word through one of the transforms of
-// RFC 7932.
+// brotliTransform appends a dictionary word through an RFC 7932 transform.
 func brotliTransform(dst, word []byte, index int) []byte {
 	t := brotliTransforms[index]
 	prefix := brotliAffix(t[0])

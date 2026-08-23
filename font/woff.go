@@ -17,9 +17,8 @@ const (
 // isWOFF reports the container a web font is delivered in.
 func isWOFF(b []byte) bool { return len(b) >= 4 && string(b[:4]) == "wOFF" }
 
-// parseWOFF unpacks a web font into the sfnt inside it. The container is a
-// header, a table directory and the tables themselves, each stored or
-// deflated on its own.
+// parseWOFF unpacks a web font into the sfnt inside it: a header, a table
+// directory and the tables, each of them stored or deflated on its own.
 func parseWOFF(data []byte) (*Font, error) {
 	if len(data) < 44 {
 		return nil, fmt.Errorf("%w: %d bytes of WOFF", ErrInvalid, len(data))

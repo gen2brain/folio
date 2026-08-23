@@ -113,8 +113,7 @@ func visualText(s string, rtl bool) string {
 }
 
 // mirrorText is a run with rule L4 applied and nothing else, which is what
-// the shaper is handed: it puts the glyphs in the order they are drawn
-// itself.
+// the shaper is handed: it puts the glyphs in drawing order itself.
 func mirrorText(s string, rtl bool) string {
 	if !rtl {
 		return s
@@ -335,8 +334,7 @@ func plainBorder(s *Style) bool {
 // The distance along a tangent that turns a cubic into a quarter ellipse.
 const kappa = 0.5522847498307936
 
-// roundRect adds a rectangle with rounded corners to a path, clockwise from
-// the top left.
+// roundRect adds a rounded rectangle to a path, clockwise from top left.
 func roundRect(path *raster.Path, x, y, w, h float32, r [4]radius) {
 	x1, y1 := x+w, y+h
 	path.MoveTo(x+r[0].X, y)
@@ -544,6 +542,5 @@ func colorOf(c Color) ([]float32, float32) {
 // subst is a font program a device draws glyphs from, which is all a
 // substitute face needs to be.
 
-// substFont is gfx.FontOf, which wraps a program as a font a device can draw
-// glyphs out of.
+// substFont is gfx.FontOf, wrapping a program as a font a device can draw.
 func substFont(prog *font.Font) gfx.Font { return gfx.FontOf(prog) }

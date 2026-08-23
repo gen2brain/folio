@@ -17,9 +17,8 @@ type paint struct {
 	// the opacity property that applies.
 	color [3]float32
 	alpha float32
-	// current says the paint was written as currentColor, which is the color
-	// property of whatever element it is finally used on rather than of the
-	// one that wrote it.
+	// current says the paint was written as currentColor, the color property
+	// of whatever element uses it rather than of the one that wrote it.
 	current bool
 }
 
@@ -147,8 +146,7 @@ func hexColor(s string) (paint, bool) {
 	return paint{color: v, alpha: a}, true
 }
 
-// funcColor reads the four functional forms, rgb and hsl with or without the
-// fourth component.
+// funcColor reads the four functional forms of rgb and hsl, alpha or not.
 func funcColor(name, args string) (paint, bool) {
 	f := strings.FieldsFunc(args, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '/'

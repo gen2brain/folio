@@ -83,8 +83,7 @@ var base14 = [3][4]string{
 	familyMono:  {"Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"},
 }
 
-// face is a font program at a size: what a run of text is measured and drawn
-// with.
+// face is a font program at a size, what a run of text measures and draws with.
 type face struct {
 	prog *font.Font
 	m    *faceMetrics
@@ -159,8 +158,7 @@ func (m *faceMetrics) fill() {
 	m.space = m.ascii[' '].adv
 }
 
-// read looks a character up in the program, in text space where one unit is
-// the font size.
+// read looks a character up in the program, in text space of one unit an em.
 func (m *faceMetrics) read(r rune) glyph {
 	gid := m.prog.GIDForRune(r)
 	if gid <= 0 {
@@ -289,8 +287,7 @@ func smallCapsFace(f face) face {
 	return f
 }
 
-// smallCapsScale is how much smaller a synthesised small capital is than the
-// capitals around it.
+// smallCapsScale is how much a synthesised small capital shrinks by.
 const smallCapsScale = 0.8
 
 // width is how much room a run of text takes.
@@ -372,8 +369,7 @@ func (f face) standsUp(r rune) bool {
 // gid is the glyph a character is drawn with, and -1 when the face has none.
 func (f face) gid(r rune) int { return int(f.m.glyph(r).gid) }
 
-// ascent and descent are how far the face reaches above and below the
-// baseline at its size.
+// ascent and descent are how far the face reaches either side of the baseline.
 func (f face) ascent() float32  { return f.m.ascent * f.size }
 func (f face) descent() float32 { return -f.m.descent * f.size }
 

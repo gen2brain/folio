@@ -40,8 +40,7 @@ func (p *Page) StructuredTextOptions(o *TextOptions) (*TextPage, error) {
 	return st, err
 }
 
-// WriteSVG writes the page as SVG. Text, borders and pictures come out as
-// themselves.
+// WriteSVG writes the page as SVG, with text, borders and pictures as such.
 func (p *Page) WriteSVG(w io.Writer) error {
 	dev := gfx.NewSVGDevice(w, p.Bounds())
 	err := p.Run(dev, raster.Identity)
@@ -56,8 +55,7 @@ func (p *Page) SVG() (string, error) {
 }
 
 // WriteHTML writes the page as HTML: the text where it was laid out, in the
-// face and the colour it was drawn with. Read hands over the markup the part
-// was written in.
+// face and colour it was drawn with. Read gives the markup it was written in.
 func (p *Page) WriteHTML(w io.Writer) error {
 	st, err := p.StructuredText()
 	if st == nil {

@@ -2,8 +2,7 @@ package pdf
 
 import "github.com/gen2brain/folio/raster"
 
-// Link is a link annotation: the area of the page it covers, and where
-// following it goes.
+// Link is a link annotation: the area it covers and where following it goes.
 type Link struct {
 	// Rect is the area the link covers, in page space at 72 dots per inch.
 	Rect raster.Rect

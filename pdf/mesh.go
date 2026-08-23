@@ -279,8 +279,7 @@ func (r *meshReader) patches(tensor bool) {
 }
 
 // meshJoin puts the points and colors just read into the grid, keeping the
-// edge and the two colors the flag says this patch shares with the one
-// before it.
+// edge and two colors the flag says this patch shares with the one before.
 func meshJoin(p [16]raster.Point, c [4][4]uint8, q [16]raster.Point, rc [4][4]uint8, f uint32) ([16]raster.Point, [4][4]uint8) {
 	var nc [4][4]uint8
 	switch f {

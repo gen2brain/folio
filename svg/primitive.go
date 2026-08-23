@@ -120,8 +120,7 @@ func (r *runner) primitives(f *node, depth int) []*node {
 	return nil
 }
 
-// space is the color space a primitive works in, linear unless it says
-// otherwise.
+// space is the color space a primitive works in, linear by default.
 func (p *pipe) space(k *node) bool {
 	v := strings.TrimSpace(p.r.prop(k, "color-interpolation-filters"))
 	if (v == "" || v == "auto" || v == "inherit") && p.f != nil {
@@ -453,8 +452,7 @@ func pair(s string) (float32, float32) {
 	return 0, 0
 }
 
-// number reads an attribute written as a plain number, with no unit and no
-// percentage.
+// number reads an attribute written as a plain number, no unit or percent.
 func number(s string, def float32) float32 {
 	if v, err := strconv.ParseFloat(strings.TrimSpace(s), 32); err == nil {
 		return float32(v)
@@ -767,8 +765,7 @@ func (p *pipe) componentTransfer(k *node, lin bool) *fimage {
 	return &fimage{px: px, lin: lin, sub: p.full}
 }
 
-// transferTable is one feFunc as a lookup, and nil for one that changes
-// nothing.
+// transferTable is one feFunc as a lookup, nil for one that changes nothing.
 func transferTable(c *node) *[256]uint8 {
 	v := numberList(c.attr["tableValues"])
 	kind := strings.TrimSpace(c.attr["type"])
@@ -815,8 +812,7 @@ func transferTable(c *node) *[256]uint8 {
 	return &t
 }
 
-// morph is feMorphology: every sample becomes the extreme of the box around
-// it.
+// morph is feMorphology: a sample becomes the extreme of the box around it.
 func morph(px *raster.Pixmap, rx, ry float32, erode bool) {
 	cols := min(int(math.Ceil(float64(rx)))*2, px.W)
 	rows := min(int(math.Ceil(float64(ry)))*2, px.H)

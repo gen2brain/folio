@@ -32,8 +32,7 @@ type ColorSpace struct {
 	Base *ColorSpace
 	// Alternate is the space a Separation or DeviceN falls back to.
 	Alternate *ColorSpace
-	// Lookup is the palette of an Indexed space, HiVal+1 entries of Base.N
-	// bytes each.
+	// Lookup is the palette of an Indexed space: HiVal+1 entries of Base.N bytes.
 	Lookup []byte
 	// HiVal is the largest index of an Indexed space.
 	HiVal int
@@ -124,9 +123,9 @@ type Tint interface {
 	Eval(out []float64, in ...float64) []float64
 }
 
-// Convert writes a color of this space into out, in the space out's length
-// implies: gray for one component, CMYK for four, RGB otherwise. A nil space
-// converts black.
+// Convert writes a color of this space into out, in the space out's
+// length implies: gray for one component, CMYK for four, RGB otherwise.
+// A nil space converts black.
 func (cs *ColorSpace) Convert(c []float32, out []uint8) {
 	if cs == nil {
 		cs = DeviceGray

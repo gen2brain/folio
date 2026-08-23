@@ -21,15 +21,12 @@ const (
 	startJBudget = 1 << 22
 )
 
-// jbBitmap is one byte a pixel, one for black, which is what the template
-// windows address and what the region operators combine.
 // A jbBitmap is one bit a pixel, like the page it is composited into. A region
 // the size of a page is the largest thing a stream asks for, and a byte a pixel
 // made it eight times what the page itself costs.
 //
-// xoff is where column zero sits inside the first byte of a row, which is what
-// lets sub share the samples of a bitmap it does not start at a byte boundary
-// of.
+// xoff is where column zero sits inside the first byte of a row, which lets
+// sub share the samples of a bitmap it does not start at a byte boundary of.
 type jbBitmap struct {
 	w, h, stride int
 	xoff         int
@@ -514,8 +511,7 @@ func jbTypical(ref *jbBitmap, x, y int) (uint8, bool) {
 
 // refTemplate is a refinement template whose every point lies in the three by
 // three square around the pixel. cells holds one entry per point, as the row
-// it reads and the bit of that row's window, and the label is those bits in
-// order from the top.
+// it reads and the bit of that window, and the label is those bits top down.
 type refTemplate struct {
 	coding, reference *[512]uint32
 	rbits             uint
@@ -539,8 +535,7 @@ func (c *jbCoder) refTemplate(template int, coding, reference []jbPoint, at []jb
 }
 
 // newRefTemplate turns a template into the label each state of the two three
-// by three neighborhoods maps to, and is nil for one that reaches outside
-// them.
+// by three neighborhoods maps to, nil for one that reaches outside them.
 func newRefTemplate(coding, reference []jbPoint) *refTemplate {
 	cod, ok := refLabels(coding)
 	if !ok {
@@ -1566,8 +1561,7 @@ func jbUncompressedBitmap(r *jbReader, w, h int) (*jbBitmap, error) {
 	return bm, nil
 }
 
-// jbMMRBitmap decodes an MMR coded region, which is CCITT Group 4 with black
-// as one.
+// jbMMRBitmap decodes an MMR region, CCITT Group 4 with black as one.
 func jbMMRBitmap(c *jbCoder, r *jbReader, w, h int, endOfBlock bool) (*jbBitmap, error) {
 	if err := c.spend(w, h); err != nil {
 		return nil, err
@@ -1874,8 +1868,7 @@ func (p *jbPage) grow(h int) {
 	p.h = h
 }
 
-// op is the external combination operator the page information segment lets a
-// region override.
+// op is the combination operator a region may override the page's with.
 func (p *jbPage) op(info jbRegionInfo) int {
 	if p.override {
 		return info.combOp

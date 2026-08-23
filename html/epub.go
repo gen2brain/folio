@@ -50,8 +50,7 @@ func openEPUB(z *zip.Reader, files map[string]*zip.File) (*Document, error) {
 	return d, nil
 }
 
-// The two ways a publisher scrambles an embedded font, and how much of the
-// file each touches.
+// The two ways a publisher scrambles an embedded font, and how much of each.
 const (
 	obfIDPF  = "http://www.idpf.org/2008/embedding"
 	obfAdobe = "http://ns.adobe.com/pdf/enc#RC"
@@ -60,9 +59,8 @@ const (
 )
 
 // readObfuscation reads META-INF/encryption.xml, which says which parts are
-// scrambled and how. Nothing else in a book is encrypted this way: the
-// mechanism exists for embedded fonts and the key is the book's own
-// identifier.
+// scrambled and how. Nothing else in a book is encrypted this way: it exists
+// for embedded fonts and the key is the book's own identifier.
 func (d *Document) readObfuscation() {
 	b, err := d.Read("META-INF/encryption.xml")
 	if err != nil {
@@ -241,8 +239,7 @@ type opf struct {
 	} `xml:"spine"`
 }
 
-// readPackage reads the package document into the manifest, the spine and the
-// metadata.
+// readPackage reads the package into the manifest, spine and metadata.
 func (d *Document) readPackage(root string) error {
 	b, err := d.Read(root)
 	if err != nil {

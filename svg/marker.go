@@ -127,8 +127,7 @@ func (r *runner) marker(value string, v vertex, ctm raster.Matrix, st state) {
 
 	scale := float32(1)
 	if strings.TrimSpace(r.inherited(m, "markerUnits", 0)) != "userSpaceOnUse" {
-		// The default is to scale a marker by the width of the line it sits
-		// on, SVG 1.1 11.6.2.
+		// A marker scales by the width of the line it sits on, SVG 1.1 11.6.2.
 		scale = st.width
 	}
 	if scale <= 0 {

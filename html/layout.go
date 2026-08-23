@@ -40,8 +40,7 @@ type layout struct {
 	posX, posY, posW, posH float32
 	// cbh is the height of the containing block, which a percentage height
 	// resolves against, and negative when that block has no height of its own
-	// and takes one from what it holds. CSS 2.1 10.5 says a percentage of
-	// that is auto.
+	// and takes one from what it holds: CSS 2.1 10.5 makes that auto.
 	cbh float32
 	// pw and ph are the page box, which is what a percentage size on the
 	// root element of a drawing measures against.
@@ -240,9 +239,8 @@ func (l *layout) run(b *box, w float32) {
 	// A float's lines are laid out where the float was met, so the spans
 	// reach pagination out of order.
 	sort.Slice(l.spans, func(i, j int) bool { return l.spans[i].top < l.spans[j].top })
-	// A box placed out of the flow may sit below everything in it, and the
-	// column runs to the bottom of what it holds or the content is on no
-	// page at all.
+	// A box placed out of the flow may sit below everything in it, so the
+	// column runs to the bottom of what it holds or the content has no page.
 	for i := range l.spans {
 		l.y = max(l.y, l.spans[i].bottom)
 	}
@@ -367,9 +365,8 @@ func (l *layout) flow(b *box, x, avail float32) {
 	}
 }
 
-// reachOf fills in how far down every subtree goes, which is what a page
-// culls a box by: its own height leaves out whatever was placed out of the
-// flow below it.
+// reachOf fills in how far down every subtree goes, which is what a page culls
+// a box by: its own height leaves out what was placed out of the flow below.
 func reachOf(b *box) float32 {
 	r := b.y + b.h
 	for _, k := range b.kids {
@@ -416,8 +413,7 @@ func clampLength(v float32, lo, hi Length, against float32) float32 {
 	return max(v, 0)
 }
 
-// offsets is how far a relatively placed box moves from where the flow put
-// it.
+// offsets is how far a relatively placed box moves from where the flow put it.
 func offsets(s *Style, avail float32) (float32, float32) {
 	dx, dy := float32(0), float32(0)
 	switch {
@@ -435,8 +431,7 @@ func offsets(s *Style, avail float32) (float32, float32) {
 	return dx, dy
 }
 
-// absolute places a box against its positioned ancestor and leaves the flow
-// where it was.
+// absolute places a box against its positioned ancestor, leaving the flow.
 func (l *layout) absolute(b *box, x, avail float32) {
 	s := b.style
 	cx, cy, cw := l.posX, l.posY, l.posW
@@ -614,9 +609,8 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 		dy := alignShift(it.style, it.face, sf, a, d)
 		above, below = max(above, a+dy), max(below, d-dy)
 	}
-	// A box aligned to the edge of the line is placed against a height the
-	// rest of the line already decided, and only grows it when it does not
-	// fit; CSS 2.1 10.8.1.
+	// A box aligned to the edge of the line is placed against a height the rest
+	// of the line decided, and grows it only when it does not fit, 10.8.1.
 	if edge {
 		for _, p := range c.pieces(lo, hi) {
 			it := &c.items[p.item]
@@ -650,8 +644,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 		}
 	}
 
-	// Placed in the order they are drawn, kept in the order they were
-	// written.
+	// Placed in the order they are drawn, kept in the order they were written.
 	type placed struct {
 		f  frag
 		at int
@@ -869,8 +862,7 @@ type inlineCtx struct {
 	space bool
 	begun bool
 	// levels is the bidirectional level of every byte of the paragraph, nil
-	// when all of it runs left to right, and rtl the paragraph's own
-	// direction.
+	// when it all runs left to right, and rtl the paragraph's own direction.
 	levels []byte
 	rtl    bool
 }
@@ -909,8 +901,7 @@ func (c *inlineCtx) gather(b *box) {
 	}
 }
 
-// open starts an item unless the last one is already the same element drawn
-// with the same face.
+// open starts an item unless the last is the same element in the same face.
 func (c *inlineCtx) open(s *Style, f face, vis *visual) {
 	if n := len(c.items); vis == nil && n > 0 &&
 		c.items[n-1].style == s && c.items[n-1].face == f &&
@@ -1082,8 +1073,7 @@ func (c *inlineCtx) addInlineBlock(b *box) {
 }
 
 // inlineBaseline is where an inline-block's baseline is, which CSS 2.1 10.8.1
-// puts on the last line box it holds and at its bottom edge when it holds
-// none.
+// puts on its last line box, or at its bottom edge when it holds none.
 func inlineBaseline(b *box) float32 {
 	if v, ok := lastLineBaseline(b); ok {
 		return v - b.y

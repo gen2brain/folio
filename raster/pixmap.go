@@ -37,8 +37,7 @@ func NewPixmap(model Model, w, h int, alpha bool) *Pixmap {
 	return newPixmap(model, n, w, h, alpha)
 }
 
-// NewMask returns an alpha only pixmap, the shape a clip mask and a glyph
-// take.
+// NewMask returns an alpha only pixmap, the shape a clip mask and a glyph take.
 func NewMask(w, h int) *Pixmap { return newPixmap(nil, 0, w, h, true) }
 
 func newPixmap(model Model, n, w, h int, alpha bool) *Pixmap {
@@ -109,8 +108,7 @@ func (p *Pixmap) Clear() {
 	clear(p.Samples)
 }
 
-// ClearWhite sets the pixmap to opaque white, the background a page is
-// rendered onto.
+// ClearWhite sets the pixmap to opaque white, the background of a page.
 func (p *Pixmap) ClearWhite() {
 	n := p.Comps()
 	if n == 0 || p.W == 0 || p.H == 0 {

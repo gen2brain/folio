@@ -25,8 +25,7 @@ type huffcdic struct {
 	read    int
 }
 
-// readHuffcdic reads the HUFF record at huff and the n-1 CDIC records after
-// it.
+// readHuffcdic reads the HUFF record at huff and the n-1 CDIC records after it.
 func readHuffcdic(recs [][]byte, huff, n int) *huffcdic {
 	if huff <= 0 || n < 2 || n > huffMaxRecs || huff+n > len(recs) {
 		return nil

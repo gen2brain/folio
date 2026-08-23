@@ -124,8 +124,7 @@ func htmlLine(ln *TextLine) string {
 	return b.String()
 }
 
-// htmlFamily is the name a font is asked for by, less the subset tag a PDF
-// puts in front of it.
+// htmlFamily is the name a font is asked for by, less a PDF's subset tag.
 func htmlFamily(name string) string {
 	if len(name) > 7 && name[6] == '+' {
 		name = name[7:]
@@ -288,8 +287,7 @@ func (d *TextDevice) addText(t *Text, ctm raster.Matrix, cs *ColorSpace, color [
 	}
 }
 
-// addChar places one character, opening a line when it does not join the one
-// being built.
+// addChar places one character, opening a line when it joins none.
 func (d *TextDevice) addChar(sp *TextSpan, m raster.Matrix, it TextItem, asc, desc float32) {
 	size := float32(math.Sqrt(math.Abs(float64(m.A*m.D - m.B*m.C))))
 	if size <= 0 {
@@ -490,8 +488,7 @@ func lineSize(l *TextLine) float32 {
 	return s
 }
 
-// Text returns the page's text: a newline after every line and a blank line
-// after every block.
+// Text is the page's text: a newline after a line, a blank line after a block.
 func (p *TextPage) Text() string {
 	var b strings.Builder
 	for i := range p.Blocks {

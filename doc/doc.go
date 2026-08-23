@@ -12,8 +12,8 @@
 // one interface. What the three do not share - a PDF's optional content, a
 // book's spine, a drawing's viewBox - is reached by type asserting Underlying.
 //
-// A caller who knows the format should import that package instead: this one
-// pulls all three in.
+// A caller who knows the format should import that package
+// instead: this one pulls all three in.
 package doc
 
 import (
@@ -57,8 +57,8 @@ func (k Kind) String() string {
 	return "unknown"
 }
 
-// Metadata is what all three formats say about themselves. The rest is on the
-// document Underlying returns.
+// Metadata is what all three formats say about themselves. The rest is
+// on the document Underlying returns.
 type Metadata struct {
 	Title    string
 	Author   string
@@ -66,8 +66,7 @@ type Metadata struct {
 	Modified time.Time
 }
 
-// Link is where a link on a page leads, as much of it as the three formats
-// have in common.
+// Link is where a link on a page leads, as much as the three formats share.
 type Link struct {
 	// Rect is the area the link covers, in the page's own space.
 	Rect raster.Rect
@@ -80,8 +79,7 @@ type Link struct {
 type Document interface {
 	// Kind is what the file turned out to be.
 	Kind() Kind
-	// Underlying is the *pdf.Document, *html.Document or *svg.Document behind
-	// this one.
+	// Underlying is the *pdf.Document, *html.Document or *svg.Document.
 	Underlying() any
 	// NumPages is how many pages the document has. A book is laid out at its
 	// default size the first time it is asked.
@@ -90,16 +88,14 @@ type Document interface {
 	Page(i int) (Page, error)
 	// Metadata is the title and author the document gives.
 	Metadata() Metadata
-	// Close releases the document. It must not be called while a page is
-	// still rendering.
+	// Close releases the document. It must not be called while a page renders.
 	Close() error
 }
 
 // Page is one page of a document.
 type Page interface {
-	// Bounds is the page in its own space: points for a PDF or a book, CSS
-	// pixels for a drawing, which is what ImageDPI(72) and ImageDPI(96)
-	// render one to one.
+	// Bounds is the page in its own space, which ImageDPI renders one to one
+	// at 72 for a PDF or a book and at 96 for a drawing.
 	Bounds() raster.Rect
 	// Image renders the page at its natural resolution.
 	Image() (*image.RGBA, error)

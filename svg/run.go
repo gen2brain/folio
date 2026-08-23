@@ -49,14 +49,12 @@ type state struct {
 	// either stands upright or turns a quarter with the line, UAX #50.
 	vertical bool
 	// rtl is direction, the way the characters of a chunk run when the
-	// bidirectional algorithm has nothing to say, and override is
-	// unicode-bidi: bidi-override, which lays them out that way whatever they
-	// are.
+	// bidirectional algorithm has nothing to say; override is unicode-bidi:
+	// bidi-override, which lays them out that way whatever they are.
 	rtl      bool
 	override bool
-	// shift is how far baseline-shift has moved the baseline of the
-	// characters an element holds, and chain what a tspan inside it shifts
-	// from.
+	// shift is how far baseline-shift has moved the baseline of an element's
+	// characters, and chain what a tspan inside it shifts from.
 	shift, chain float32
 	// baseline is what dominant-baseline moved the text off, letter and word
 	// what is added after a character and after a space, and preserve
@@ -93,8 +91,7 @@ type runner struct {
 	doc  *Document
 	dev  Device
 	errs []error
-	// depth counts how deep a use has reached, which bounds a file that
-	// refers to itself.
+	// depth counts how deep a use has reached, bounding a self-referring file.
 	depth int
 	ops   int
 	// faces are the programs a family has resolved to, which every text
@@ -147,8 +144,7 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	if st.hidden {
 		return nil
 	}
-	// The root is a viewport, so its filter and its opacity apply to what it
-	// holds.
+	// The root is a viewport, so its filter and opacity apply to what it holds.
 	alpha := float32(1)
 	if v, ok := opacity(r.prop(d.root, "opacity")); ok {
 		alpha = v
@@ -174,8 +170,7 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	return nil
 }
 
-// fail logs what went wrong while drawing, which a damaged file does rather
-// than stop.
+// fail logs what went wrong while drawing rather than stopping on it.
 func (r *runner) fail(err error) {
 	if len(r.errs) < 64 {
 		r.errs = append(r.errs, err)
@@ -279,8 +274,7 @@ func (r *runner) paint(n *node, ctm raster.Matrix, st state) {
 	}
 }
 
-// chosen draws the first child of a switch whose conditions all hold,
-// SVG 1.1 5.8.
+// chosen draws the first child of a switch that holds, SVG 1.1 5.8.
 func (r *runner) chosen(n *node, ctm raster.Matrix, st state) {
 	for _, k := range n.kids {
 		if switchable(k.name) && conditional(k) {
@@ -397,9 +391,8 @@ func (r *runner) nested(n *node, ctm raster.Matrix, st state) {
 	r.children(n, ctm, st)
 }
 
-// viewportClip cuts what an element draws down to the viewport it
-// establishes, which is what overflow asks for and is hidden by default,
-// SVG 1.1 14.3.3.
+// viewportClip cuts what an element draws down to the viewport it establishes,
+// which is what overflow asks for and is hidden by default, SVG 1.1 14.3.3.
 func (r *runner) viewportClip(n *node, x, y, w, h float32, ctm raster.Matrix) bool {
 	switch strings.TrimSpace(r.prop(n, "overflow")) {
 	case "visible", "auto":
@@ -470,8 +463,7 @@ func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 	r.element(target, ctm, st)
 }
 
-// shape fills and then strokes one path, which is the order SVG 1.1 11.3
-// paints them in.
+// shape fills and then strokes one path, the order of SVG 1.1 11.3.
 func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	if p == nil || p.IsEmpty() || st.invisible {
 		return
@@ -886,8 +878,7 @@ func namedSize(v string) (float32, bool) {
 	return 0, false
 }
 
-// fallbackOf is what a paint wrote after the reference, and empty for one
-// that wrote nothing.
+// fallbackOf is what a paint wrote after the reference, empty for nothing.
 func fallbackOf(v string) string {
 	i := strings.IndexByte(v, ')')
 	if i < 0 {
@@ -896,8 +887,7 @@ func fallbackOf(v string) string {
 	return strings.TrimSpace(v[i+1:])
 }
 
-// blendMode is the mode mix-blend-mode names, and false for the one that
-// blends nothing.
+// blendMode is the mode mix-blend-mode names, false for the one that does not.
 func blendMode(v string) (gfx.BlendMode, bool) {
 	switch strings.TrimSpace(v) {
 	case "multiply":

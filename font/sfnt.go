@@ -265,8 +265,7 @@ func (s *sfnt) findCmap(platform, encoding int) *cmapTable {
 
 // lookupUnicode maps a Unicode value through the best available subtable. A
 // character map that answers zero has not mapped the value: glyph zero is
-// .notdef in every sfnt, so the two mean the same thing and the caller is told
-// so the one way.
+// .notdef in every sfnt, so the two mean the same and are told the one way.
 func (s *sfnt) lookupUnicode(r rune) int {
 	if s == nil || s.unicode == nil {
 		return -1
@@ -278,8 +277,7 @@ func (s *sfnt) lookupUnicode(r rune) int {
 }
 
 // lookupSymbol maps a byte code through a (3,0) symbol subtable, which lives
-// in the private use area and which files address with or without the F0
-// prefix.
+// in the private use area and which files address with or without F0.
 func (s *sfnt) lookupSymbol(code uint32) int {
 	if s == nil || s.symbol == nil {
 		return -1

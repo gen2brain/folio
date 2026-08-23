@@ -50,8 +50,7 @@ func (p *Page) MediaBox() raster.Rect {
 	return r
 }
 
-// Bounds returns the visible area of the page, the crop box clipped to the
-// media box.
+// Bounds is the visible area of the page: the crop box inside the media box.
 func (p *Page) Bounds() raster.Rect {
 	media := p.MediaBox()
 	crop := p.box("CropBox")
@@ -85,8 +84,7 @@ func (p *Page) Rotate() int {
 	return r / 90 * 90
 }
 
-// UserUnit returns the /UserUnit scale, which is 1 for all but very large
-// pages.
+// UserUnit is the /UserUnit scale, which is 1 for all but very large pages.
 func (p *Page) UserUnit() float64 {
 	u := p.doc.f.GetFloat(p.dict["UserUnit"], 1)
 	if u <= 0 || u > 1000 {
@@ -115,8 +113,7 @@ func (p *Page) DeviceBounds(dpi float64) raster.Rect {
 	return p.Matrix(dpi).ApplyRect(p.Bounds())
 }
 
-// Contents returns the page content stream, with the parts of a /Contents
-// array joined.
+// Contents is the page content stream, the parts of a /Contents joined.
 func (p *Page) Contents() []byte {
 	f := p.doc.f
 	switch v := f.Resolve(p.dict["Contents"]).(type) {
@@ -263,8 +260,7 @@ func (p *Page) usesTransparency() bool {
 	return false
 }
 
-// resourcesBlend walks a resource dictionary looking for anything that forces
-// a transparency group.
+// resourcesBlend looks through a resource dictionary for a forced group.
 func (d *Document) resourcesBlend(res Dict, seen map[any]bool, depth int) bool {
 	if res == nil || depth > maxNesting {
 		return false

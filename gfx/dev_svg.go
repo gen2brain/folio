@@ -141,8 +141,7 @@ func (d *SVGDevice) FillImage(img Image, ctm raster.Matrix, alpha float32, cp Co
 	d.image(px, ctm, alpha)
 }
 
-// FillImageMask implements Device, filling the stencil here because SVG has
-// no form of one.
+// FillImageMask implements Device, filling the stencil here: SVG has none.
 func (d *SVGDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams) {
 	px, err := img.Pixels(nil, 0)
 	if err != nil || px == nil {
@@ -309,8 +308,7 @@ func (d *SVGDevice) strokeAttrs(s *raster.Stroke, scale float32) {
 	}
 }
 
-// eachGlyph writes every glyph through fn, defining the outline the first
-// time it is used.
+// eachGlyph writes every glyph through fn, defining an outline once.
 func (d *SVGDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(id string, m raster.Matrix), cs *ColorSpace, color []float32, alpha float32) {
 	for i := range t.Spans {
 		sp := &t.Spans[i]

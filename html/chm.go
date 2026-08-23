@@ -200,8 +200,7 @@ func chmKey(p string) string {
 }
 
 // readSection reads what the compressed section says about itself: the window
-// the stream was coded with, how often it resets, and where each block of it
-// begins.
+// the stream was coded with, how often it resets, and where each block begins.
 func (a *chmArchive) readSection(size int64) error {
 	content, ok := a.ent[chmKey(chmContent)]
 	if !ok {

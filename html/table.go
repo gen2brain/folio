@@ -259,8 +259,7 @@ func (l *layout) columnWidths(t *box, cells []*cell, ncols int, avail float32) [
 	return out
 }
 
-// spread raises a run of columns until together they hold a cell that spans
-// them all.
+// spread raises a run of columns until they hold a cell that spans them all.
 func spread(cols []float32, want float32) {
 	have := float32(0)
 	for _, c := range cols {
@@ -354,9 +353,8 @@ func cellAlign(c *cell) VerticalAlign {
 	return AlignTop
 }
 
-// firstBaseline is where the first line of a subtree sits. A cell with no
-// line at all has no baseline, and CSS 2.1 17.5.4 puts it at the bottom of
-// what the cell holds.
+// firstBaseline is where the first line of a subtree sits. A cell with no line
+// has no baseline, and CSS 2.1 17.5.4 puts it at the bottom of what it holds.
 func firstBaseline(b *box) float32 {
 	if v, ok := lineBaseline(b); ok {
 		return v

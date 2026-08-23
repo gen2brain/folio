@@ -8,8 +8,7 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
-// Origin is where a stylesheet came from, and the first thing the cascade
-// sorts on.
+// Origin is where a stylesheet came from, the first thing the cascade sorts.
 type Origin uint8
 
 // The origins, in the order they lose to one another.
@@ -53,11 +52,9 @@ type Import struct {
 type Rule struct {
 	Selectors []Selector
 	Decls     []Declaration
-	// Media are the conditions of the @media rules the rule sits in, all of
-	// which must match.
+	// Media are the conditions of the @media rules around the rule; all match.
 	Media []MediaList
-	// order is the position of the rule in the sheet, which breaks a tie the
-	// specificity did not.
+	// order is the rule's position in the sheet, breaking a specificity tie.
 	order int
 }
 
@@ -103,8 +100,7 @@ func matchMedia(ms []MediaList, m Media) bool {
 	return true
 }
 
-// Match reports whether any query of the list matches, and true for a list
-// with no query in it.
+// Match reports any query of the list matching, true for an empty list.
 func (l MediaList) Match(m Media) bool {
 	if len(l) == 0 {
 		return true
@@ -187,8 +183,8 @@ func orDefault(v, alt float32) float32 {
 	return alt
 }
 
-// ParseCSS reads a stylesheet. It never fails: what it cannot read it records
-// in Errors and drops.
+// ParseCSS reads a stylesheet. It never fails: what it cannot read
+// it records in Errors and drops.
 func ParseCSS(b []byte, origin Origin) *Stylesheet {
 	p := &cssParser{l: newCSSLexer(string(b)), sheet: &Stylesheet{Origin: origin}}
 	p.rules(nil, false)
@@ -200,8 +196,7 @@ type cssParser struct {
 	saved cssToken
 	has   bool
 	sheet *Stylesheet
-	// depth bounds the nesting of at-rules, which a hostile sheet writes
-	// without end.
+	// depth bounds the nesting of at-rules, which a hostile sheet never ends.
 	depth int
 }
 
@@ -645,13 +640,11 @@ func (s *Stylesheet) Coverage() (read, ignored int) {
 	return read, ignored
 }
 
-// maxImportDepth bounds an @import chain, which a damaged book writes as a
-// cycle.
+// maxImportDepth bounds an @import chain, which a damaged book cycles.
 const maxImportDepth = 8
 
 // Stylesheets returns the sheets that style one part, in cascade order: the
-// user agent sheet, then every sheet the part links or carries and everything
-// those import.
+// user agent sheet, then what the part links or carries and what those import.
 func (d *Document) Stylesheets(path string, root *Node) []*Stylesheet {
 	out := []*Stylesheet{UserAgent()}
 	seen := map[string]bool{}
@@ -682,8 +675,7 @@ func (d *Document) Stylesheets(path string, root *Node) []*Stylesheet {
 	return out
 }
 
-// StylePart parses one part of a book and computes the style of every element
-// in it.
+// StylePart parses one part of a book and styles every element in it.
 func (d *Document) StylePart(path string, media Media) (*Node, Styles, error) {
 	root, err := d.ParsePart(path)
 	if err != nil {
@@ -744,8 +736,7 @@ func resolveFaces(s *Stylesheet, base string) {
 	}
 }
 
-// under puts every rule of a sheet behind the conditions the sheet itself was
-// brought in under.
+// under puts every rule of a sheet behind the sheet's own conditions.
 func under(s *Stylesheet, media []MediaList) {
 	if len(media) == 0 {
 		return
@@ -779,8 +770,7 @@ func isStylesheetLink(n *Node) bool {
 	return false
 }
 
-// tokensOf tokenizes a fragment that stands on its own, an attribute rather
-// than a sheet.
+// tokensOf tokenizes a fragment on its own, an attribute rather than a sheet.
 func tokensOf(s string) []cssToken {
 	l := newCSSLexer(s)
 	var out []cssToken

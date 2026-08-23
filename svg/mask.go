@@ -26,8 +26,7 @@ func (r *runner) mask(n *node, ctm raster.Matrix, st state) bool {
 	defer func() { r.depth--; delete(r.active, m) }()
 
 	// A mask is the luminance of what it draws, or its alpha where SVG 2's
-	// mask-type asks for that, which is what BeginMask composites the next
-	// drawing through.
+	// mask-type asks, and is what BeginMask composites the next drawing with.
 	lum := strings.TrimSpace(r.prop(m, "mask-type")) != "alpha"
 	r.dev.BeginMask(raster.InfiniteRect, lum, gfx.DeviceGray, []float32{0}, gfx.ColorParams{})
 	sub := initialState(st.vw, st.vh)

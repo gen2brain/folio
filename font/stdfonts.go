@@ -6,8 +6,7 @@ import (
 )
 
 // The fourteen fonts every reader must have, ISO 32000-1 9.6.2.2. The
-// substitutes are PDFium's, which are metrically compatible with the
-// originals.
+// substitutes are PDFium's, metrically compatible with the originals.
 var stdFontFile = map[string]string{
 	"Courier":               "FoxitFixed",
 	"Courier-Bold":          "FoxitFixedBold",
@@ -63,8 +62,7 @@ func Standard(name string) *Font {
 
 // StandardName maps a font name onto one of the fourteen, using the flags of
 // the font descriptor to choose when the name says nothing. It returns "" for
-// a name that cannot be resolved, which is never: the last resort is
-// Helvetica.
+// a name that cannot be resolved, which is never: Helvetica is last.
 func StandardName(name string, serif, fixed, symbolic, bold, italic bool) string {
 	base := normalizeName(name)
 	if _, ok := stdFontFile[base]; ok {

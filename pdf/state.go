@@ -7,9 +7,8 @@ type color struct {
 	cs      *ColorSpace
 	value   []float32
 	pattern Object // the pattern object named by scn, when cs is a Pattern
-	// patternCTM is the transform that was in force where the pattern was
-	// selected. A pattern is laid out in that space, not in the space of the
-	// path it fills.
+	// patternCTM is the transform in force where the pattern was selected. A
+	// pattern lays out in that space, not the space of the path it fills.
 	patternCTM raster.Matrix
 }
 
@@ -54,8 +53,7 @@ type gstate struct {
 	params ColorParams
 	text   textState
 
-	// clipDepth counts the clips pushed since the enclosing q, so that Q can
-	// pop exactly as many.
+	// clipDepth counts the clips pushed since the enclosing q, for Q to pop.
 	clipDepth int
 }
 
@@ -67,8 +65,7 @@ type softMask struct {
 	backdrop   []float32
 	transfer   *Function
 	// ctm and res are the transform and resources in force where the mask was
-	// set: the mask is rendered in that space, not in the space of what it
-	// masks.
+	// set: it renders in that space, not the space of what it masks.
 	ctm raster.Matrix
 	res Dict
 }

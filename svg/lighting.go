@@ -167,8 +167,7 @@ func lightFactor(fx, fy float32, nx, ny int32, dir vec3, scale, kd, ks, exp floa
 	return ks * k
 }
 
-// lightColor is the colour that reaches one sample; only a spot light
-// narrows it.
+// lightColor is the colour reaching one sample; only a spot light narrows.
 func lightColor(l *light, col [3]float32, dir vec3) [3]float32 {
 	if l.kind != "feSpotLight" {
 		return col

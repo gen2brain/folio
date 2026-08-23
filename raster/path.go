@@ -83,15 +83,13 @@ func (p *Path) CurveTo(x1, y1, x2, y2, x3, y3 float32) {
 	p.cur = Point{x3, y3}
 }
 
-// CurveToV adds a cubic whose first control point is the current point, the
-// PDF v operator.
+// CurveToV is the PDF v operator, whose first control point is the current one.
 func (p *Path) CurveToV(x2, y2, x3, y3 float32) {
 	c := p.cur
 	p.CurveTo(c.X, c.Y, x2, y2, x3, y3)
 }
 
-// CurveToY adds a cubic whose second control point is its end point, the PDF
-// y operator.
+// CurveToY is the PDF y operator, whose second control point is its end point.
 func (p *Path) CurveToY(x1, y1, x3, y3 float32) {
 	p.CurveTo(x1, y1, x3, y3, x3, y3)
 }

@@ -128,8 +128,7 @@ func parseWOFF2(data []byte) (*Font, error) {
 }
 
 // woff2SFNT rebuilds the sfnt a web font holds. The whole font is one brotli
-// stream, and the glyph outlines and the horizontal metrics are stored in a
-// form of their own.
+// stream, and the outlines and the horizontal metrics have a form of their own.
 func woff2SFNT(data []byte) ([]byte, error) {
 	if len(data) < 48 {
 		return nil, fmt.Errorf("%w: %d bytes of WOFF2", ErrInvalid, len(data))
@@ -320,8 +319,7 @@ func woff2Font(src []byte, tables []*woff2Table, flavor uint32) ([]byte, error) 
 	return out, nil
 }
 
-// woff2Sum is the table checksum of the sfnt format, over a table padded
-// with zeros.
+// woff2Sum is the table checksum of the sfnt format, over a zero padded table.
 func woff2Sum(b []byte) uint32 {
 	var sum uint32
 	i := 0
@@ -491,8 +489,7 @@ func woff2Glyf(src []byte) (glyf, loca []byte, numGlyphs int, xMins []int16, err
 	return glyf, loca, numGlyphs, xMins, nil
 }
 
-// woff2Composite measures one composite glyph and reports whether it carries
-// instructions.
+// woff2Composite measures a composite glyph and reports its instructions.
 func woff2Composite(r *woff2Buf) (int, bool) {
 	start := r.pos
 	instructions := false

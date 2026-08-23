@@ -264,8 +264,7 @@ func cmykLattice(c, m, y, k int) (byte, byte, byte) {
 	return cmykToRGB[i], cmykToRGB[i+1], cmykToRGB[i+2]
 }
 
-// labToRGB converts CIE L*a*b* to sRGB through XYZ, adapting from the space's
-// own white point.
+// labToRGB converts CIE L*a*b* to sRGB through XYZ, adapting the white point.
 func labToRGB(lstar, astar, bstar float32, wp []float64) (r, g, b float32) {
 	fy := float64(lstar+16) / 116
 	fx := fy + float64(astar)/500
@@ -281,8 +280,8 @@ func labFun(x float64) float64 {
 	return (108.0 / 841.0) * (x - 4.0/29.0)
 }
 
-// calRGBToRGB converts a CalRGB color: gamma, then the matrix that gives XYZ,
-// ISO 32000-1 8.6.5.7.
+// calRGBToRGB converts a CalRGB color: gamma, then the matrix
+// that gives XYZ, ISO 32000-1 8.6.5.7.
 func calRGBToRGB(a, b, c float32, cs *ColorSpace) (float32, float32, float32) {
 	g := [3]float64{1, 1, 1}
 	for i := 0; i < 3 && i < len(cs.Gamma); i++ {
@@ -306,8 +305,7 @@ func calRGBToRGB(a, b, c float32, cs *ColorSpace) (float32, float32, float32) {
 	return xyzToRGB(x, y, z, w)
 }
 
-// calGrayToRGB converts a CalGray color, which is a grey level raised to the
-// space's gamma.
+// calGrayToRGB converts a CalGray color, a grey level raised to its gamma.
 func calGrayToRGB(v float32, cs *ColorSpace) (float32, float32, float32) {
 	g := 1.0
 	if len(cs.Gamma) > 0 && cs.Gamma[0] > 0 {
@@ -339,8 +337,7 @@ func whitePoint(wp []float64, def [3]float64) [3]float64 {
 	return [3]float64{wp[0], wp[1], wp[2]}
 }
 
-// xyzToRGB adapts XYZ from a white point to D65 by the Bradford transform and
-// converts it to sRGB.
+// xyzToRGB adapts XYZ to D65 by the Bradford transform and converts to sRGB.
 func xyzToRGB(x, y, z float64, wp [3]float64) (float32, float32, float32) {
 	x, y, z = adaptToD65(x, y, z, wp)
 

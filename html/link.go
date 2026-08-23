@@ -13,8 +13,7 @@ type Link struct {
 	Rect raster.Rect
 	// URI is where a link out of the document points, and "" for one inside.
 	URI string
-	// Path is the part a link inside the document leads to and Fragment the
-	// anchor in it.
+	// Path is the part a link inside the document leads to, Fragment the anchor.
 	Path, Fragment string
 }
 

@@ -32,9 +32,8 @@ type CMap struct {
 	spaces []codespace
 	ranges []cidRange
 	single map[uint32]uint32
-	// text holds the destinations of a ToUnicode CMap, which map one code to
-	// a string rather than to a number: a ligature is one code and several
-	// characters.
+	// text holds the destinations of a ToUnicode CMap, which map a code to a
+	// string rather than a number: a ligature is one code, several characters.
 	text     map[uint32]string
 	usecmap  *CMap
 	identity bool
@@ -282,8 +281,7 @@ func (c *CMap) setText(code uint32, s String) {
 	c.text[code] = utf16BE(s)
 }
 
-// addTextRange records a range whose destination string increments in its
-// last unit.
+// addTextRange records a range whose destination increments in its last unit.
 func (c *CMap) addTextRange(lo, hi uint32, s String) {
 	if hi < lo || hi-lo > 1<<16 {
 		return
@@ -507,8 +505,7 @@ func decodeCIDUnicode(enc string) []uniRun {
 	return out
 }
 
-// uvarint reads one varint and returns where it ended, or zero for one that
-// runs off the end.
+// uvarint reads one varint and where it ended, zero for one that runs off.
 func uvarint(b []byte, i int) (int, int) {
 	v, shift := 0, 0
 	for ; i < len(b); i++ {

@@ -1,8 +1,7 @@
 package html
 
 // grid holds the border every segment of a collapsed table resolved to: one
-// vertical border per column edge and row, and one horizontal border per row
-// edge and column.
+// vertical border per column edge and row, one horizontal per row and column.
 type grid struct {
 	ncols, nrows int
 	vert         []Border

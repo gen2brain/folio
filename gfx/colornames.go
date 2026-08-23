@@ -153,8 +153,7 @@ var namedColors = map[string][3]uint8{
 	"yellowgreen":          {154, 205, 50},
 }
 
-// NamedColor is the color a keyword stands for, and false for a word that
-// names none.
+// NamedColor is the color a keyword stands for, false for one that names none.
 func NamedColor(name string) (r, g, b uint8, ok bool) {
 	c, ok := namedColors[name]
 	return c[0], c[1], c[2], ok

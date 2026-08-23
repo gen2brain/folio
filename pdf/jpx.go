@@ -208,10 +208,9 @@ func jpxU32(data []byte, i int) int {
 	return int(data[i])<<24 | int(data[i+1])<<16 | int(data[i+2])<<8 | int(data[i+3])
 }
 
-// Section B.10.2 Tag trees. A node holds the value decoded so far and
-// whether that value is final; decoding stops at a threshold and resumes in a
-// later layer where it left off, which is what lets an empty packet carry no
-// bits at all.
+// Section B.10.2 Tag trees. A node holds the value decoded so far and whether
+// it is final; decoding stops at a threshold and resumes in a later layer
+// where it left off, which is what lets an empty packet carry no bits at all.
 type jpxTagNode struct {
 	value int
 	known bool

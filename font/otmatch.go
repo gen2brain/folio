@@ -37,8 +37,7 @@ func (b *buffer) next(l *otLookup, i int) int {
 	return len(b.items)
 }
 
-// prev is the glyph before one that the lookup does not pass over, and -1
-// when there is none.
+// prev is the glyph before one the lookup does not pass over, -1 for none.
 func (b *buffer) prev(l *otLookup, i int) int {
 	for k := i - 1; k >= 0; k-- {
 		if !b.skip(l, k) {

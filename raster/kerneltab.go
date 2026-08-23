@@ -2,8 +2,7 @@
 
 package raster
 
-// coverStep is how many pixels of n components fit in the sixteen byte block a
-// kernel works on.
+// coverStep is how many pixels of n components fit one sixteen byte block.
 var (
 	coverStep = [6]int{0, 16, 8, 4, 4, 2}
 	coverLo   = [6]int{never, 16, 12, 8, 8, 8}

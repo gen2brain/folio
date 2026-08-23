@@ -6,8 +6,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// Link is a link in a drawing: the area it covers, and where following it
-// goes.
+// Link is a link in a drawing: the area it covers, and where following it goes.
 type Link struct {
 	// Rect is the area the link covers, in the drawing's own coordinates.
 	Rect raster.Rect

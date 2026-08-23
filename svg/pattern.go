@@ -74,9 +74,8 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	pt := atOrigin(transform(r.inherited(n, "patternTransform", 0)),
 		r.inherited(n, "transform-origin", 0), st.vw, st.vh, st.em)
 	tile := raster.Concat(raster.Concat(raster.Translate(x, y), pt), ctm)
-	// pre maps the content onto the cell and is applied before the cell is
-	// stepped, so that the step stays one cell whatever the content is scaled
-	// by.
+	// pre maps the content onto the cell and applies before the cell is
+	// stepped, so the step stays one cell whatever the content is scaled by.
 	pre := raster.Identity
 	// The content of a pattern is not inside the shape that referred to it,
 	// so it inherits nothing from it: a shape stroked black must not put a

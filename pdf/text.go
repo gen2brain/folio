@@ -5,8 +5,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// showObject shows a string, or the mix of strings and numbers a TJ array
-// holds.
+// showObject shows a string, or the strings and numbers a TJ array holds.
 func (ip *interp) showObject(obj Object) {
 	switch v := ip.doc.f.Resolve(obj).(type) {
 	case String:

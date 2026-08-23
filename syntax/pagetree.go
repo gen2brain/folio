@@ -112,8 +112,7 @@ func (f *File) inherit(page Dict, ref Ref) {
 	}
 }
 
-// scanForPages finds page objects directly, for a file whose page tree is
-// unusable.
+// scanForPages finds page objects directly, for an unusable page tree.
 func (f *File) scanForPages() []Ref {
 	var out []Ref
 	for num := range f.xref.ents {
