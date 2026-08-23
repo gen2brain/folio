@@ -1,5 +1,5 @@
-// Package html reads reflowable documents: EPUB, MOBI, CHM, DOCX, PPTX, XLSX
-// and plain text.
+// Package html reads reflowable documents: EPUB, MOBI, CHM, FB2, DOCX, PPTX,
+// XLSX and plain text.
 //
 // A reflowable document has no pages until it is laid out, so a container
 // hands over the parts a book is made of and the order to read them in:
@@ -100,6 +100,7 @@ const (
 	KindDOCX
 	KindPPTX
 	KindXLSX
+	KindFB2
 )
 
 // String returns the name of the container.
@@ -119,6 +120,8 @@ func (k Kind) String() string {
 		return "PPTX"
 	case KindXLSX:
 		return "XLSX"
+	case KindFB2:
+		return "FB2"
 	}
 	return "unknown"
 }
@@ -224,7 +227,7 @@ func Open(name string) (*Document, error) {
 
 // NewReader reads a book from a reader.
 func NewReader(r io.ReaderAt, size int64) (*Document, error) {
-	var head [72]byte
+	var head [512]byte
 	n, _ := r.ReadAt(head[:], 0)
 	switch {
 	case n >= 4 && string(head[:4]) == "PK\x03\x04":
@@ -233,8 +236,38 @@ func NewReader(r io.ReaderAt, size int64) (*Document, error) {
 		return openMOBI(r, size)
 	case n >= 4 && string(head[:4]) == "ITSF":
 		return openCHM(r, size)
+	case isFB2(head[:n]):
+		b, err := readAll(r, size)
+		if err != nil {
+			return nil, err
+		}
+		return openFB2(b)
 	}
 	return openText(r, size)
+}
+
+// isFB2 reports the head of a file that declares itself a FictionBook, which
+// is an XML document rather than a container.
+func isFB2(b []byte) bool {
+	if len(b) > 512 {
+		b = b[:512]
+	}
+	s := string(b)
+	if i := strings.Index(s, "\x00"); i >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	return strings.Contains(s, "<FictionBook")
+}
+
+func readAll(r io.ReaderAt, size int64) ([]byte, error) {
+	if size <= 0 || size > maxPartBytes {
+		return nil, fmt.Errorf("%w: %d bytes", ErrInvalid, size)
+	}
+	b := make([]byte, size)
+	if _, err := r.ReadAt(b, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return b, nil
 }
 
 // Load reads a book from a buffer.

@@ -3543,6 +3543,132 @@ func TestXLSX(t *testing.T) {
 	}
 }
 
+// TestFB2 covers a FictionBook: what it says about itself, the sections it
+// nests, the text written beside its elements, the pictures it carries at its
+// end, and the notes another part of it links to.
+func TestFB2(t *testing.T) {
+	const src = `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"` +
+		` xmlns:l="http://www.w3.org/1999/xlink">` +
+		`<description><title-info>` +
+		`<author><first-name>A</first-name><last-name>Writer</last-name></author>` +
+		`<book-title>A Sample Book</book-title><lang>en</lang>` +
+		`<annotation><p>A note about it.</p></annotation>` +
+		`<coverpage><image l:href="#cover.png"/></coverpage>` +
+		`</title-info></description>` +
+		`<body><title><p>A Sample Book</p></title>` +
+		`<section><title><p>Chapter One</p></title>` +
+		`<p>Text with <emphasis>emphasis</emphasis> and a ` +
+		`<a l:href="#n1" type="note">note</a>.</p>` +
+		`<empty-line/><subtitle>A subtitle</subtitle>` +
+		`<poem><title><p>A Poem</p></title><stanza><v>One line</v></stanza></poem>` +
+		`<image l:href="#cover.png"/>` +
+		`<table><tr><th>Head</th></tr><tr><td>a</td></tr></table>` +
+		`</section>` +
+		`<section>Bare text in a section.</section></body>` +
+		`<body name="notes"><section id="n1"><title><p>Notes</p></title>` +
+		`<p>The note itself.</p></section></body>` +
+		`<binary id="cover.png" content-type="image/png">iVBORw==</binary>` +
+		`</FictionBook>`
+
+	d, err := Load([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Kind() != KindFB2 {
+		t.Fatalf("opened as %s", d.Kind())
+	}
+	m := d.Metadata()
+	if m.Title != "A Sample Book" || m.Author != "A Writer" || m.Language != "en" ||
+		m.Description != "A note about it." {
+		t.Errorf("the metadata is %+v", m)
+	}
+	body, err := d.Read(fb2Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<p><img src="cover.png"/></p>`,
+		"<h1>A Sample Book</h1>", "<h2>Chapter One</h2>",
+		// The text beside the elements keeps the order it was written in.
+		"<p>Text with <em>emphasis</em> and a ",
+		`<a href="#n1" class="note">note</a>.</p>`,
+		`<p class="empty">`, `<p class="subtitle">A subtitle</p>`,
+		`<div class="poem">`, `<p class="v">One line</p>`,
+		"<table><tr><th>Head</th></tr>",
+		"<p>Bare text in a section.</p>",
+		`id="n1"`, "The note itself.",
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("the book has no %q", want)
+		}
+	}
+	// A poem's title names the poem rather than a chapter.
+	if bytes.Contains(body, []byte("<h3>A Poem")) {
+		t.Error("a poem's title became a heading")
+	}
+	toc := d.Outline()
+	var got []string
+	for _, o := range toc {
+		got = append(got, o.Title)
+		if o.Path != fb2Body || o.Fragment == "" {
+			t.Errorf("the entry %q points at %s#%s", o.Title, o.Path, o.Fragment)
+		}
+	}
+	if want := []string{"A Sample Book", "Chapter One", "Notes"}; !slices.Equal(got, want) {
+		t.Errorf("the outline is %q, want %q", got, want)
+	}
+	if pic, err := d.Read("cover.png"); err != nil || len(pic) == 0 {
+		t.Errorf("the picture came back as %d bytes, %v", len(pic), err)
+	}
+	// The cover is not a picture, which the layout records and carries past.
+	if n, _ := d.Layout(nil); n == 0 {
+		t.Fatal("the book laid out to nothing")
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Text(); !strings.Contains(got, "Text with emphasis and a note.") {
+		t.Errorf("the page reads %q", got)
+	}
+}
+
+// TestFB2Encoding covers a book written in a code page rather than in UTF-8,
+// which is what a Russian one usually is.
+func TestFB2Encoding(t *testing.T) {
+	const cyrillic = "\u041f\u0440\u0438\u0432\u0435\u0442"
+	var body []byte
+	for _, r := range cyrillic {
+		for i, v := range cp1251High {
+			if v == r {
+				body = append(body, byte(0x80+i))
+				break
+			}
+		}
+	}
+	if len(body) != len([]rune(cyrillic)) {
+		t.Fatalf("the sample did not encode: %q", body)
+	}
+	raw := append([]byte(`<?xml version="1.0" encoding="windows-1251"?>`+
+		`<FictionBook><body><section><p>`), body...)
+	raw = append(raw, []byte(`</p></section></body></FictionBook>`)...)
+
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	page, err := d.Read(fb2Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(page, []byte(cyrillic)) {
+		t.Errorf("the book reads %s", page)
+	}
+}
+
 // TestNewStream covers reading a document from a stream that cannot be
 // seeked, which is what a caller with a pipe or a network body has.
 func TestNewStream(t *testing.T) {

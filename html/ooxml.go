@@ -29,7 +29,13 @@ type xnode struct {
 	text string
 }
 
-func parseXML(b []byte) (*xnode, error) {
+func parseXML(b []byte) (*xnode, error) { return parseTree(b, false) }
+
+// parseMixed keeps the character data as children in the order it was
+// written, which a document with text beside its elements needs.
+func parseMixed(b []byte) (*xnode, error) { return parseTree(b, true) }
+
+func parseTree(b []byte, mixed bool) (*xnode, error) {
 	d := xml.NewDecoder(strings.NewReader(string(b)))
 	d.Strict = false
 	d.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
@@ -58,13 +64,19 @@ func parseXML(b []byte) (*xnode, error) {
 				stack = stack[:len(stack)-1]
 			}
 		case xml.CharData:
-			stack[len(stack)-1].text += string(e)
+			top := stack[len(stack)-1]
+			top.text += string(e)
+			if mixed && len(e) > 0 {
+				top.kids = append(top.kids, &xnode{text: string(e)})
+			}
 		}
 	}
-	if len(root.kids) == 0 {
-		return nil, fmt.Errorf("%w: the part has no root element", ErrInvalid)
+	for _, k := range root.kids {
+		if k.name != "" {
+			return k, nil
+		}
 	}
-	return root.kids[0], nil
+	return nil, fmt.Errorf("%w: the part has no root element", ErrInvalid)
 }
 
 // attr is the value of an attribute of any namespace but the relationship
@@ -223,6 +235,13 @@ func (o *ooxml) external(part, id string) string {
 	return ""
 }
 
+func pathExt(p string) string {
+	if i := strings.LastIndexByte(p, '.'); i >= 0 {
+		return p[i:]
+	}
+	return ""
+}
+
 func splitPart(p string) (dir, base string) {
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {
 		return p[:i+1], p[i+1:]
@@ -274,6 +293,19 @@ func openZip(r io.ReaderAt, size int64) (*Document, error) {
 		return openPPTX(o)
 	case o.has("xl/workbook.xml"):
 		return openXLSX(o)
+	}
+	// A FictionBook is sometimes zipped, one book to an archive.
+	if !o.has("META-INF/container.xml") {
+		for _, f := range z.File {
+			if !strings.EqualFold(pathExt(f.Name), ".fb2") {
+				continue
+			}
+			b, err := o.read(f.Name)
+			if err != nil {
+				break
+			}
+			return openFB2(b)
+		}
 	}
 	return openEPUB(z, files)
 }
