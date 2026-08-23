@@ -3936,3 +3936,36 @@ func TestBidiLayout(t *testing.T) {
 		t.Errorf("drawn as %q, want %q", got, want)
 	}
 }
+
+func TestAutoLayout(t *testing.T) {
+	const src = "<h1>Title</h1><p>Body text.</p>"
+	d, err := NewReader(strings.NewReader(src), int64(len(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if n := d.NumPages(); n == 0 {
+		t.Fatal("a book read straight to a page laid out to nothing")
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := p.Bounds()
+	if b.X1-b.X0 != 600 || b.Y1-b.Y0 != 900 {
+		t.Errorf("default page is %gx%g points, want 600x900", b.X1-b.X0, b.Y1-b.Y0)
+	}
+	if txt := p.Text(); !strings.Contains(txt, "Body text.") {
+		t.Errorf("page one says %q", txt)
+	}
+	if n, err := d.Layout(&LayoutOptions{Width: 200, Height: 200}); err != nil || n == 0 {
+		t.Fatalf("laying out again: %d pages, %v", n, err)
+	}
+	p, err = d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := p.Bounds(); b.X1-b.X0 != 150 {
+		t.Errorf("after a second Layout the page is %g points wide, want 150", b.X1-b.X0)
+	}
+}

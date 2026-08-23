@@ -202,11 +202,15 @@ type Document struct {
 	fontMu sync.Mutex
 	fonts  map[string]*font.Font
 
-	// layoutMu guards what Layout produced, which every page reads.
+	// layoutMu guards what Layout produced, which every page reads, and
+	// autoMu keeps two goroutines from laying the book out at once when
+	// neither asked for a size.
 	layoutMu sync.Mutex
+	autoMu   sync.Mutex
 	opt      LayoutOptions
 	parts    []*laidPart
 	pages    []*Page
+	laidOut  bool
 }
 
 // Open reads the named file, deciding from its contents what it is.

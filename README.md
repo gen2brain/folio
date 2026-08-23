@@ -13,15 +13,16 @@ img, err := p.ImageDPI(150)
 txt, err := p.Text()
 ```
 
-A book has no pages until it is given a size to reflow into:
+A book has to be reflowed into a page before it has any, which happens on the first `NumPages` or `Page` if a caller does not ask for a size:
 
 ```go
 doc, err := html.Open("book.epub")     // or .mobi, .chm, .fb2, .docx, .pptx, .xlsx, .txt
+p, err := doc.Page(0)                  // laid out at the size the document asks for, or 800x1200
+
 n, err := doc.Layout(&html.LayoutOptions{Width: 800, Height: 1200, Margin: 40})
-p, err := doc.Page(0)
 ```
 
-Leaving the size out takes the page the document asks for, which is what a Word section or a slide deck has one of.
+`Layout` is for choosing the page: a reader that resizes its window calls it again. A Word section or a slide deck has a size of its own and is laid out at that.
 
 ### Supported
 

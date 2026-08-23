@@ -149,9 +149,22 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 		}
 	}
 	d.layoutMu.Lock()
-	d.opt, d.parts, d.pages = opt, parts, pages
+	d.opt, d.parts, d.pages, d.laidOut = opt, parts, pages, true
 	d.layoutMu.Unlock()
 	return len(pages), errors.Join(errs...)
+}
+
+// autoLayout lays the book out at the size it asks for, or the default one,
+// for a caller that goes straight to a page.
+func (d *Document) autoLayout() {
+	d.autoMu.Lock()
+	defer d.autoMu.Unlock()
+	d.layoutMu.Lock()
+	done := d.laidOut
+	d.layoutMu.Unlock()
+	if !done {
+		d.Layout(nil)
+	}
 }
 
 // writingOf is the writing mode a part is laid out in, which is what its root
@@ -209,19 +222,23 @@ func (d *Document) imagePart(it Item, cw, ch float32) (*laidPart, error) {
 	return &laidPart{path: it.Path, root: root, tops: []float32{0}, height: h}, nil
 }
 
-// NumPages is how many pages the last Layout made, and zero before one.
+// NumPages is how many pages the last Layout made. A book that has not been
+// laid out is laid out first, at the size it asks for or the default one.
 func (d *Document) NumPages() int {
+	d.autoLayout()
 	d.layoutMu.Lock()
 	defer d.layoutMu.Unlock()
 	return len(d.pages)
 }
 
-// Page returns one page of the laid out book.
+// Page returns one page of the book, laying it out first when NumPages or
+// Layout has not.
 func (d *Document) Page(i int) (*Page, error) {
+	d.autoLayout()
 	d.layoutMu.Lock()
 	defer d.layoutMu.Unlock()
 	if len(d.pages) == 0 {
-		return nil, fmt.Errorf("%w: the book is not laid out", ErrInvalid)
+		return nil, fmt.Errorf("%w: the book has no pages", ErrInvalid)
 	}
 	if i < 0 || i >= len(d.pages) {
 		return nil, fmt.Errorf("%w: page %d of %d", ErrNotFound, i, len(d.pages))
