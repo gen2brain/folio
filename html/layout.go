@@ -390,8 +390,6 @@ func borderInset(b *box) (top, right, bottom, left float32) {
 		s.BorderBottom.Thickness(), s.BorderLeft.Thickness()
 }
 
-// clampLength holds a length between what min and max ask for, treating a
-// length there is none of as no bound at all.
 // definiteHeight resolves a height that does not depend on what a box holds:
 // a length, or a percentage of a containing block that has one of its own.
 func definiteHeight(v Length, cb float32) (float32, bool) {
@@ -406,6 +404,8 @@ func definiteHeight(v Length, cb float32) (float32, bool) {
 	return 0, false
 }
 
+// clampLength holds a length between what min and max ask for, treating a
+// length there is none of as no bound at all.
 func clampLength(v float32, lo, hi Length, against float32) float32 {
 	if !hi.Auto() {
 		v = min(v, hi.Resolve(against))

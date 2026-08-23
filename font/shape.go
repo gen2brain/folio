@@ -360,8 +360,8 @@ type planned struct {
 	digest digest
 }
 
-// plan is the lookups a font runs for a script, worked out once. kerns says
-// GPOS kerns of its own, so the old table is not read.
+// shapePlan is the lookups a font runs for a script, worked out once. kerns
+// says GPOS kerns of its own, so the old table is not read.
 type shapePlan struct {
 	gsub  []stage
 	gpos  []stage

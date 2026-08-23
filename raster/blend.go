@@ -50,8 +50,7 @@ func (b BlendMode) Separable() bool { return b < BlendHue }
 
 // BlendOver composites src onto p. src is premultiplied, carries an alpha
 // channel and is positioned by its own X and Y; alpha scales it, and mode is
-// the blend function against what p already holds. This is what ends a
-// transparency group.
+// the blend function against what p already holds.
 func (p *Pixmap) BlendOver(src *Pixmap, alpha uint8, mode BlendMode) {
 	if src == nil || alpha == 0 || !src.Alpha {
 		return

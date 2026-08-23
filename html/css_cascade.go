@@ -362,8 +362,6 @@ func isBorderWidth(p []cssToken) bool {
 	return false
 }
 
-// backgroundColor picks the colour out of a background shorthand, which also
-// names an image, a repeat and a position the engine has no use for.
 // expandBackground splits the background shorthand into the colour, the
 // picture and where it goes, reading the first layer of a list.
 func expandBackground(toks []cssToken) []longhand {
@@ -401,6 +399,7 @@ func expandBackground(toks []cssToken) []longhand {
 	return out
 }
 
+// backgroundColor picks the colour out of a background shorthand.
 func backgroundColor(toks []cssToken) []cssToken {
 	parts := splitSpace(toks)
 	for i := len(parts) - 1; i >= 0; i-- {
@@ -429,8 +428,6 @@ func boxIndex(side, n int) int {
 	return side
 }
 
-// expandFont splits the font shorthand, which is an optional style, variant
-// and weight, then a size with an optional line height, then the family.
 // expandRadius splits the corner shorthand, whose horizontal radii come
 // before the slash and whose vertical ones come after it.
 func expandRadius(toks []cssToken) []longhand {
@@ -461,6 +458,8 @@ func expandRadius(toks []cssToken) []longhand {
 	return out
 }
 
+// expandFont splits the font shorthand: an optional style, variant and
+// weight, then a size with an optional line height, then the family.
 func expandFont(toks []cssToken) []longhand {
 	parts := splitSpace(toks)
 	size := -1

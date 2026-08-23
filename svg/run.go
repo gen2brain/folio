@@ -174,8 +174,8 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	return nil
 }
 
-// Errors are what went wrong while drawing, which a damaged file logs rather
-// than fails on.
+// fail logs what went wrong while drawing, which a damaged file does rather
+// than stop.
 func (r *runner) fail(err error) {
 	if len(r.errs) < 64 {
 		r.errs = append(r.errs, err)

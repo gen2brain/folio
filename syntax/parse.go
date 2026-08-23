@@ -78,8 +78,7 @@ func (p *Parser) shiftOperand() (Operand, bool) {
 
 // Operand reads one item of a content stream's operand list. A number comes
 // back unboxed; anything else is read as a whole object, so an array or a
-// dictionary operand still arrives complete. A content stream has no indirect
-// references, which is what lets a number be taken on sight.
+// dictionary operand still arrives complete.
 func (p *Parser) Operand() (Operand, bool) {
 	if p.ok[0] && p.buf[0].IsNum {
 		return p.shiftOperand()

@@ -89,7 +89,6 @@ func NewReaderPassword(r io.ReaderAt, size int64, password string) (*File, error
 // Load reads a document from a buffer, which it takes ownership of.
 func Load(buf []byte, password string) (*File, error) { return load(buf, password) }
 
-// Close releases the document. Using it afterwards is undefined.
 // Close releases the file. It must not be called while anything is still
 // reading the file, which for a document rendered from several goroutines
 // means after the last of them has finished.

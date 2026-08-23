@@ -6,9 +6,8 @@ import "math"
 // the curve each channel is encoded with, and the matrix that takes the
 // linear channels to the connection space. ISO 15076-1.
 //
-// Only the matrix/TRC shape is read, which is what a display profile has and
-// what a file embeds beside DeviceRGB or DeviceGray. A profile that maps
-// through a table is left to the alternate space the file names.
+// Only the matrix/TRC shape is read. A profile that maps through a table is
+// left to the alternate space the file names.
 type ICC struct {
 	n   int
 	trc [3]iccCurve

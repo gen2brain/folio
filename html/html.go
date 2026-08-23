@@ -1,71 +1,28 @@
 // Package html reads reflowable documents: EPUB, MOBI, CHM, FB2, DOCX, PPTX,
 // XLSX and plain text.
 //
-// A reflowable document has no pages until it is laid out, so a container
-// hands over the parts a book is made of and the order to read them in:
-//
 //	doc, err := html.Open("book.epub")
 //	defer doc.Close()
-//
-//	for _, item := range doc.Spine() {
-//		b, err := doc.Read(item.Path)
-//	}
-//
-// Read takes the path a spine or manifest item carries, and Resolve turns a
-// link inside one part into the path of another.
-//
-// # Style
-//
-// A part is parsed into a DOM by Parse, and StylePart does that and computes
-// the style of every element in it:
-//
-//	root, styles, err := doc.StylePart(item.Path, html.Media{Width: 800, Height: 1200})
-//	s := styles.Of(node)
-//
-// Media is the viewport a media query is answered against and the font size
-// the reader is set to. Stylesheets returns the sheets that apply to a part,
-// the user agent sheet first, and Cascade runs them over a tree. ParseCSS
-// reads one sheet on its own; it never fails, and what it could not read is
-// in Stylesheet.Errors.
-//
-// A computed Style holds lengths in CSS pixels, except that a percentage is
-// left standing for the layout that knows what it resolves against.
-//
-// # Layout
-//
-// A reflowable document has no pages until it is laid out, so Layout comes
-// before NumPages and Page:
-//
-//	n, err := doc.Layout(&html.LayoutOptions{Width: 800, Height: 1200, Margin: 40})
 //
 //	p, err := doc.Page(0)
 //	img, err := p.ImageDPI(150)
 //
-// Document.Text is everything the book says and Document.Markdown the same
-// with the headings, lists, tables, links and emphasis it was written with.
-// Both read the parts rather than the pages, so neither needs Layout.
+// A document is a spine of parts rather than pages. [Document.Spine] lists
+// them, [Document.Read] hands over the markup, [Document.StylePart] parses one
+// and computes the style of every element, and [Document.Layout] reflows the
+// lot onto pages of a size. [Document.Text] and [Document.Markdown] read the
+// parts rather than the pages and need no layout.
 //
-// The page is given in CSS pixels, 96 to the inch, and Page.Bounds returns it
-// in points so that a page of a book measures the same way a page of a PDF
-// does. Page.Text is what the page says, Page.StructuredText is that with the
-// box every character covers, Page.Links is what it links to, Page.SVG and
-// Page.HTML are the page as markup, and Page.Run draws it through a
-// gfx.Device, which is the seam a PDF page draws through as well.
+// A page is measured in CSS pixels, 96 to the inch, and [Page.Bounds] returns
+// points so that a page of a book measures the way a page of a PDF does.
+// [Page.Run] draws through the same gfx.Device a PDF page draws through.
 //
-// A face comes from the book itself when an @font-face rule brings one, from
-// the machine when it has one for a family the book names, and from the base
-// fourteen otherwise. A character no face in hand can draw finds one that
-// can, so a book in any script the machine has a font for renders.
+// A face comes from the document when an @font-face rule brings one, from the
+// machine when it has one for a family the document names, and from the base
+// fourteen otherwise.
 //
-// Layout is block and inline formatting with the line breaking of UAX #14:
-// margins, padding, borders, floats and clearance, tables with cells that
-// span rows and columns, relative and absolute positioning, text alignment,
-// indentation, letter spacing, small capitals, font selection from the base
-// fourteen, line height, colours, list markers, images, and the page breaks a
-// book asks for. Generated content and vertical writing are not in it.
-//
-// Pages may be rendered from several goroutines at once. Layout may not run
-// while they are.
+// Pages may be rendered from several goroutines at once, but not while
+// [Document.Layout] is running.
 package html
 
 import (

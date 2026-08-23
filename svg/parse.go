@@ -112,8 +112,6 @@ func (p *scanner) name() string {
 	return p.s[start:p.i]
 }
 
-// numbers reads a whole attribute as a list of numbers, which is what points
-// and the dash pattern are.
 // lengths reads a list of lengths, which is what the positions a text element
 // gives each of its characters are written as.
 func lengths(s string, ref, em float32) []float32 {
@@ -148,6 +146,8 @@ func numberList(s string) []float32 {
 	return out
 }
 
+// numbers reads a whole attribute as a list of numbers, which is what points
+// and the dash pattern are.
 func numbers(s string) []float32 {
 	p := &scanner{s: s}
 	var out []float32

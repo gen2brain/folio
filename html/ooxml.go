@@ -79,8 +79,8 @@ func parseTree(b []byte, mixed bool) (*xnode, error) {
 	return nil, fmt.Errorf("%w: the part has no root element", ErrInvalid)
 }
 
-// attr is the value of an attribute of any namespace but the relationship
-// one, which rel reads instead.
+// at is the value of an attribute of any namespace but the relationship one,
+// which rel reads instead.
 func (n *xnode) at(name string) string {
 	if n == nil {
 		return ""

@@ -146,9 +146,8 @@ func (f *Font) NumGlyphs() int { return f.glyphs }
 // GlyphPath returns the outline of a glyph in glyph space. The path is owned
 // by the font and must not be modified.
 //
-// A CID keyed CFF is addressed by CID rather than by glyph index, which is
-// the convention FreeType uses and therefore the one a PDF font dictionary
-// carries; the charset maps it to the glyph inside.
+// A CID keyed CFF is addressed by CID rather than by glyph index, the
+// convention FreeType uses; the charset maps it to the glyph inside.
 func (f *Font) GlyphPath(gid int) *raster.Path {
 	if gid < 0 {
 		return nil

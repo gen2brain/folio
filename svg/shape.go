@@ -87,8 +87,6 @@ func ellipsePath(n *node, st state) *raster.Path {
 	return ellipseAt(cx, cy, rx, ry)
 }
 
-// ellipseAt is four cubics, which is the shape every renderer draws a circle
-// as and is within a thousandth of the curve.
 // positive reads a length that is no length at all when it is negative,
 // which is what an invalid radius comes to: SVG 2 lets the other one stand
 // for it.
@@ -100,6 +98,8 @@ func positive(s string, ref, em float32) (float32, bool) {
 	return v, true
 }
 
+// ellipseAt is four cubics, which is the shape every renderer draws a circle
+// as and is within a thousandth of the curve.
 func ellipseAt(cx, cy, rx, ry float32) *raster.Path {
 	ox, oy := rx*kappa, ry*kappa
 	p := &raster.Path{}

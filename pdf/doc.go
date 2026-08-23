@@ -14,12 +14,10 @@ import (
 
 // Document is an open PDF file.
 //
-// A Document may be rendered from several goroutines at once, a Page each: the
-// object store underneath it is read-only once the file is open, and the caches
-// a render fills are locked. Configuration - SetLayers, SetUsage,
-// GlyphCacheBytes and ImageCacheBytes - has to happen before those goroutines
-// start, and Close after the last of them finishes. Err reads the error log
-// whenever.
+// A Document may be rendered from several goroutines at once, a Page each.
+// Configuration - SetLayers, SetUsage, GlyphCacheBytes, ImageCacheBytes,
+// ContentCacheOps - has to happen before they start, and Close after the last
+// of them finishes.
 type Document struct {
 	f *syntax.File
 
@@ -137,7 +135,6 @@ func newDocument(f *syntax.File) *Document {
 	return d
 }
 
-// Close releases the document.
 // Close releases the document and everything it has cached. It must not be
 // called while a page is still rendering.
 func (d *Document) Close() error {
@@ -392,18 +389,16 @@ const (
 )
 
 // SetSystemFonts chooses whether a font the file does not embed may be
-// substituted with one the machine has, which is what a page in a script the
-// base fourteen cannot draw needs. It is on by default; turning it off makes
-// a render depend on nothing outside the file. It has to be called before the
-// first page is rendered.
+// substituted with one the machine has. It is on by default and has to be set
+// before the first page is rendered.
 func (d *Document) SetSystemFonts(on bool) { d.noSystemFonts = !on }
 
 // Usage returns what the document is being rendered for.
 func (d *Document) Usage() Usage { return d.usage }
 
 // SetUsage chooses what the document is rendered for, which decides both which
-// optional content groups are on and which annotations are drawn. It re-applies
-// the default configuration, so it undoes SetLayers. The default is UsageView.
+// optional content groups are on and which annotations are drawn. It undoes
+// SetLayers. The default is UsageView.
 func (d *Document) SetUsage(u Usage) {
 	d.usage = u
 	d.readOptionalContent()

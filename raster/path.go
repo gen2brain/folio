@@ -47,10 +47,9 @@ func (p *Path) MoveTo(x, y float32) {
 }
 
 // LineTo adds a straight segment. A path that begins with a line has an
-// implicit move to its first point, which is what a content stream that says
-// l before m means. A line to the point the path is already at is dropped
-// unless a move put it there, where it is a subpath of its own that a round
-// or a square cap paints as a dot.
+// implicit move to its first point. A line to the point the path is already
+// at is dropped unless a move put it there, where it is a subpath of its own
+// that a round or a square cap paints as a dot.
 func (p *Path) LineTo(x, y float32) {
 	if !p.started {
 		p.MoveTo(x, y)

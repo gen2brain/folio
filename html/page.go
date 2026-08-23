@@ -87,9 +87,10 @@ type Page struct {
 }
 
 // Layout lays the book out onto pages of a size and returns how many it
-// makes. It must be called before NumPages or Page, and calling it again with
-// another size lays the book out afresh. Pages may then be rendered from
-// several goroutines at once, but not while another Layout is running.
+// makes. NumPages and Page call it with nil options when a caller has not, so
+// it is only needed to choose the page; calling it again with another size
+// lays the book out afresh. Pages may be rendered from several goroutines at
+// once, but not while another Layout is running.
 func (d *Document) Layout(o *LayoutOptions) (int, error) {
 	opt := o.or(&d.natural)
 	cw := opt.Width - 2*opt.Margin

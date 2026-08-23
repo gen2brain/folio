@@ -82,12 +82,10 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 	return gfx.ToRGBA(px), err
 }
 
-// Decode reads a drawing and renders it at the size it asks to be, which is
-// what a caller that wants a picture rather than a document wants.
+// Decode reads a drawing and renders it at the size it asks to be.
 //
-// It is not registered with image.RegisterFormat. Registering changes what
-// image.Decode does for the whole program, which is the importing program's
-// decision and not this package's:
+// It is not registered with image.RegisterFormat, because that decides for
+// the whole program and is the importing program's call:
 //
 //	image.RegisterFormat("svg", "<svg", svg.Decode, svg.DecodeConfig)
 func Decode(r io.Reader) (image.Image, error) {

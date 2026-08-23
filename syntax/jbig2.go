@@ -1096,8 +1096,6 @@ func jbStandardTable(n int) (*jbHuffTable, error) {
 	return jbStandardTrees()[n], nil
 }
 
-// jbCombineRow applies one of the five region combination operators of 6.2.2
-// to a run of pixels.
 // jbCombine composites the columns [x0, x1) of row sy of src onto row dy of
 // dst, starting at column x + x0.
 func jbCombine(dst, src *jbBitmap, x, dy, sy, x0, x1, op int) {

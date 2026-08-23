@@ -1,88 +1,26 @@
 // Package pdf renders PDF documents.
 //
-// A document is opened from a file, a reader or a buffer, and a page is
-// rendered at a resolution in dots per inch:
-//
 //	doc, err := pdf.Open("file.pdf")
 //	defer doc.Close()
 //
 //	p, err := doc.Page(0)
 //	img, err := p.ImageDPI(150)
-//
-// ImageDPI returns *image.RGBA, and Image returns the page at the resolution
-// its own content is in, which for a scan is the resolution of the scan.
-// ImageOptions renders into the color space the caller asks for and returns
-// the standard library type that matches, Render returns the pixmap itself,
-// and RenderTo draws into a destination the caller owns. A page composites in
-// one color space throughout and converts once, at that boundary, so a CMYK
-// document can come back as *image.CMYK.
-//
-// # Text, links and SVG
-//
-// A page is more than a picture. Text returns what it says, StructuredText
-// returns the same with the box every character, line and block occupies,
-// Links returns where its link annotations lead, and WriteSVG writes it as
-// SVG:
-//
 //	txt, err := p.Text()
-//	st, err := p.StructuredText()
-//	for _, l := range p.Links() {
-//		fmt.Println(l.Rect, l.URI)
-//	}
 //
-// All four work in page space at 72 dots per inch, with y counting down from
-// the top left.
+// A page also reads as structured text, as its links, as SVG and as HTML,
+// and [Page.Run] draws it through a [Device]. The device interface and
+// the devices behind it live in the gfx package and are aliased here, so that
+// rendering a page needs one import.
 //
-// What the document says about itself is Outline, which is the tree a viewer
-// shows as a table of contents, Metadata, and PageLabels, which is what a
-// viewer numbers the pages with when a preface counts in roman numerals.
+// A page composites in one color space throughout and converts once, at the
+// public boundary, so a CMYK document renders to *image.CMYK.
 //
-// # Devices
+// A damaged file renders the part that could be read. What went wrong is
+// collected in [Document.Err] rather than returned, unless [Options.Strict]
+// asks for the first of them to be.
 //
-// Everything a page draws goes through Device, which Page.Run takes. The
-// renderer is one implementation; text extraction, SVG, a trace and a
-// bounding box are others, and embedding BaseDevice is how to write another.
-// The interface and the devices are in the gfx package, which knows nothing
-// about PDF, and are aliased here so that one import is enough.
-//
-// A font the file does not embed is substituted: one of the base fourteen for
-// a Latin face, and one the machine has for a character collection they have
-// no glyphs for. SetSystemFonts(false) turns the second off, which makes a
-// render depend on nothing outside the file.
-//
-// A damaged file renders the part that could be read. What went wrong on the
-// way is collected in Document.Err rather than returned, unless
-// Options.Strict asks for the first of them.
-//
-// # Concurrency
-//
-// A Document may be rendered from several goroutines at once, one page each.
-// A Page may not: give each goroutine its own. Configuration - layers, usage,
-// the image decoder - belongs before the goroutines start.
-//
-//	for i := range doc.NumPages() {
-//		go func() {
-//			p, err := doc.Page(i)
-//			img, err := p.ImageDPI(150)
-//		}()
-//	}
-//
-// One page may instead be drawn in horizontal bands by several goroutines,
-// which is worth it when the page is large:
-//
-//	px, err := p.Render(p.Matrix(300), &pdf.Options{Threads: 4})
-//
-// # Layers and usage
-//
-// Optional content is a list the caller may edit, and the usage decides which
-// annotations and which layers a file means for the screen and which for
-// paper:
-//
-//	layers := doc.Layers()
-//	layers[0].On = false
-//	doc.SetLayers(layers)
-//
-//	doc.SetUsage(pdf.UsagePrint)
+// A [Document] may be rendered from several goroutines at once, one page
+// each; a [Page] may not. Configuration belongs before they start.
 package pdf
 
 import (

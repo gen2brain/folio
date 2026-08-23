@@ -1,12 +1,11 @@
-// Package svg renders an SVG drawing. It is a document in the sense the other
-// formats of this module are: a file opens, it has one page, and the page runs
-// onto a gfx.Device, which is the same seam a PDF page and an HTML part draw
-// through.
+// Package svg renders an SVG drawing. It is a document the way the other
+// formats of this module are: a file opens, it has one page, and the page
+// runs onto the same gfx.Device a PDF page draws through.
 //
-// What is drawn is the static shape of SVG 1.1: the shapes and paths, the
-// transforms, the viewBox, the groups a symbol and a use refer to, and the
-// fill and stroke properties. Scripting, animation and interaction are not a
-// picture and are not read.
+// What is drawn is the static picture: shapes and paths, transforms and
+// viewports, the three paint servers, clips, masks, markers, filters, and
+// text on a path or down the page, shaped and reordered. Scripting, animation
+// and interaction are not a picture and are not read.
 package svg
 
 import (

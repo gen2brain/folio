@@ -33,10 +33,8 @@ var (
 // RegisterPictureDecoder installs a decoder for a picture format, taking
 // precedence over the standard library's for data beginning with magic, in
 // which a question mark matches any byte. Registering the same name again
-// replaces it, and a nil decoder removes it.
-//
-// It is what image.RegisterFormat would be if it did not decide for the whole
-// program:
+// replaces it, and a nil decoder removes it. Unlike image.RegisterFormat it
+// decides nothing for the rest of the program:
 //
 //	gfx.RegisterPictureDecoder("jpeg", "\xff\xd8", func(b []byte) (image.Image, error) {
 //		return jpegn.Decode(bytes.NewReader(b), &jpegn.Options{ToRGBA: true})
