@@ -183,7 +183,7 @@ func (ip *interp) runType3Glyph(font *Font, proc *Stream, trm raster.Matrix) {
 	ip.gs.softMask = nil
 	ip.inText = false
 	ip.pushResources(res)
-	ip.run(data)
+	ip.runStream(proc, data)
 	ip.flushText()
 
 	for i := 0; i < ip.gs.clipDepth; i++ {

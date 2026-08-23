@@ -165,7 +165,7 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 			ip.base = ip.gs.ctm
 			ip.gs.clipDepth = 0
 			ip.dev.ClipPath(&cell, false, ip.gs.ctm, ip.scissor)
-			ip.run(data)
+			ip.runStream(st, data)
 			ip.flushText()
 			ip.unwind(savedStack)
 			ip.dev.PopClip()

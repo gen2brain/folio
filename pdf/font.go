@@ -640,7 +640,7 @@ func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, 
 	ip.gs.strokeColor.cs = cs
 	ip.gs.strokeColor.value = append([]float32(nil), col...)
 	ip.gs.fillAlpha, ip.gs.strokeAlpha = alpha, alpha
-	ip.run(data)
+	ip.runStream(proc, data)
 	ip.finish()
 }
 

@@ -96,7 +96,7 @@ func (ip *interp) runForm(st *Stream, asMask bool) {
 	ip.base = ip.gs.ctm
 	ip.pushResources(f.GetDict(st.Dict["Resources"]))
 	ip.gs.clipDepth = 0
-	ip.run(data)
+	ip.runStream(st, data)
 	ip.flushText()
 
 	for i := 0; i < ip.gs.clipDepth; i++ {

@@ -48,11 +48,18 @@ type Document struct {
 	imageTail  *imageEntry
 	imageBytes int
 
-	// GlyphCacheBytes bounds the rendered glyph masks the document keeps and
-	// ImageCacheBytes the decoded images. Zero means the default, negative
-	// means no cache at all.
+	// contents holds the parsed form of a content stream run before; a nil
+	// entry is a stream seen once.
+	contents   map[*syntax.Stream]*content
+	contentOps int
+
+	// GlyphCacheBytes bounds the rendered glyph masks the document keeps,
+	// ImageCacheBytes the decoded images and ContentCacheOps the operands of
+	// parsed content streams. Zero means the default, negative means no cache
+	// at all.
 	GlyphCacheBytes int
 	ImageCacheBytes int
+	ContentCacheOps int
 }
 
 // glyphCache returns the document's cache of rendered glyph masks.
