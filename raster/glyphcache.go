@@ -10,11 +10,23 @@ type GlyphKey struct {
 	GID        int32
 	A, B, C, D float32
 	SubX, SubY uint8
+	// Stroked and the pen below it identify the outline of a glyph that is
+	// stroked rather than filled.
+	Stroked           bool
+	Width, MiterLimit float32
+	StartCap, DashCap Cap
+	EndCap            Cap
+	Join              Join
 }
 
 // SubPixels is how many phases of the glyph origin are kept apart. Snapping a
 // glyph to whole pixels is visible as uneven spacing.
 const SubPixels = 4
+
+// StrokeSubPixels is SubPixels for a stroked glyph, whose two edges lie close
+// enough together that a quarter pixel moves more coverage than it does under
+// a filled one.
+const StrokeSubPixels = 32
 
 // GlyphCache holds rendered glyph masks, bounded by their total size, and
 // drops the least recently used when it is full.

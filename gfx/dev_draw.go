@@ -448,16 +448,12 @@ func (d *DrawDevice) StrokeText(t *Text, s *raster.Stroke, ctm raster.Matrix, cs
 		return
 	}
 	paint := d.paint(cs, col, alpha)
+	scale := ctm.Expansion()
 	d.eachGlyph(t, ctm, func(f Font, prog *font.Font, gid int, m raster.Matrix) {
 		if prog == nil {
 			return
 		}
-		p := prog.GlyphPath(gid)
-		if p == nil {
-			return
-		}
-		full := raster.Concat(prog.Matrix, m)
-		d.fillPath(deviceStroke(p, s, full, ctm.Expansion()), false, raster.Identity, paint)
+		d.stampGlyph(prog, gid, m, paint, s, scale)
 	})
 }
 
@@ -532,38 +528,79 @@ func (d *DrawDevice) eachGlyph(t *Text, ctm raster.Matrix, fn func(Font, *font.F
 // drawGlyph stamps one glyph, from the cache when it is small enough to be
 // worth remembering.
 func (d *DrawDevice) drawGlyph(prog *font.Font, gid int, m raster.Matrix, paint raster.Paint) {
+	d.stampGlyph(prog, gid, m, paint, nil, 0)
+}
+
+// stampGlyph draws one glyph filled, or stroked when there is a pen, from the
+// cache when it is small enough to be worth remembering.
+func (d *DrawDevice) stampGlyph(prog *font.Font, gid int, m raster.Matrix, paint raster.Paint, s *raster.Stroke, scale float32) {
 	p := prog.GlyphPath(gid)
 	if p == nil {
 		return
 	}
 	full := raster.Concat(prog.Matrix, m)
+	steps := raster.SubPixels
+	if s != nil {
+		steps = raster.StrokeSubPixels
+	}
+	ix, sx := subPixel(full.E, steps)
+	iy, sy := subPixel(full.F, steps)
 
-	ix, sx := subPixel(full.E)
-	iy, sy := subPixel(full.F)
+	cache := d.cache
+	if s != nil && len(s.Dash) > 0 {
+		cache = nil
+	}
+	var key raster.GlyphKey
+	if cache != nil {
+		key = raster.GlyphKey{
+			Font: prog, GID: int32(gid),
+			A: full.A, B: full.B, C: full.C, D: full.D,
+			SubX: sx, SubY: sy,
+		}
+		if s != nil {
+			key.Stroked, key.Width, key.MiterLimit = true, s.Width*scale, s.MiterLimit
+			key.StartCap, key.DashCap, key.EndCap, key.Join = s.StartCap, s.DashCap, s.EndCap, s.Join
+		}
+		if mask := cache.Get(key); mask != nil {
+			d.stampMask(mask, ix, iy, paint)
+			return
+		}
+	}
+
 	phase := full
-	phase.E, phase.F = float32(sx)/raster.SubPixels, float32(sy)/raster.SubPixels
-
+	phase.E, phase.F = float32(sx)/float32(steps), float32(sy)/float32(steps)
 	box := p.Bounds(phase)
+	if s != nil {
+		w := s.Width*scale/2 + 1
+		box = raster.Rect{X0: box.X0 - w, Y0: box.Y0 - w, X1: box.X1 + w, Y1: box.Y1 + w}
+	}
 	x0, y0, x1, y1 := box.Outer()
-	if d.cache == nil || (x1-x0)*(y1-y0) > maxCachedGlyph || x1 <= x0 || y1 <= y0 {
+	if cache == nil || (x1-x0)*(y1-y0) > maxCachedGlyph || x1 <= x0 || y1 <= y0 {
+		if s != nil {
+			d.fillPath(deviceStroke(p, s, full, scale), false, raster.Identity, paint)
+			return
+		}
 		d.fillPath(p, false, full, paint)
 		return
 	}
 
-	cache := d.cache
-	key := raster.GlyphKey{
-		Font: prog, GID: int32(gid),
-		A: full.A, B: full.B, C: full.C, D: full.D,
-		SubX: sx, SubY: sy,
+	out, pm := p, phase
+	if s != nil {
+		out, pm = deviceStroke(p, s, phase, scale), raster.Identity
+		if x0, y0, x1, y1 = out.Bounds(pm).Outer(); x1 <= x0 || y1 <= y0 {
+			return
+		}
 	}
-	mask := cache.Get(key)
-	if mask == nil {
-		mask = d.renderGlyph(p, phase, x0, y0, x1, y1)
-		cache.Put(key, mask)
-	}
+	mask := d.renderGlyph(out, pm, x0, y0, x1, y1)
+	cache.Put(key, mask)
 	if mask == nil {
 		return
 	}
+	d.stampMask(mask, ix, iy, paint)
+}
+
+// stampMask blits a rendered glyph at the whole pixel its origin fell on.
+func (d *DrawDevice) stampMask(mask *raster.Pixmap, ix, iy int, paint raster.Paint) {
 	stamp := *mask
 	stamp.X += ix
 	stamp.Y += iy
@@ -591,12 +628,12 @@ func (d *DrawDevice) renderGlyph(p *raster.Path, m raster.Matrix, x0, y0, x1, y1
 
 // subPixel splits a device coordinate into the pixel it lands in and the
 // phase inside it, in quarter pixels.
-func subPixel(v float32) (int, uint8) {
+func subPixel(v float32, n int) (int, uint8) {
 	f := math.Floor(float64(v))
 	i := int(f)
-	s := uint8((float64(v) - f) * raster.SubPixels)
-	if s >= raster.SubPixels {
-		s = raster.SubPixels - 1
+	s := uint8((float64(v) - f) * float64(n))
+	if s >= uint8(n) {
+		s = uint8(n) - 1
 	}
 	return i, s
 }
