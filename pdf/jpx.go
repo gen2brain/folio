@@ -1289,6 +1289,81 @@ func jpxExtend(buf []float32, offset, size int) {
 	buf[j2] = buf[i2]
 }
 
+// jpxExtendRows is jpxExtend with a row of the band where it has a sample.
+func jpxExtendRows(rows [][]float32, offset, size int) {
+	i1, j1 := offset-1, offset+1
+	i2, j2 := offset+size-2, offset+size
+	for k := 0; k < 4; k++ {
+		copy(rows[i1], rows[j1])
+		copy(rows[j2], rows[i2])
+		i1--
+		j1++
+		i2--
+		j2++
+	}
+}
+
+// jpxReversibleFilterRows is jpxReversibleFilter down every column of a band
+// at once, which is what keeps the vertical pass reading whole rows.
+func jpxReversibleFilterRows(rows [][]float32, offset, length int) {
+	half := length >> 1
+	j := offset
+	for m := half + 1; m > 0; m, j = m-1, j+2 {
+		lo, mid, hi := rows[j-1], rows[j], rows[j+1]
+		for i := range mid {
+			mid[i] -= float32((int32(lo[i]) + int32(hi[i]) + 2) >> 2)
+		}
+	}
+	j = offset + 1
+	for m := half; m > 0; m, j = m-1, j+2 {
+		lo, mid, hi := rows[j-1], rows[j], rows[j+1]
+		for i := range mid {
+			mid[i] += float32((int32(lo[i]) + int32(hi[i])) >> 1)
+		}
+	}
+}
+
+// jpxIrreversibleFilterRows is jpxIrreversibleFilter down every column at once.
+func jpxIrreversibleFilterRows(rows [][]float32, offset, length int) {
+	half := length >> 1
+
+	j := offset - 3
+	for m := half + 4; m > 0; m, j = m-1, j+2 {
+		mid := rows[j]
+		for i := range mid {
+			mid[i] = float32(jpxKI * mid[i])
+		}
+	}
+	j = offset - 2
+	for m := half + 3; m > 0; m, j = m-1, j+2 {
+		lo, mid, hi := rows[j-1], rows[j], rows[j+1]
+		for i := range mid {
+			mid[i] = float32(jpxKK*mid[i]) - (float32(jpxDelta*lo[i]) + float32(jpxDelta*hi[i]))
+		}
+	}
+	j = offset - 1
+	for m := half + 2; m > 0; m, j = m-1, j+2 {
+		lo, mid, hi := rows[j-1], rows[j], rows[j+1]
+		for i := range mid {
+			mid[i] -= float32(jpxGamma*lo[i]) + float32(jpxGamma*hi[i])
+		}
+	}
+	j = offset
+	for m := half + 1; m > 0; m, j = m-1, j+2 {
+		lo, mid, hi := rows[j-1], rows[j], rows[j+1]
+		for i := range mid {
+			mid[i] -= float32(jpxBeta*lo[i]) + float32(jpxBeta*hi[i])
+		}
+	}
+	j = offset + 1
+	for m := half; m > 0; m, j = m-1, j+2 {
+		lo, mid, hi := rows[j-1], rows[j], rows[j+1]
+		for i := range mid {
+			mid[i] -= float32(jpxAlpha*lo[i]) + float32(jpxAlpha*hi[i])
+		}
+	}
+}
+
 // jpxReversibleFilter is the 5-3 filter of F.3.8.2, which works on integers.
 func jpxReversibleFilter(x []float32, offset, length int) {
 	half := length >> 1
@@ -1302,15 +1377,25 @@ func jpxReversibleFilter(x []float32, offset, length int) {
 	}
 }
 
+// The lifting constants of the 9-7 filter, F.3.8.1.
+const (
+	jpxAlpha = -1.586134342059924
+	jpxBeta  = -0.052980118572961
+	jpxGamma = 0.882911075530934
+	jpxDelta = 0.443506852043971
+	jpxKK    = 1.230174104914001
+	jpxKI    = 1 / jpxKK
+)
+
 // jpxIrreversibleFilter is the 9-7 filter of F.3.8.1.
 func jpxIrreversibleFilter(x []float32, offset, length int) {
 	const (
-		alpha = -1.586134342059924
-		beta  = -0.052980118572961
-		gamma = 0.882911075530934
-		delta = 0.443506852043971
-		kk    = 1.230174104914001
-		ki    = 1 / kk
+		alpha = jpxAlpha
+		beta  = jpxBeta
+		gamma = jpxGamma
+		delta = jpxDelta
+		kk    = jpxKK
+		ki    = jpxKI
 	)
 	half := length >> 1
 
@@ -1378,17 +1463,21 @@ func jpxIterate(ll, band jpxBand, u0, v0 int, reversible bool) jpxBand {
 			}
 		}
 	} else {
-		buf := make([]float32, h+2*jpxPad)
-		for u := 0; u < w; u++ {
-			for k, l := u, jpxPad; l < jpxPad+h; k, l = k+w, l+1 {
-				buf[l] = items[k]
-			}
-			jpxExtend(buf, jpxPad, h)
-			filter(buf, jpxPad, h)
-			for k, l := u, jpxPad; l < jpxPad+h; k, l = k+w, l+1 {
-				items[k] = buf[l]
-			}
+		filterRows := jpxIrreversibleFilterRows
+		if reversible {
+			filterRows = jpxReversibleFilterRows
 		}
+		pad := make([]float32, 2*jpxPad*w)
+		rows := make([][]float32, h+2*jpxPad)
+		for v := 0; v < h; v++ {
+			rows[jpxPad+v] = items[v*w : v*w+w]
+		}
+		for k := 0; k < jpxPad; k++ {
+			rows[k] = pad[k*w : k*w+w]
+			rows[jpxPad+h+k] = pad[(jpxPad+k)*w : (jpxPad+k)*w+w]
+		}
+		jpxExtendRows(rows, jpxPad, h)
+		filterRows(rows, jpxPad, h)
 	}
 	return jpxBand{w, h, items}
 }
@@ -1956,6 +2045,15 @@ func jpxWriteComponent(img *jpxImage, ctx *jpxContext, tile *jpxTile, c int, ban
 		}
 		row := band.items[sy*band.w:]
 		out := img.pix[oy*img.width*img.comps+c:]
+		if comp.xr == 1 {
+			x0 := max(tile.tx0, siz.xosiz, tc.tcx0)
+			x1 := min(tile.tx1, siz.xosiz+img.width, tc.tcx0+band.w)
+			if x0 < x1 {
+				jpxWriteRow(out[(x0-siz.xosiz)*img.comps:], img.comps,
+					row[x0-tc.tcx0:x1-tc.tcx0], half, shift)
+			}
+			continue
+		}
 		for x := tile.tx0; x < tile.tx1; x++ {
 			ox := x - siz.xosiz
 			if ox < 0 || ox >= img.width {
@@ -1965,15 +2063,43 @@ func jpxWriteComponent(img *jpxImage, ctx *jpxContext, tile *jpxTile, c int, ban
 			if sx < 0 || sx >= band.w {
 				continue
 			}
-			v := int(float64(row[sx]) + float64(half) + 0.5)
-			if shift > 0 {
-				v >>= uint(shift)
-			} else if shift < 0 {
-				v <<= uint(-shift)
-			}
-			out[ox*img.comps] = uint8(min(max(v, 0), 255))
+			out[ox*img.comps] = jpxSample(row[sx], half, shift)
 		}
 	}
+}
+
+// jpxWriteRow is the body of jpxWriteComponent for a component the image is
+// not subsampled in, where the samples run one to one.
+func jpxWriteRow(out []uint8, stride int, row []float32, half, shift int) {
+	switch {
+	case shift == 0:
+		for i, v := range row {
+			out[i*stride] = jpxClamp(int(float64(v) + float64(half) + 0.5))
+		}
+	case shift > 0:
+		for i, v := range row {
+			out[i*stride] = jpxClamp(int(float64(v)+float64(half)+0.5) >> uint(shift))
+		}
+	default:
+		for i, v := range row {
+			out[i*stride] = jpxClamp(int(float64(v)+float64(half)+0.5) << uint(-shift))
+		}
+	}
+}
+
+// jpxSample is one sample of jpxWriteRow, for the subsampled case.
+func jpxSample(v float32, half, shift int) uint8 {
+	n := int(float64(v) + float64(half) + 0.5)
+	if shift > 0 {
+		n >>= uint(shift)
+	} else if shift < 0 {
+		n <<= uint(-shift)
+	}
+	return jpxClamp(n)
+}
+
+func jpxClamp(v int) uint8 {
+	return uint8(min(max(v, 0), 255))
 }
 
 // jpxComponents reports how many components a codestream carries, reading no

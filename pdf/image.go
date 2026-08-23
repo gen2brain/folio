@@ -591,6 +591,18 @@ func (u *unpacker) mapped(lut []uint8, rowBytes int) {
 			for x, v := range src[:w] {
 				row[x] = lut[v]
 			}
+		case m == 3 && n == 3:
+			for x, v := range src[:w] {
+				e := lut[int(v)*3:][:3:3]
+				p := row[x*3:][:3:3]
+				p[0], p[1], p[2] = e[0], e[1], e[2]
+			}
+		case m == 3 && n == 4 && !keyed:
+			for x, v := range src[:w] {
+				e := lut[int(v)*3:][:3:3]
+				p := row[x*4:][:4:4]
+				p[0], p[1], p[2], p[3] = e[0], e[1], e[2], 255
+			}
 		default:
 			for x := 0; x < w; x++ {
 				v := src[x]
