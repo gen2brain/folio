@@ -30,6 +30,7 @@ Not in scope: writing or editing documents, form field values, JavaScript, XFA, 
 
  |                                                                |                                                           |
  |----------------------------------------------------------------|-----------------------------------------------------------|
+ | [doc](https://pkg.go.dev/github.com/gen2brain/folio/doc)       | one Open over the three, for a file of unknown format     |
  | [pdf](https://pkg.go.dev/github.com/gen2brain/folio/pdf)       | the content interpreter and the public API                |
  | [svg](https://pkg.go.dev/github.com/gen2brain/folio/svg)       | a drawing as a document of its own                        |
  | [html](https://pkg.go.dev/github.com/gen2brain/folio/html)     | reflowable and office documents, and the layout over them |
