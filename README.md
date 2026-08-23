@@ -1,4 +1,6 @@
 ## folio
+[![Status](https://github.com/gen2brain/folio/actions/workflows/test.yml/badge.svg)](https://github.com/gen2brain/folio/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/gen2brain/folio.svg)](https://pkg.go.dev/github.com/gen2brain/folio)
 
 Document rendering in pure Go, no cgo: **PDF**, **SVG**, **EPUB**, **MOBI**, **CHM**, **FB2**, **DOCX**, **PPTX**, **XLSX**, **HTML** and plain text.
 
@@ -47,7 +49,6 @@ Every format renders through one `gfx.Device`, so a caller can drive something o
 The object layer is checked against MuPDF, poppler and qpdf; the interpreter against `mutool trace`, call for call; the font engine against `mutool draw -F svg`, glyph for glyph;
 text extraction against `mutool draw -F txt`, line for line. The 2D engine is byte-exact against AGG and the JPEG 2000 decoder against OpenJPEG.
 Rendered PDF pages are scored against MuPDF, poppler, cairo and Ghostscript, drawings against librsvg, resvg and a browser, and books, help files and office documents against MuPDF's own extraction.
-Every file of a CHM comes out byte for byte what 7z extracts.
 
 ### License
 
