@@ -1,7 +1,12 @@
 package gfx
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
+	"image"
+	"image/color"
+	pngenc "image/png"
 	"sort"
 	"testing"
 
@@ -250,3 +255,64 @@ func TestICCProfile(t *testing.T) {
 		ParseICC(buildICC(t, "RGB ", generic)[:n])
 	}
 }
+
+func TestRegisterPictureDecoder(t *testing.T) {
+	var png bytes.Buffer
+	src := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	src.Set(0, 0, color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	src.Set(1, 0, color.RGBA{R: 40, G: 50, B: 60, A: 255})
+	if err := pngenc.Encode(&png, src); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := DecodePicture(png.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.pix.Samples[0]; got != 10 {
+		t.Errorf("standard decoder gave %d, want 10", got)
+	}
+
+	called := 0
+	RegisterPictureDecoder("png", "\x89PNG\r\n\x1a\n", func(b []byte) (image.Image, error) {
+		called++
+		m := image.NewRGBA(image.Rect(0, 0, 2, 1))
+		m.Set(0, 0, color.RGBA{R: 99, G: 99, B: 99, A: 255})
+		return m, nil
+	})
+	p, err = DecodePicture(png.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Errorf("the registered decoder ran %d times, want 1", called)
+	}
+	if got := p.pix.Samples[0]; got != 99 {
+		t.Errorf("registered decoder gave %d, want 99", got)
+	}
+
+	RegisterPictureDecoder("png", "\x89PNG\r\n\x1a\n", nil)
+	p, err = DecodePicture(png.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.pix.Samples[0]; got != 10 {
+		t.Errorf("after removal the decoder gave %d, want 10", got)
+	}
+
+	RegisterPictureDecoder("huge", "\x89PNG\r\n\x1a\n", func(b []byte) (image.Image, error) {
+		return fakeBounds{}, nil
+	})
+	defer RegisterPictureDecoder("huge", "\x89PNG\r\n\x1a\n", nil)
+	if _, err := DecodePicture(png.Bytes()); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a decoder returning an unbounded image gave %v, want ErrUnsupported", err)
+	}
+}
+
+// fakeBounds is an image that claims more pixels than a picture may allocate
+// without holding any.
+type fakeBounds struct{}
+
+func (fakeBounds) ColorModel() color.Model { return color.RGBAModel }
+func (fakeBounds) Bounds() image.Rectangle { return image.Rect(0, 0, 1<<15, 1<<15) }
+func (fakeBounds) At(x, y int) color.Color { return color.RGBA{} }

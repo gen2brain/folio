@@ -399,8 +399,7 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *
 	if !alpha {
 		return px, nil
 	}
-	i.transparency(px, opacity)
-	premultiplyPixmap(px)
+	i.composite(px, opacity)
 	return px.Subsample(shrink), nil
 }
 
@@ -759,42 +758,60 @@ func (b *bits) next() uint32 {
 	return v
 }
 
-// transparency hangs an /SMask or a stencil /Mask on a decoded image. Either
-// may be a different size, so both are sampled rather than copied.
-func (i *Image) transparency(px *raster.Pixmap, opacity []byte) {
+// composite hangs an /SMask or a stencil /Mask on a decoded image and folds
+// the alpha into the color components, in one pass over the samples. Either
+// mask may be a different size, so both are sampled rather than copied.
+func (i *Image) composite(px *raster.Pixmap, opacity []byte) {
 	if !px.Alpha {
 		return
 	}
-	if opacity != nil {
-		n := px.Comps()
-		for y := 0; y < px.H; y++ {
-			row := px.Row(y)
-			for x := 0; x < px.W; x++ {
-				if p := y*px.W + x; p < len(opacity) {
-					row[x*n+px.N] = opacity[p]
-				}
+	var mask *raster.Pixmap
+	if opacity == nil {
+		m := i.SMask
+		if m == nil {
+			m = i.StencilMask
+		}
+		if m != nil {
+			cov, err := m.coverage()
+			if err != nil || cov == nil {
+				i.doc.errorf("image mask: %v", err)
+			} else {
+				mask = cov
 			}
 		}
-		return
 	}
-	mask := i.SMask
-	if mask == nil {
-		mask = i.StencilMask
-	}
-	if mask == nil {
-		return
-	}
-	m, err := mask.coverage()
-	if err != nil || m == nil {
-		i.doc.errorf("image mask: %v", err)
-		return
-	}
-	n := px.Comps()
+	n, cn := px.Comps(), px.N
 	for y := 0; y < px.H; y++ {
 		row := px.Row(y)
-		src := m.Row(y * m.H / px.H)
+		var src []uint8
+		scaled := false
+		switch {
+		case opacity != nil:
+			if o := y * px.W; o < len(opacity) {
+				src = opacity[o:]
+			}
+		case mask != nil:
+			src = mask.Row(y * mask.H / px.H)
+			scaled = mask.W != px.W
+		}
 		for x := 0; x < px.W; x++ {
-			row[x*n+px.N] = src[x*m.W/px.W]
+			p := row[x*n : x*n+n : x*n+n]
+			if src != nil {
+				j := x
+				if scaled {
+					j = x * mask.W / px.W
+				}
+				if j < len(src) {
+					p[cn] = src[j]
+				}
+			}
+			a := p[cn]
+			if a == 255 {
+				continue
+			}
+			for c := 0; c < cn; c++ {
+				p[c] = premultiply(p[c], a)
+			}
 		}
 	}
 }
@@ -807,25 +824,6 @@ func (i *Image) coverage() (*raster.Pixmap, error) {
 		return nil, err
 	}
 	return px.Coverage(), nil
-}
-
-// premultiplyPixmap folds the alpha channel into the color components, which
-// is how a pixmap with alpha is stored.
-func premultiplyPixmap(px *raster.Pixmap) {
-	n := px.Comps()
-	for y := 0; y < px.H; y++ {
-		row := px.Row(y)
-		for x := 0; x < px.W; x++ {
-			p := row[x*n : x*n+n]
-			a := p[px.N]
-			if a == 255 {
-				continue
-			}
-			for c := 0; c < px.N; c++ {
-				p[c] = premultiply(p[c], a)
-			}
-		}
-	}
 }
 
 // adobeTransform reads the transform an APP14 Adobe marker declares: 0 for

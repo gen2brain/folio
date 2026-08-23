@@ -14,6 +14,76 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
+// PictureDecoder reads one of the raster formats a document carries a picture
+// in. Returning an *image.RGBA whose bounds begin at the origin saves the
+// conversion DecodePicture would otherwise do.
+type PictureDecoder func(data []byte) (image.Image, error)
+
+type registered struct {
+	name  string
+	magic string
+	dec   PictureDecoder
+}
+
+var (
+	decoderMu sync.RWMutex
+	decoders  []registered
+)
+
+// RegisterPictureDecoder installs a decoder for a picture format, taking
+// precedence over the standard library's for data beginning with magic, in
+// which a question mark matches any byte. Registering the same name again
+// replaces it, and a nil decoder removes it.
+//
+// It is what image.RegisterFormat would be if it did not decide for the whole
+// program:
+//
+//	gfx.RegisterPictureDecoder("jpeg", "\xff\xd8", func(b []byte) (image.Image, error) {
+//		return jpegn.Decode(bytes.NewReader(b), &jpegn.Options{ToRGBA: true})
+//	})
+func RegisterPictureDecoder(name, magic string, dec PictureDecoder) {
+	decoderMu.Lock()
+	defer decoderMu.Unlock()
+	for i := range decoders {
+		if decoders[i].name != name {
+			continue
+		}
+		if dec == nil {
+			decoders = append(decoders[:i], decoders[i+1:]...)
+		} else {
+			decoders[i] = registered{name, magic, dec}
+		}
+		return
+	}
+	if dec != nil {
+		decoders = append(decoders, registered{name, magic, dec})
+	}
+}
+
+// pictureDecoder is the decoder registered for what b begins with.
+func pictureDecoder(b []byte) PictureDecoder {
+	decoderMu.RLock()
+	defer decoderMu.RUnlock()
+	for _, r := range decoders {
+		if matchMagic(r.magic, b) {
+			return r.dec
+		}
+	}
+	return nil
+}
+
+func matchMagic(magic string, b []byte) bool {
+	if len(b) < len(magic) {
+		return false
+	}
+	for i := 0; i < len(magic); i++ {
+		if magic[i] != '?' && magic[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ErrUnsupported is a picture in a form this cannot decode.
 var ErrUnsupported = errors.New("gfx: unsupported")
 
@@ -94,22 +164,38 @@ func convertPixmap(src *raster.Pixmap, m raster.Model) *raster.Pixmap {
 // maxPictureArea bounds what one picture of a book may allocate.
 const maxPictureArea = 1 << 26
 
-// decodePicture reads one of the formats a book carries a picture in.
+func boundPicture(w, h int) error {
+	if w <= 0 || h <= 0 || w*h > maxPictureArea {
+		return fmt.Errorf("%w: picture is %dx%d", ErrUnsupported, w, h)
+	}
+	return nil
+}
+
 // DecodePicture reads one of the raster formats a document carries a picture
-// in.
+// in, through a decoder RegisterPictureDecoder has installed for it or the
+// standard library's.
 func DecodePicture(b []byte) (*Picture, error) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
-	if err != nil {
-		return nil, err
+	var src image.Image
+	var err error
+	if dec := pictureDecoder(b); dec != nil {
+		src, err = dec(b)
+	} else {
+		var cfg image.Config
+		if cfg, _, err = image.DecodeConfig(bytes.NewReader(b)); err != nil {
+			return nil, err
+		}
+		if err = boundPicture(cfg.Width, cfg.Height); err != nil {
+			return nil, err
+		}
+		src, _, err = image.Decode(bytes.NewReader(b))
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > maxPictureArea {
-		return nil, fmt.Errorf("%w: picture is %dx%d", ErrUnsupported, cfg.Width, cfg.Height)
-	}
-	src, _, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
 	r := src.Bounds()
+	if err := boundPicture(r.Dx(), r.Dy()); err != nil {
+		return nil, err
+	}
 	rgba, ok := src.(*image.RGBA)
 	if !ok || rgba.Rect != r {
 		rgba = image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
