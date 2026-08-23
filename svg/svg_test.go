@@ -1527,3 +1527,21 @@ func TestFilterUnderRotation(t *testing.T) {
 		t.Error("the element is still where it was drawn")
 	}
 }
+
+func TestMetadata(t *testing.T) {
+	d, err := Load([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">` +
+		`<title>A drawing</title><desc>What it shows</desc><rect width="10" height="10"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := d.Metadata()
+	if m.Title != "A drawing" {
+		t.Errorf("title %q", m.Title)
+	}
+	if m.Description != "What it shows" {
+		t.Errorf("description %q", m.Description)
+	}
+	if m := (&Document{}).Metadata(); m.Title != "" || m.Description != "" {
+		t.Errorf("an empty drawing says %+v", m)
+	}
+}

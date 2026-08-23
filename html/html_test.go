@@ -1290,7 +1290,7 @@ func TestLayout(t *testing.T) {
 	d, p := styledPage(t, `p { margin: 0 }`,
 		"<p>one two three</p><p>four five</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
 	defer d.Close()
-	if got := p.Text(); got != "one two three\nfour five\n" {
+	if got := pageText(t, p); got != "one two three\nfour five\n" {
 		t.Fatalf("page text = %q", got)
 	}
 	if b := p.Bounds(); b.X1 != 300 || b.Y1 != 300 {
@@ -1315,11 +1315,11 @@ func TestLayoutWraps(t *testing.T) {
 	d, p := styledPage(t, `body, p { margin: 0; font-size: 16px }`,
 		"<p>"+long+"</p>", &LayoutOptions{Width: 300, Height: 800, Margin: 0})
 	defer d.Close()
-	lines := strings.Split(strings.TrimSpace(p.Text()), "\n")
+	lines := strings.Split(strings.TrimSpace(pageText(t, p)), "\n")
 	if len(lines) < 4 {
-		t.Fatalf("%d lines, want the text to wrap: %q", len(lines), p.Text())
+		t.Fatalf("%d lines, want the text to wrap: %q", len(lines), pageText(t, p))
 	}
-	if got := strings.Join(strings.Fields(p.Text()), " "); got != strings.TrimSpace(long) {
+	if got := strings.Join(strings.Fields(pageText(t, p)), " "); got != strings.TrimSpace(long) {
 		t.Errorf("the words changed: %q", got)
 	}
 	f := styleFace(&Style{FontSize: 16, FontWeight: 400}, nil)
@@ -1349,7 +1349,7 @@ func TestLayoutPaginates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		all.WriteString(p.Text())
+		all.WriteString(pageText(t, p))
 	}
 	for i := range 200 {
 		if want := fmt.Sprintf("paragraph number %d\n", i); !strings.Contains(all.String(), want) {
@@ -1371,11 +1371,11 @@ func TestLayoutPageBreak(t *testing.T) {
 	}
 	p0, _ := d.Page(0)
 	p1, _ := d.Page(1)
-	if !strings.Contains(p0.Text(), "before") || strings.Contains(p0.Text(), "heading") {
-		t.Errorf("page 0 = %q", p0.Text())
+	if !strings.Contains(pageText(t, p0), "before") || strings.Contains(pageText(t, p0), "heading") {
+		t.Errorf("page 0 = %q", pageText(t, p0))
 	}
-	if !strings.Contains(p1.Text(), "heading") || !strings.Contains(p1.Text(), "after") {
-		t.Errorf("page 1 = %q", p1.Text())
+	if !strings.Contains(pageText(t, p1), "heading") || !strings.Contains(pageText(t, p1), "after") {
+		t.Errorf("page 1 = %q", pageText(t, p1))
 	}
 }
 
@@ -1506,7 +1506,7 @@ func TestLayoutPlacedDeep(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		all.WriteString(p.Text())
+		all.WriteString(pageText(t, p))
 	}
 	if got := all.String(); !strings.Contains(got, "deep") {
 		t.Errorf("the pages say %q, want the placed box on one of them", got)
@@ -1524,7 +1524,7 @@ func TestLayoutConcurrent(t *testing.T) {
 	want := make([]string, n)
 	for i := range n {
 		p, _ := d.Page(i)
-		want[i] = p.Text()
+		want[i] = pageText(t, p)
 	}
 	var wg sync.WaitGroup
 	for i := range n {
@@ -1534,7 +1534,7 @@ func TestLayoutConcurrent(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			if got := p.Text(); got != want[i] {
+			if got := pageText(t, p); got != want[i] {
 				t.Errorf("page %d = %q, want %q", i, got, want[i])
 			}
 			if _, err := p.ImageDPI(48); err != nil {
@@ -1798,7 +1798,7 @@ func TestGeneratedContent(t *testing.T) {
 		p::before { content: "X " } p:after { content: " Z" }`,
 		"<p>one</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
 	defer d.Close()
-	if got := p.Text(); got != "X one Z\n" {
+	if got := pageText(t, p); got != "X one Z\n" {
 		t.Errorf("page text = %q", got)
 	}
 
@@ -1807,7 +1807,7 @@ func TestGeneratedContent(t *testing.T) {
 	d2, p2 := styledPage(t, `q::before, q::after { content: ''; content: none }`,
 		"<p>a<q>b</q>c</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
 	defer d2.Close()
-	if got := p2.Text(); got != "abc\n" {
+	if got := pageText(t, p2); got != "abc\n" {
 		t.Errorf("page text = %q", got)
 	}
 
@@ -1815,7 +1815,7 @@ func TestGeneratedContent(t *testing.T) {
 		 p::after { content: attr(title) }`,
 		"<p>one</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
 	defer d3.Close()
-	if got := p3.Text(); got != "one\n" {
+	if got := pageText(t, p3); got != "one\n" {
 		t.Errorf("page text = %q", got)
 	}
 
@@ -1902,7 +1902,7 @@ func TestLayoutFloatText(t *testing.T) {
 		`<p>one <span class="f">FLOAT</span> two</p>`,
 		&LayoutOptions{Width: 400, Height: 400, Margin: 0})
 	defer d.Close()
-	if got := p.Text(); got != "one two\nFLOAT\n" {
+	if got := pageText(t, p); got != "one two\nFLOAT\n" {
 		t.Errorf("page text = %q", got)
 	}
 }
@@ -2132,7 +2132,7 @@ func TestLayoutVertical(t *testing.T) {
 		body, p { margin: 0 }`, `<p>日本語です</p>`,
 		&LayoutOptions{Width: 300, Height: 200, Margin: 0})
 	defer d.Close()
-	if got := p.Text(); got != "日本語です\n" {
+	if got := pageText(t, p); got != "日本語です\n" {
 		t.Errorf("page text = %q", got)
 	}
 	img, err := p.ImageDPI(96)
@@ -2418,7 +2418,7 @@ func TestLayoutFallbackFace(t *testing.T) {
 	d, p := styledPage(t, `body, p { margin: 0 }`, "<p>one 日本 two</p>",
 		&LayoutOptions{Width: 400, Height: 400, Margin: 0})
 	defer d.Close()
-	if got, want := strings.TrimSpace(p.Text()), "one 日本 two"; got != want {
+	if got, want := strings.TrimSpace(pageText(t, p)), "one 日本 two"; got != want {
 		t.Fatalf("page text = %q, want %q", got, want)
 	}
 	var faces []face
@@ -2787,7 +2787,7 @@ func TestSVGInSpine(t *testing.T) {
 	if got := p.Path(); got != "EPUB/p1.svg" {
 		t.Errorf("page 0 came out of %q", got)
 	}
-	if s := p.Text(); !strings.Contains(s, "Drawn page") {
+	if s := pageText(t, p); !strings.Contains(s, "Drawn page") {
 		t.Errorf("the drawn page reads %q, want the text of the drawing", s)
 	}
 	img, err := p.ImageDPI(96)
@@ -3080,7 +3080,7 @@ func TestPlainTextBook(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The lines of a text file are kept, which is what pre asks for.
-	if got := p.Text(); !strings.Contains(got, "One line.\n") {
+	if got := pageText(t, p); !strings.Contains(got, "One line.\n") {
 		t.Fatalf("the page reads %q", got)
 	}
 }
@@ -3538,7 +3538,7 @@ func TestXLSX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := p.Text(); !strings.Contains(got, "Name\tTwo runs\n") {
+	if got := pageText(t, p); !strings.Contains(got, "Name\tTwo runs\n") {
 		t.Errorf("the sheet reads %q", got)
 	}
 }
@@ -3630,7 +3630,7 @@ func TestFB2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := p.Text(); !strings.Contains(got, "Text with emphasis and a note.") {
+	if got := pageText(t, p); !strings.Contains(got, "Text with emphasis and a note.") {
 		t.Errorf("the page reads %q", got)
 	}
 }
@@ -3879,7 +3879,7 @@ func TestBidiLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// What the page says is what was written, not the shape of it.
-	if got := strings.TrimSpace(p.Text()); got != heb+" (abc) "+heb {
+	if got := strings.TrimSpace(pageText(t, p)); got != heb+" (abc) "+heb {
 		t.Fatalf("the page reads %q", got)
 	}
 
@@ -3937,6 +3937,16 @@ func TestBidiLayout(t *testing.T) {
 	}
 }
 
+// pageText is Page.Text for a test that has already checked the error.
+func pageText(t *testing.T, p *Page) string {
+	t.Helper()
+	s, err := p.Text()
+	if err != nil {
+		t.Fatalf("page text: %v", err)
+	}
+	return s
+}
+
 func TestAutoLayout(t *testing.T) {
 	const src = "<h1>Title</h1><p>Body text.</p>"
 	d, err := NewReader(strings.NewReader(src), int64(len(src)))
@@ -3955,7 +3965,7 @@ func TestAutoLayout(t *testing.T) {
 	if b.X1-b.X0 != 600 || b.Y1-b.Y0 != 900 {
 		t.Errorf("default page is %gx%g points, want 600x900", b.X1-b.X0, b.Y1-b.Y0)
 	}
-	if txt := p.Text(); !strings.Contains(txt, "Body text.") {
+	if txt := pageText(t, p); !strings.Contains(txt, "Body text.") {
 		t.Errorf("page one says %q", txt)
 	}
 	if n, err := d.Layout(&LayoutOptions{Width: 200, Height: 200}); err != nil || n == 0 {

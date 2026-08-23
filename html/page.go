@@ -336,15 +336,16 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 func (p *Page) Image() (*image.RGBA, error) { return p.ImageDPI(96) }
 
 // Text returns what the page says, a line of the text for each line box.
-func (p *Page) Text() string {
+func (p *Page) Text() (string, error) {
 	t := &textCollector{top: p.top, bottom: p.bottom}
 	t.walk(p.part.root)
-	return t.b.String()
+	return t.b.String(), errors.Join(t.errs...)
 }
 
 // textCollector reads the text off the lines of one page.
 type textCollector struct {
 	b           strings.Builder
+	errs        []error
 	top, bottom float32
 }
 
@@ -380,8 +381,10 @@ func (t *textCollector) walk(b *box) {
 				// A drawing carries text of its own, which is all a page
 				// whose spine item is one has to say.
 				if f.vis != nil && f.vis.art != nil {
-					if s, err := f.vis.art.Text(); err == nil {
-						t.b.WriteString(s)
+					s, err := f.vis.art.Text()
+					t.b.WriteString(s)
+					if err != nil {
+						t.errs = append(t.errs, err)
 					}
 				}
 			}

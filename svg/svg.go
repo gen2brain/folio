@@ -93,14 +93,28 @@ const (
 	defFontSize = 12
 )
 
-// title is what the drawing calls itself, which is the title element the root
-// carries.
-func (d *Document) title() string {
+// Metadata is what a drawing says about itself.
+type Metadata struct {
+	// Title and Description are the title and desc elements of the root.
+	Title       string
+	Description string
+}
+
+// Metadata returns the drawing's title and description.
+func (d *Document) Metadata() Metadata {
+	return Metadata{Title: d.rootText("title"), Description: d.rootText("desc")}
+}
+
+// title is what the drawing calls itself.
+func (d *Document) title() string { return d.rootText("title") }
+
+// rootText is the text of the named child of the root element.
+func (d *Document) rootText(name string) string {
 	if d == nil || d.root == nil {
 		return ""
 	}
 	for _, k := range d.root.kids {
-		if k.name == "title" {
+		if k.name == name {
 			var b strings.Builder
 			for _, t := range k.kids {
 				b.WriteString(t.chars)
