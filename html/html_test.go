@@ -3979,3 +3979,47 @@ func TestAutoLayout(t *testing.T) {
 		t.Errorf("after a second Layout the page is %g points wide, want 150", b.X1-b.X0)
 	}
 }
+
+func TestLooseMarkup(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		src   string
+		kind  Kind
+		title string
+		want  string
+	}{
+		{"a page", "<!DOCTYPE html><html><head><title>A book</title></head>" +
+			"<body><h1>Heading</h1><p>Read <b>me</b>.</p></body></html>",
+			KindHTML, "A book", "Heading\nRead me."},
+		{"a fragment", "<p>Just a <i>fragment</i>.</p>", KindHTML, "", "Just a fragment."},
+		{"after a comment", "<!-- a note -->\n<html><body><p>Commented.</p></body></html>",
+			KindHTML, "", "Commented."},
+		{"an entity in the title", "<html><head><title>Tom &amp; Jerry</title></head><body><p>x</p></body></html>",
+			KindHTML, "Tom & Jerry", "x"},
+		{"plain text", "One line.\nTwo <not a tag> line.\n", KindText, "",
+			"One line.\nTwo <not a tag> line."},
+		{"text naming a tag", "I once wrote <html> in a letter.\n", KindText, "",
+			"I once wrote <html> in a letter."},
+	} {
+		d, err := Load([]byte(c.src))
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if d.Kind() != c.kind {
+			t.Errorf("%s: read as %v, want %v", c.name, d.Kind(), c.kind)
+		}
+		if got := d.Metadata().Title; got != c.title {
+			t.Errorf("%s: title %q, want %q", c.name, got, c.title)
+		}
+		p, err := d.Page(0)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if got := strings.TrimSpace(pageText(t, p)); got != c.want {
+			t.Errorf("%s: says %q, want %q", c.name, got, c.want)
+		}
+		d.Close()
+	}
+}

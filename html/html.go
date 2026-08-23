@@ -62,6 +62,7 @@ const (
 	KindPPTX
 	KindXLSX
 	KindFB2
+	KindHTML
 )
 
 // String returns the name of the container.
@@ -83,6 +84,8 @@ func (k Kind) String() string {
 		return "XLSX"
 	case KindFB2:
 		return "FB2"
+	case KindHTML:
+		return "HTML"
 	}
 	return "unknown"
 }

@@ -67,9 +67,7 @@ func TestLoad(t *testing.T) {
 	}{
 		{"pdf", onePagePDF, KindPDF, "", ""},
 		{"svg", oneDrawing, KindSVG, "A drawing", "Drawn"},
-		// A loose HTML file is read as a text document, which carries no
-		// metadata of its own; a container gives its own title.
-		{"book", oneBook, KindBook, "", "Read me."},
+		{"book", oneBook, KindBook, "A book", "Read me."},
 	} {
 		d, err := Load([]byte(c.data))
 		if err != nil {
