@@ -3669,6 +3669,68 @@ func TestFB2Encoding(t *testing.T) {
 	}
 }
 
+// TestMarkdown covers the document as Markdown: the headings, lists, tables,
+// links and emphasis it was written with, the escaping of what Markdown would
+// otherwise read as syntax, and the HTML it falls back to for a table a pipe
+// one cannot hold.
+func TestMarkdown(t *testing.T) {
+	part := `<html><body>` +
+		`<h1>A Title</h1>` +
+		`<p>Some <b>bold</b>, <i>italic</i>, <code>a  b</code> and ` +
+		`<a href="two.xhtml">a link</a>.</p>` +
+		`<p>2 * 3 and snake_case and IEnumerable&lt;T&gt;</p>` +
+		`<p>1. not a list</p><p># not a heading</p>` +
+		`<blockquote><p>First.</p><p>Second.</p></blockquote>` +
+		`<ul><li>One</li><li>Two<ul><li>Nested</li></ul></li></ul>` +
+		`<ol start="3"><li>Three</li><li>Four</li></ol>` +
+		`<pre><code>line one
+line  two</code></pre>` +
+		`<hr/>` +
+		`<table><tr><th>A</th><th>B</th></tr>` +
+		`<tr><td><p>one</p><p>two</p></td><td>b|c</td></tr></table>` +
+		`<table><tr><td colspan="2">wide</td></tr></table>` +
+		`<p><img src="pic.png" alt="A picture"/></p>` +
+		`</body></html>`
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml":    part,
+		"EPUB/text/two.xhtml":    "<html><body><h2>Second part</h2></body></html>",
+		"EPUB/images/cover.png":  "\x89PNG",
+	})
+	got, err := d.Markdown()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"# A Title\n",
+		// The white space of a code span in a paragraph collapses the way
+		// the markup it came from does.
+		"Some **bold**, *italic*, `a b` and [a link](two.xhtml).",
+		// An underscore inside a word is not emphasis and is left alone.
+		"snake_case",
+		`2 \* 3`, `IEnumerable\<T>`, `1\. not a list`,
+		"> First.\n>\n> Second.",
+		"- One\n- Two\n  - Nested",
+		"3. Three\n4. Four",
+		"```\nline one\nline  two\n```",
+		"\n---\n",
+		"| A | B |\n| --- | --- |\n| one<br>two | b\\|c |",
+		`<td colspan="2">wide</td>`,
+		"![A picture](pic.png)",
+		"## Second part",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the markdown has no %q\n%s", want, got)
+		}
+	}
+	// The head of a part says nothing.
+	if strings.Contains(got, "A Book") {
+		t.Error("the title element reached the markdown")
+	}
+}
+
 // TestNewStream covers reading a document from a stream that cannot be
 // seeked, which is what a caller with a pipe or a network body has.
 func TestNewStream(t *testing.T) {

@@ -1,6 +1,6 @@
 ## folio
 
-Document rendering in pure Go, no cgo: **PDF**, **SVG**, **EPUB**, **MOBI**, **CHM**, **DOCX**, **PPTX** and plain text.
+Document rendering in pure Go, no cgo: **PDF**, **SVG**, **EPUB**, **MOBI**, **CHM**, **FB2**, **DOCX**, **PPTX**, **XLSX** and plain text.
 
 ### Rendering
 
@@ -16,7 +16,7 @@ txt, err := p.Text()
 A book has no pages until it is given a size to reflow into:
 
 ```go
-doc, err := html.Open("book.epub")     // or .mobi, .chm, .docx, .pptx, .txt
+doc, err := html.Open("book.epub")     // or .mobi, .chm, .fb2, .docx, .pptx, .xlsx, .txt
 n, err := doc.Layout(&html.LayoutOptions{Width: 800, Height: 1200, Margin: 40})
 p, err := doc.Page(0)
 ```
@@ -25,14 +25,14 @@ Leaving the size out takes the page the document asks for, which is what a Word 
 
 ### Supported
 
- |                           |                                                                                                                            |
- |---------------------------|----------------------------------------------------------------------------------------------------------------------------|
- | **PDF**                   | paths, text, images, shadings, patterns, transparency, annotations, layers; damaged files repaired, encrypted files opened |
- | **SVG**                   | the drawing model end to end: filters, paint servers, clipping, masking, text along a path and down the page               |
- | **EPUB, MOBI, CHM, text** | container, HTML, CSS cascade and layout: floats, tables, pagination, writing modes, embedded fonts                         |
- | **DOCX, PPTX**            | styles, lists, tables, pictures and footnotes; a slide is a page, with its shapes where they were put                      |
+ |                                |                                                                                                                                    |
+ |--------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
+ | **PDF**                        | paths, text, images, shadings, patterns, transparency, annotations, layers; damaged files repaired, encrypted files opened         |
+ | **SVG**                        | the drawing model end to end: filters, paint servers, clipping, masking, text along a path and down the page                       |
+ | **EPUB, MOBI, CHM, FB2, text** | container, HTML, CSS cascade and layout: floats, tables, pagination, writing modes, embedded fonts                                 |
+ | **DOCX, PPTX, XLSX**           | styles, lists, tables, pictures and footnotes; a slide is a page, a sheet a part, with the numbers formatted the way the file asks |
 
-A page also comes back as structured text with the box every character occupies, as plain text, as its links, and as SVG. A document comes back with its outline, metadata and page labels.
+A page also comes back as structured text with the box every character occupies, as plain text, as its links, as SVG and as HTML; a reflowable document also comes back as Markdown. A document comes back with its outline, metadata and page labels.
 
 Not in scope: writing or editing documents, form field values, JavaScript, XFA, signature validation, PDF/A validation.
 

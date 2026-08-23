@@ -41,6 +41,10 @@
 //	p, err := doc.Page(0)
 //	img, err := p.ImageDPI(150)
 //
+// Document.Text is everything the book says and Document.Markdown the same
+// with the headings, lists, tables, links and emphasis it was written with.
+// Both read the parts rather than the pages, so neither needs Layout.
+//
 // The page is given in CSS pixels, 96 to the inch, and Page.Bounds returns it
 // in points so that a page of a book measures the same way a page of a PDF
 // does. Page.Text is what the page says, Page.StructuredText is that with the

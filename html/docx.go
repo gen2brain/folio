@@ -651,6 +651,12 @@ func (c *docx) run(r *xnode) {
 		open += ">"
 		shut = "</span>"
 	}
+	// A run the file marks up is written as the element that means it, so
+	// that what comes back out is a document rather than a colour.
+	for _, e := range c.emphasis(rPr, style) {
+		open += "<" + e + ">"
+		shut = "</" + e + ">" + shut
+	}
 	var body strings.Builder
 	var notes [][2]string
 	for _, k := range r.kids {
@@ -689,6 +695,75 @@ func (c *docx) run(r *xnode) {
 	for _, v := range notes {
 		c.note(v[0], v[1], 0)
 	}
+}
+
+// monoStyles are the character styles a generator marks code with, and
+// monoFamilies the faces it sets it in.
+var (
+	monoStyles = map[string]bool{
+		"verbatimchar": true, "sourcecode": true, "code": true, "htmlcode": true,
+	}
+	monoFamilies = map[string]bool{
+		"courier": true, "courier new": true, "consolas": true, "menlo": true,
+		"monaco": true, "dejavu sans mono": true, "liberation mono": true,
+		"lucida console": true, "andale mono": true,
+	}
+)
+
+// emphasis is the elements a run's properties and its style mean, innermost
+// last.
+func (c *docx) emphasis(rPr *xnode, style string) []string {
+	var out []string
+	if c.monospaced(rPr, style, 0) {
+		out = append(out, "code")
+	}
+	if rPr == nil {
+		return out
+	}
+	if rPr.on("b") {
+		out = append(out, "strong")
+	}
+	if rPr.on("i") {
+		out = append(out, "em")
+	}
+	if rPr.on("strike") || rPr.on("dstrike") {
+		out = append(out, "s")
+	}
+	if v, ok := rPr.val("vertAlign"); ok {
+		switch v {
+		case "superscript":
+			out = append(out, "sup")
+		case "subscript":
+			out = append(out, "sub")
+		}
+	}
+	return out
+}
+
+// monospaced reports a run written as code, which a style names or a face
+// says.
+func (c *docx) monospaced(rPr *xnode, style string, depth int) bool {
+	if depth > ooxmlMaxDepth {
+		return false
+	}
+	if monoStyles[strings.ToLower(style)] {
+		return true
+	}
+	if rPr != nil {
+		if f := rPr.child("rFonts"); f != nil {
+			if monoFamilies[strings.ToLower(f.at("ascii"))] {
+				return true
+			}
+		}
+	}
+	if style == "" {
+		return false
+	}
+	v, ok := c.styles[style]
+	if !ok {
+		return false
+	}
+	return c.monospaced(v.rPr, v.base, depth+1)
 }
 
 func symbol(code string) string {
