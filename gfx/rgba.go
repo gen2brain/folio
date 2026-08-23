@@ -22,17 +22,20 @@ func ToRGBA(px *raster.Pixmap) *image.RGBA {
 		row := px.Row(y)
 		out := img.Pix[y*img.Stride : y*img.Stride+px.W*4]
 		if !px.Alpha {
-			model.ToRGB(rgb, row)
+			src := row
+			if model != raster.ModelRGB || px.N != 3 {
+				model.ToRGB(rgb, row)
+				src = rgb
+			}
 			for x := 0; x < px.W; x++ {
-				out[x*4], out[x*4+1], out[x*4+2] = rgb[x*3], rgb[x*3+1], rgb[x*3+2]
-				out[x*4+3] = 255
+				p := out[x*4 : x*4+4 : x*4+4]
+				q := src[x*3 : x*3+3 : x*3+3]
+				p[0], p[1], p[2], p[3] = q[0], q[1], q[2], 255
 			}
 			continue
 		}
 		if px.N == 3 {
-			for x := 0; x < px.W; x++ {
-				copy(out[x*4:x*4+4], row[x*n:x*n+4])
-			}
+			copy(out, row[:px.W*4])
 			continue
 		}
 		for x := 0; x < px.W; x++ {

@@ -471,6 +471,10 @@ func (u *unpacker) run() {
 			u.bilevel(lut, rowBytes)
 			return
 		}
+		if u.bpc == 8 {
+			u.mapped(lut, rowBytes)
+			return
+		}
 		for y := 0; y < i.Height; y++ {
 			row := u.sh.Row()
 			if row == nil {
@@ -494,6 +498,7 @@ func (u *unpacker) run() {
 	}
 
 	if u.direct() {
+		keyed := len(u.img.ColorKey) >= 2*u.comps
 		for y := 0; y < i.Height; y++ {
 			row := u.sh.Row()
 			if row == nil {
@@ -508,6 +513,27 @@ func (u *unpacker) run() {
 			if !px.Alpha {
 				// the samples are already the row
 				copy(row[:w*n], src[:w*n])
+				u.sh.Commit()
+				continue
+			}
+			if !keyed {
+				if u.comps == 3 {
+					for x := 0; x < w; x++ {
+						p := row[x*4 : x*4+4 : x*4+4]
+						e := src[x*3 : x*3+3 : x*3+3]
+						p[0], p[1], p[2], p[3] = e[0], e[1], e[2], 255
+					}
+					u.sh.Commit()
+					continue
+				}
+				for x := 0; x < w; x++ {
+					e := src[x*u.comps:][:u.comps:u.comps]
+					p := row[x*n:][:px.N:px.N]
+					for c, s := range e {
+						p[c] = s
+					}
+					row[x*n+px.N] = 255
+				}
 				u.sh.Commit()
 				continue
 			}
@@ -540,6 +566,57 @@ func (u *unpacker) run() {
 			u.cs.Convert(c, row[x*n:x*n+px.N])
 			if px.Alpha {
 				row[x*n+px.N] = u.keyedAll(raw)
+			}
+		}
+		u.sh.Commit()
+	}
+}
+
+// mapped is the palette path for byte samples, which index the table without
+// a bit reader.
+func (u *unpacker) mapped(lut []uint8, rowBytes int) {
+	i, px := u.img, u.px
+	n, m := px.Comps(), px.N
+	keyed := len(u.img.ColorKey) >= 2
+	gray := m == 1 && n == 1
+	for y := 0; y < i.Height; y++ {
+		row := u.sh.Row()
+		if row == nil {
+			return
+		}
+		start := min(y*rowBytes, len(u.data))
+		src := u.data[start:min(start+rowBytes, len(u.data))]
+		w := min(i.Width, len(src))
+		switch {
+		case gray:
+			for x, v := range src[:w] {
+				row[x] = lut[v]
+			}
+		default:
+			for x := 0; x < w; x++ {
+				v := src[x]
+				e := lut[int(v)*m:][:m:m]
+				p := row[x*n:][:m:m]
+				for c, s := range e {
+					p[c] = s
+				}
+				if px.Alpha {
+					if keyed {
+						row[x*n+m] = u.keyed(uint32(v))
+					} else {
+						row[x*n+m] = 255
+					}
+				}
+			}
+		}
+		for x := w; x < i.Width; x++ {
+			copy(row[x*n:][:m:m], lut[:m])
+			if px.Alpha {
+				if keyed {
+					row[x*n+m] = u.keyed(0)
+				} else {
+					row[x*n+m] = 255
+				}
 			}
 		}
 		u.sh.Commit()
@@ -924,17 +1001,7 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 		return pix, w, h, 4, nil
 
 	case *image.YCbCr:
-		pix := make([]byte, w*h*3)
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				yi := m.YOffset(b.Min.X+x, b.Min.Y+y)
-				ci := m.COffset(b.Min.X+x, b.Min.Y+y)
-				r, g, bl := stdcolor.YCbCrToRGB(m.Y[yi], m.Cb[ci], m.Cr[ci])
-				o := (y*w + x) * 3
-				pix[o], pix[o+1], pix[o+2] = r, g, bl
-			}
-		}
-		return pix, w, h, 3, nil
+		return ycbcrSamples(m, w, h), w, h, 3, nil
 	}
 
 	pix := make([]byte, w*h*3)
@@ -946,6 +1013,42 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 		}
 	}
 	return pix, w, h, 3, nil
+}
+
+// chromaShift is how far a coordinate moves right to index the chroma planes
+// of a subsampled JPEG.
+func chromaShift(r image.YCbCrSubsampleRatio) (h, v uint) {
+	switch r {
+	case image.YCbCrSubsampleRatio422:
+		return 1, 0
+	case image.YCbCrSubsampleRatio420:
+		return 1, 1
+	case image.YCbCrSubsampleRatio440:
+		return 0, 1
+	case image.YCbCrSubsampleRatio411:
+		return 2, 0
+	case image.YCbCrSubsampleRatio410:
+		return 2, 1
+	}
+	return 0, 0
+}
+
+// ycbcrSamples converts a decoded JPEG to interleaved RGB a row at a time.
+func ycbcrSamples(m *image.YCbCr, w, h int) []byte {
+	hs, vs := chromaShift(m.SubsampleRatio)
+	pix := make([]byte, w*h*3)
+	for y := 0; y < h; y++ {
+		luma := m.Y[y*m.YStride:]
+		ci := (y >> vs) * m.CStride
+		cb, cr := m.Cb[ci:], m.Cr[ci:]
+		o := y * w * 3
+		for x := 0; x < w; x++ {
+			r, g, b := stdcolor.YCbCrToRGB(luma[x], cb[x>>hs], cr[x>>hs])
+			pix[o], pix[o+1], pix[o+2] = r, g, b
+			o += 3
+		}
+	}
+	return pix
 }
 
 // imageKey identifies a decoded image: the stream it came from and the shape
