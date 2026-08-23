@@ -334,6 +334,21 @@ func (t *textCollector) walk(b *box) {
 	if b == nil || (b.reach > b.y && (b.y >= t.bottom || b.reach <= t.top)) {
 		return
 	}
+	// The cells of a row are read across it rather than one under the other,
+	// so the row ends the line and the cells are separated by a tab.
+	if b.style != nil && b.style.Display == DisplayTableRow {
+		n := t.b.Len()
+		for i, k := range b.kids {
+			if i > 0 {
+				t.b.WriteByte('\t')
+			}
+			t.row(k)
+		}
+		if t.b.Len() > n {
+			t.b.WriteByte('\n')
+		}
+		return
+	}
 	if len(b.lines) > 0 {
 		for i := range b.lines {
 			ln := &b.lines[i]
@@ -368,5 +383,26 @@ func (t *textCollector) walk(b *box) {
 	}
 	for _, k := range b.kids {
 		t.walk(k)
+	}
+}
+
+// row reads one cell, which is a block whose lines run together.
+func (t *textCollector) row(b *box) {
+	if b == nil {
+		return
+	}
+	for i := range b.lines {
+		ln := &b.lines[i]
+		if ln.y >= t.bottom || ln.y+ln.h <= t.top {
+			continue
+		}
+		for j := range ln.frags {
+			t.b.WriteString(ln.frags[j].text)
+		}
+	}
+	for _, k := range b.kids {
+		if len(b.lines) == 0 || k.ownFlow() {
+			t.row(k)
+		}
 	}
 }

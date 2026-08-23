@@ -3444,6 +3444,105 @@ func TestPPTX(t *testing.T) {
 	}
 }
 
+const xlsxNS = `xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
+	`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`
+
+// TestXLSX covers a workbook: the strings its cells share, the formats its
+// numbers are written with, the cells a merge covers, and one sheet per page.
+func TestXLSX(t *testing.T) {
+	sheet := `<worksheet ` + xlsxNS + `><cols><col min="1" max="2" width="20"/></cols>` +
+		`<sheetData>` +
+		`<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>` +
+		`<row r="2"><c r="A2" s="1"><v>45000</v></c><c r="B2" s="2"><v>1234.5</v></c>` +
+		`<c r="D2" s="3"><v>0.125</v></c></row>` +
+		`<row r="3"><c r="A3" t="b"><v>1</v></c>` +
+		`<c r="B3" t="inlineStr"><is><t>in &amp; line</t></is></c></row>` +
+		`<row r="4"><c r="A4" t="s"><v>2</v></c></row>` +
+		`</sheetData><mergeCells><mergeCell ref="A4:C4"/></mergeCells></worksheet>`
+	raw := buildOffice(t, map[string]string{
+		"xl/workbook.xml": `<workbook ` + xlsxNS + `><sheets>` +
+			`<sheet name="First" sheetId="1" r:id="rId1"/>` +
+			`<sheet name="Second" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/>` +
+			`<Relationship Id="rId2" Type="x/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`,
+		"xl/worksheets/sheet1.xml": sheet,
+		"xl/worksheets/sheet2.xml": `<worksheet ` + xlsxNS + `><sheetData>` +
+			`<row r="1"><c r="A1" t="str"><v>formula</v></c></row></sheetData></worksheet>`,
+		"xl/sharedStrings.xml": `<sst ` + xlsxNS + `><si><t>Name</t></si>` +
+			`<si><r><t>Two </t></r><r><t>runs</t></r></si><si><t>Wide</t></si></sst>`,
+		"xl/styles.xml": `<styleSheet ` + xlsxNS + `>` +
+			`<numFmts><numFmt numFmtId="200" formatCode="&quot;$&quot;#,##0.00"/></numFmts>` +
+			`<fonts><font/><font><b/><color rgb="FFFF0000"/></font></fonts>` +
+			`<fills><fill/></fills>` +
+			`<cellXfs><xf numFmtId="0" fontId="0" fillId="0"/>` +
+			`<xf numFmtId="14" fontId="0" fillId="0"/>` +
+			`<xf numFmtId="200" fontId="1" fillId="0"/>` +
+			`<xf numFmtId="9" fontId="0" fillId="0"/></cellXfs></styleSheet>`,
+		"docProps/core.xml": `<coreProperties xmlns="x"><title>A Workbook</title></coreProperties>`,
+	})
+
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Kind() != KindXLSX {
+		t.Fatalf("opened as %s", d.Kind())
+	}
+	if d.Metadata().Title != "A Workbook" {
+		t.Errorf("the metadata is %+v", d.Metadata())
+	}
+	if len(d.Spine()) != 2 {
+		t.Fatalf("%d sheets in the spine", len(d.Spine()))
+	}
+	toc := d.Outline()
+	if len(toc) != 2 || toc[0].Title != "First" || toc[1].Title != "Second" {
+		t.Errorf("the outline is %+v", toc)
+	}
+	one, err := d.Read("sheet1.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<h1>First</h1>",
+		`<colgroup><col style="width:140px"/><col style="width:140px"/></colgroup>`,
+		">Name<", ">Two runs<",
+		// 45000 in the built in date format, 1234.5 with a currency and two
+		// decimals, and a percentage.
+		">03-15-23<", ">$1,234.50<", ">13%<",
+		">TRUE<", ">in &amp; line<",
+		`colspan="3"`,
+		"font-weight:bold", "color:#ff0000",
+	} {
+		if !bytes.Contains(one, []byte(want)) {
+			t.Errorf("the sheet has no %q", want)
+		}
+	}
+	// A cell the sheet skips leaves an empty one behind it.
+	if n := bytes.Count(one, []byte("<td></td>")); n == 0 {
+		t.Error("the gap in row two was not filled")
+	}
+	two, err := d.Read("sheet2.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(two, []byte(">formula<")) {
+		t.Errorf("the second sheet is %s", two)
+	}
+	if n, err := d.Layout(nil); err != nil || n < 2 {
+		t.Fatalf("laid out %d pages, %v", n, err)
+	}
+	// A row is read across rather than one cell under the other.
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Text(); !strings.Contains(got, "Name\tTwo runs\n") {
+		t.Errorf("the sheet reads %q", got)
+	}
+}
+
 // TestNewStream covers reading a document from a stream that cannot be
 // seeked, which is what a caller with a pipe or a network body has.
 func TestNewStream(t *testing.T) {

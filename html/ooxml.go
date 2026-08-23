@@ -272,6 +272,8 @@ func openZip(r io.ReaderAt, size int64) (*Document, error) {
 		return openDOCX(o)
 	case o.has("ppt/presentation.xml"):
 		return openPPTX(o)
+	case o.has("xl/workbook.xml"):
+		return openXLSX(o)
 	}
 	return openEPUB(z, files)
 }

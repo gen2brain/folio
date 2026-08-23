@@ -1,5 +1,5 @@
-// Package html reads reflowable documents: EPUB, MOBI, CHM, DOCX, PPTX and
-// plain text.
+// Package html reads reflowable documents: EPUB, MOBI, CHM, DOCX, PPTX, XLSX
+// and plain text.
 //
 // A reflowable document has no pages until it is laid out, so a container
 // hands over the parts a book is made of and the order to read them in:
@@ -99,6 +99,7 @@ const (
 	KindCHM
 	KindDOCX
 	KindPPTX
+	KindXLSX
 )
 
 // String returns the name of the container.
@@ -116,6 +117,8 @@ func (k Kind) String() string {
 		return "DOCX"
 	case KindPPTX:
 		return "PPTX"
+	case KindXLSX:
+		return "XLSX"
 	}
 	return "unknown"
 }
