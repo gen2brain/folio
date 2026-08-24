@@ -4049,3 +4049,67 @@ func TestLooseMarkup(t *testing.T) {
 		d.Close()
 	}
 }
+
+// TestInlineSVG covers an svg element written into a chapter, and the ratio
+// its viewBox fixes for a percentage height.
+func TestInlineSVG(t *testing.T) {
+	const pkg = `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub">
+ <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Cover</dc:title></metadata>
+ <manifest>
+  <item id="one" href="cover.xhtml" media-type="application/xhtml+xml"/>
+  <item id="pic" href="cover.png" media-type="image/png"/>
+ </manifest>
+ <spine><itemref idref="one"/></spine>
+</package>`
+	const cover = `<html><body><div>` +
+		`<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"` +
+		` viewBox="0 0 100 200" preserveAspectRatio="none">` +
+		`<rect width="100" height="200" fill="red"/>` +
+		`<text x="5" y="100" font-size="20">Drawn cover</text>` +
+		`</svg></div></body></html>`
+
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       pkg,
+		"EPUB/cover.xhtml":       cover,
+	})
+	n, err := d.Layout(&LayoutOptions{Width: 100, Height: 400, Margin: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d pages, want the one the cover is", n)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := pageText(t, p); !strings.Contains(s, "Drawn cover") {
+		t.Errorf("the cover reads %q, want the text of the drawing", s)
+	}
+	img, err := p.ImageDPI(96)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The viewBox is half as wide as it is tall, and the drawing keeps that.
+	b := img.Bounds()
+	minX, minY, maxX, maxY := b.Max.X, b.Max.Y, -1, -1
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			if r>>8 > 180 && g>>8 < 90 && bl>>8 < 90 {
+				minX, minY = min(minX, x), min(minY, y)
+				maxX, maxY = max(maxX, x), max(maxY, y)
+			}
+		}
+	}
+	if maxX < 0 {
+		t.Fatal("the drawing left no red on the page")
+	}
+	w, h := float32(maxX-minX+1), float32(maxY-minY+1)
+	if r := h / w; r < 1.8 || r > 2.2 {
+		t.Errorf("the drawing is %vx%v, ratio %v, want the viewBox ratio 2", w, h, r)
+	}
+}

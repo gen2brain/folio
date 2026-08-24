@@ -7,6 +7,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	xhtml "golang.org/x/net/html"
+
 	"github.com/gen2brain/folio/font"
 )
 
@@ -30,6 +32,7 @@ type layout struct {
 	// beside them work around.
 	floats []exclusion
 	pics   map[string]*visual
+	arts   map[*xhtml.Node]*visual
 	errs   []error
 	// budget bounds the trial layouts a table and a float measure with,
 	// which nest and would otherwise multiply.

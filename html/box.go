@@ -126,6 +126,10 @@ func build(n *Node, st Styles) *box {
 			return &box{kind: breakBox, style: s, node: n}
 		case atom.Img:
 			return &box{kind: imageBox, style: s, node: n}
+		case atom.Svg:
+			if n.Namespace == "svg" {
+				return &box{kind: imageBox, style: s, node: n}
+			}
 		}
 	}
 	b := &box{style: s, node: n}

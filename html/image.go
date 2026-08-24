@@ -1,10 +1,14 @@
 package html
 
 import (
+	"bytes"
 	"fmt"
 	"path"
 	"strconv"
 	"strings"
+
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/svg"
@@ -27,11 +31,76 @@ func decodePicture(b []byte) (*picture, error) { return gfx.DecodePicture(b) }
 
 // picture decodes the image an element names, once per part.
 func (l *layout) picture(b *box) *visual {
+	if b.node != nil && b.node.Namespace == "svg" && b.node.DataAtom == atom.Svg {
+		return l.drawing(b.node)
+	}
 	src := Attr(b.node, "src")
 	if src == "" {
 		return nil
 	}
 	return l.pictureAt(Resolve(l.path, src))
+}
+
+// drawing reads an svg element written into the markup, once per element.
+func (l *layout) drawing(n *xhtml.Node) *visual {
+	if v, ok := l.arts[n]; ok {
+		return v
+	}
+	if l.arts == nil {
+		l.arts = map[*xhtml.Node]*visual{}
+	}
+	l.arts[n] = nil
+	if l.doc == nil {
+		return nil
+	}
+	var raw bytes.Buffer
+	if err := xhtml.Render(&raw, n); err != nil {
+		l.fail(err)
+		return nil
+	}
+	pw, ph := l.pw, l.ph
+	if vw, vh, ok := viewBoxSize(n); ok && pctLen(Attr(n, "height")) && pw > 0 {
+		ph = pw * vh / vw
+	}
+	doc, err := svg.LoadWith(raw.Bytes(), &svg.LoadOptions{
+		Open:  func(name string) ([]byte, error) { return l.doc.Read(Resolve(l.path, name)) },
+		Width: pw, Height: ph,
+	})
+	if err != nil {
+		l.fail(err)
+		return nil
+	}
+	pg, err := doc.Page(0)
+	if err != nil {
+		l.fail(err)
+		return nil
+	}
+	bb := pg.Bounds()
+	v := &visual{art: pg, w: bb.X1 - bb.X0, h: bb.Y1 - bb.Y0}
+	l.arts[n] = v
+	return v
+}
+
+// pctLen reports a length written as a percentage, or left out.
+func pctLen(s string) bool {
+	s = strings.TrimSpace(s)
+	return s == "" || strings.HasSuffix(s, "%")
+}
+
+// viewBoxSize is the width and height an svg element maps its coordinates onto.
+func viewBoxSize(n *xhtml.Node) (w, h float32, ok bool) {
+	f := strings.FieldsFunc(Attr(n, "viewBox"), func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n' || r == '\r'
+	})
+	if len(f) != 4 {
+		return 0, 0, false
+	}
+	x, err1 := strconv.ParseFloat(f[2], 32)
+	y, err2 := strconv.ParseFloat(f[3], 32)
+	if err1 != nil || err2 != nil || x <= 0 || y <= 0 {
+		return 0, 0, false
+	}
+	return float32(x), float32(y), true
 }
 
 // pictureAt decodes one image of the book, once per part. The path is the one
