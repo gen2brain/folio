@@ -203,7 +203,8 @@ func FuzzJBIG2(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
-		jbig2Decode(nil, b, nil, Ref{})
+		d := jbig2Decoder{budget: 1 << 14, maxBudget: 1 << 16}
+		_ = d.segments(b)
 	})
 }
 

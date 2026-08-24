@@ -156,6 +156,7 @@ func pathData(d string) *raster.Path {
 				p.Close()
 				cur = start
 			}
+			cmd = 0
 			smoothC, smoothQ = false, false
 
 		default:

@@ -99,7 +99,8 @@ func readCHM(r io.ReaderAt, size int64) (*chmArchive, error) {
 	default:
 		return nil, fmt.Errorf("%w: ITSF version %d", ErrUnsupported, version)
 	}
-	if dirOff < 0 || dirLen < chmITSPLen || dirOff+dirLen > size || dataOff < 0 || dataOff > size {
+	if dirOff < 0 || dirLen < chmITSPLen || dirLen > size || dirOff > size-dirLen ||
+		dataOff < 0 || dataOff > size {
 		return nil, fmt.Errorf("%w: ITSF header points outside the file", ErrInvalid)
 	}
 

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<svg><path d=\"Z0 0A4 4 0 A\">")

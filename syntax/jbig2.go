@@ -1861,11 +1861,19 @@ type jbPage struct {
 	combOp   int
 	override bool
 	started  bool
+	budget   *int64
 }
 
 func (p *jbPage) grow(h int) {
 	if h <= p.h || p.stride <= 0 || h > maxJBPixels || int64(h)*int64(p.stride) > maxJBPixels/8 {
 		return
+	}
+	if p.budget != nil {
+		cost := int64(h-p.h) * int64(p.w)
+		if cost > *p.budget {
+			return
+		}
+		*p.budget -= cost
 	}
 	old := len(p.buf)
 	p.buf = append(p.buf, make([]uint8, (h-p.h)*p.stride)...)
@@ -1964,6 +1972,8 @@ type jbig2Decoder struct {
 	tables   map[uint32]*jbHuffTable
 	regions  map[uint32]*jbBitmap
 	budget   int64
+	// maxBudget caps what a page segment may raise the budget to.
+	maxBudget int64
 }
 
 // emit stores an intermediate region for a later segment to refer to, or draws
@@ -2310,8 +2320,9 @@ func (d *jbig2Decoder) segment(data []byte, seg jbSegment) error {
 		if w <= 0 || w > maxJBPixels || h > maxJBPixels || int64(w)*int64(max(h, 1)) > maxJBPixels {
 			return errInvalidf("JBIG2 page is %dx%d", w, h)
 		}
-		d.budget = max(d.budget, min(8*int64(w)*int64(max(h, 1)), maxJBBudget))
+		d.budget = max(d.budget, min(8*int64(w)*int64(max(h, 1)), d.maxBudget))
 		d.page = jbPage{
+			budget:   &d.budget,
 			w:        w,
 			stride:   (w + 7) / 8,
 			defPixel: uint8(flags>>2) & 1,
@@ -2434,7 +2445,7 @@ func jbCoded(f *File, s *Stream) bool {
 // writes one for black and a gray image reads zero as black, so the page is
 // inverted on the way out, as ISO 32000-1 7.4.7 requires.
 func jbig2Decode(f *File, data []byte, parms Dict, self Ref) ([]byte, error) {
-	d := jbig2Decoder{budget: startJBudget}
+	d := jbig2Decoder{budget: startJBudget, maxBudget: maxJBBudget}
 	if f != nil {
 		// A globals stream carries segments, not a JBIG2 image, so it is
 		// never itself JBIG2 coded; one that is, or one that names the
