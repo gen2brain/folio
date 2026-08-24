@@ -327,10 +327,10 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 }
 
 // Image renders the page at the resolution its own content is in. A page with
-// no text whose largest image covers half of it is cropped to that image.
+// no text whose largest image covers a quarter of it is cropped to that image.
 func (p *Page) Image() (*image.RGBA, error) {
 	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
-	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds())
+	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds(), gfx.BookCropArea)
 	img, err := p.ImageDPI(dpi)
 	if img == nil || !crop {
 		return img, err

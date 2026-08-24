@@ -543,9 +543,16 @@ func near(a, b raster.Point, tol float32) bool {
 // DefaultDPI is the resolution a page with no image on it renders at.
 const DefaultDPI = 300
 
+// CropArea is the share of a page a picture covers before a page holding
+// nothing else is taken to be that picture.
+const CropArea = 0.5
+
+// BookCropArea is CropArea for a page of a book.
+const BookCropArea = 0.25
+
 // NaturalDPI is the highest resolution any image on the page is drawn at, and
-// the box of the largest when the page is nothing but that image.
-func NaturalDPI(st *TextPage, page raster.Rect) (dpi float64, box raster.Rect, crop bool) {
+// the box of the largest when no text is drawn and it covers minArea.
+func NaturalDPI(st *TextPage, page raster.Rect, minArea float64) (dpi float64, box raster.Rect, crop bool) {
 	if st == nil {
 		return DefaultDPI, box, false
 	}
@@ -573,7 +580,7 @@ func NaturalDPI(st *TextPage, page raster.Rect) (dpi float64, box raster.Rect, c
 		dpi = DefaultDPI
 	}
 	pa := (page.X1 - page.X0) * (page.Y1 - page.Y0)
-	return dpi, box, !text && pa > 0 && area >= 0.5*pa
+	return dpi, box, !text && pa > 0 && float64(area) >= minArea*float64(pa)
 }
 
 // CropTo cuts out the part of a rendered page box covers.

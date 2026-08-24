@@ -86,7 +86,7 @@ func (p *Page) HTML() (string, error) {
 // no text whose largest image covers half of it is cropped to that image.
 func (p *Page) Image() (*image.RGBA, error) {
 	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
-	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds())
+	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds(), gfx.CropArea)
 	img, err := p.ImageDPI(dpi)
 	if img == nil || !crop {
 		return img, err

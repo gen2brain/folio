@@ -316,3 +316,65 @@ type fakeBounds struct{}
 func (fakeBounds) ColorModel() color.Model { return color.RGBAModel }
 func (fakeBounds) Bounds() image.Rectangle { return image.Rect(0, 0, 1<<15, 1<<15) }
 func (fakeBounds) At(x, y int) color.Color { return color.RGBA{} }
+
+// stubImage is an image of a size.
+type stubImage struct{ w, h int }
+
+func (s stubImage) Size() (int, int)                                { return s.w, s.h }
+func (s stubImage) ColorSpace() *ColorSpace                         { return nil }
+func (s stubImage) Stencil() bool                                   { return false }
+func (s stubImage) Smooth() bool                                    { return false }
+func (s stubImage) Pixels(*ColorSpace, int) (*raster.Pixmap, error) { return nil, nil }
+
+// TestNaturalDPI covers the resolution a page is rendered at and when it is
+// cropped to the picture on it.
+func TestNaturalDPI(t *testing.T) {
+	page := raster.Rect{X1: 600, Y1: 900}
+	block := func(w, h int, x0, y0, x1, y1 float32) TextBlock {
+		return TextBlock{Bounds: raster.Rect{X0: x0, Y0: y0, X1: x1, Y1: y1}, Image: stubImage{w, h}}
+	}
+	text := TextBlock{Bounds: raster.Rect{X1: 600, Y1: 100}, Lines: []TextLine{{}}}
+
+	for _, c := range []struct {
+		name   string
+		blocks []TextBlock
+		dpi    float64
+		crop   bool
+	}{
+		{"nothing at all", nil, DefaultDPI, false},
+		{"a page that is one picture", []TextBlock{block(1200, 1800, 0, 0, 600, 900)}, 144, true},
+		{"a landscape picture across the page",
+			[]TextBlock{block(1400, 1000, 0, 0, 600, 428)}, 168, false},
+		{"a tall picture down the page",
+			[]TextBlock{block(800, 1600, 0, 0, 450, 900)}, 128, true},
+		{"a thin strip across the foot of the page",
+			[]TextBlock{block(81915, 1, 0, 791, 4178, 792)}, 1411, false},
+		{"a small picture reaching neither edge",
+			[]TextBlock{block(100, 100, 10, 10, 110, 110)}, 72, false},
+		{"a picture on a page with text",
+			[]TextBlock{block(1200, 1800, 0, 0, 600, 900), text}, 144, false},
+	} {
+		st := &TextPage{Bounds: page, Blocks: c.blocks}
+		dpi, _, crop := NaturalDPI(st, page, CropArea)
+		if int(dpi) != int(c.dpi) {
+			t.Errorf("%s: %v dpi, want %v", c.name, dpi, c.dpi)
+		}
+		if crop != c.crop {
+			t.Errorf("%s: crop %v, want %v", c.name, crop, c.crop)
+		}
+	}
+
+	if dpi, _, crop := NaturalDPI(nil, page, CropArea); dpi != DefaultDPI || crop {
+		t.Errorf("no text page gave %v %v, want %v false", dpi, crop, DefaultDPI)
+	}
+
+	// A book crops at a lower share.
+	land := &TextPage{Bounds: page, Blocks: []TextBlock{block(1400, 1000, 0, 0, 600, 428)}}
+	if _, _, crop := NaturalDPI(land, page, BookCropArea); !crop {
+		t.Error("a landscape picture on a book page was not cropped to")
+	}
+	strip := &TextPage{Bounds: page, Blocks: []TextBlock{block(81915, 1, 0, 791, 4178, 792)}}
+	if _, _, crop := NaturalDPI(strip, page, BookCropArea); crop {
+		t.Error("a thin strip was cropped to even at the book share")
+	}
+}
