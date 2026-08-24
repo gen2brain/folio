@@ -10,6 +10,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
 	"github.com/gen2brain/folio/syntax"
 )
@@ -984,9 +985,12 @@ func tightRows(pix []byte, stride, w, h, n int) []byte {
 // Gray stays gray, CMYK stays CMYK, and everything else becomes RGB, because
 // those are the three shapes a PDF color space can name.
 func jpegSamples(data []byte) ([]byte, int, int, int, error) {
-	img, err := jpeg.Decode(bytes.NewReader(data))
-	if errors.Is(err, io.ErrUnexpectedEOF) {
-		img, err = jpeg.Decode(io.MultiReader(bytes.NewReader(data), bytes.NewReader([]byte{0xff, 0xd9})))
+	img, ok, err := gfx.DecodeRegistered(data)
+	if !ok {
+		img, err = jpeg.Decode(bytes.NewReader(data))
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			img, err = jpeg.Decode(io.MultiReader(bytes.NewReader(data), bytes.NewReader([]byte{0xff, 0xd9})))
+		}
 	}
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -1008,6 +1012,9 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 
 	case *image.YCbCr:
 		return ycbcrSamples(m, w, h), w, h, 3, nil
+
+	case *image.RGBA:
+		return rgbaSamples(m, w, h), w, h, 3, nil
 	}
 
 	pix := make([]byte, w*h*3)
@@ -1019,6 +1026,19 @@ func jpegSamples(data []byte) ([]byte, int, int, int, error) {
 		}
 	}
 	return pix, w, h, 3, nil
+}
+
+// rgbaSamples drops the alpha of a decoded JPEG a row at a time.
+func rgbaSamples(m *image.RGBA, w, h int) []byte {
+	pix := make([]byte, w*h*3)
+	for y := 0; y < h; y++ {
+		src := m.Pix[y*m.Stride : y*m.Stride+w*4]
+		dst := pix[y*w*3 : (y+1)*w*3]
+		for x, o := 0, 0; x < len(src); x, o = x+4, o+3 {
+			dst[o], dst[o+1], dst[o+2] = src[x], src[x+1], src[x+2]
+		}
+	}
+	return pix
 }
 
 // chromaShift is how far a coordinate shifts to index a subsampled plane.

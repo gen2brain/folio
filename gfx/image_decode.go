@@ -82,6 +82,17 @@ func matchMagic(magic string, b []byte) bool {
 	return true
 }
 
+// DecodeRegistered decodes b with the decoder RegisterPictureDecoder installed
+// for what it begins with, and reports whether there was one.
+func DecodeRegistered(b []byte) (image.Image, bool, error) {
+	dec := pictureDecoder(b)
+	if dec == nil {
+		return nil, false, nil
+	}
+	img, err := dec(b)
+	return img, true, err
+}
+
 // ErrUnsupported is a picture in a form this cannot decode.
 var ErrUnsupported = errors.New("gfx: unsupported")
 

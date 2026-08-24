@@ -115,6 +115,23 @@ type Page interface {
 	Run(dev gfx.Device, ctm raster.Matrix) error
 }
 
+// PictureDecoder reads one of the raster formats a document carries a picture in.
+type PictureDecoder = gfx.PictureDecoder
+
+// RegisterPictureDecoder installs a decoder for a picture format, for every
+// kind of document: a picture in a book, a drawing, and a JPEG in a PDF.
+//
+// The decoder must hand back the image's own color model. A JPEG forced to
+// RGBA reaches a PDF that names DeviceCMYK or DeviceGray with the wrong
+// number of components.
+//
+//	doc.RegisterPictureDecoder("jpeg", "\xff\xd8", func(b []byte) (image.Image, error) {
+//		return jpegn.Decode(bytes.NewReader(b), nil)
+//	})
+func RegisterPictureDecoder(name, magic string, dec PictureDecoder) {
+	gfx.RegisterPictureDecoder(name, magic, dec)
+}
+
 // Open reads the named file, deciding from its contents what it is.
 func Open(name string) (Document, error) {
 	f, err := os.Open(name)

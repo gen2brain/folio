@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/jpeg"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
 )
 
@@ -2787,5 +2789,59 @@ func TestCP936OnlyWhenDisguised(t *testing.T) {
 	got, _ := p.Text()
 	if !strings.Contains(got, "Hi") {
 		t.Fatalf("text = %q, want Hi", got)
+	}
+}
+
+// TestRegisteredPictureDecoderForDCT covers a picture decoder installed
+// through gfx serving a JPEG inside a PDF as well as one in a book.
+func TestRegisteredPictureDecoderForDCT(t *testing.T) {
+	var buf bytes.Buffer
+	src := image.NewGray(image.Rect(0, 0, 8, 8))
+	for i := range src.Pix {
+		src.Pix[i] = 0x40
+	}
+	if err := jpeg.Encode(&buf, src, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	called := 0
+	gfx.RegisterPictureDecoder("jpeg-test", "\xff\xd8", func(b []byte) (image.Image, error) {
+		called++
+		m := image.NewRGBA(image.Rect(0, 0, 8, 8))
+		for i := 0; i < len(m.Pix); i += 4 {
+			m.Pix[i], m.Pix[i+1], m.Pix[i+2], m.Pix[i+3] = 0x10, 0x20, 0x30, 0xff
+		}
+		return m, nil
+	})
+	defer gfx.RegisterPictureDecoder("jpeg-test", "", nil)
+
+	pix, w, h, n, err := jpegSamples(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Fatalf("the registered decoder ran %d times, want once", called)
+	}
+	if w != 8 || h != 8 || n != 3 {
+		t.Fatalf("%dx%d in %d components, want 8x8 in 3", w, h, n)
+	}
+	if len(pix) != w*h*3 {
+		t.Fatalf("%d samples, want %d", len(pix), w*h*3)
+	}
+	if pix[0] != 0x10 || pix[1] != 0x20 || pix[2] != 0x30 {
+		t.Errorf("first pixel is %v, want the decoder's own", pix[:3])
+	}
+
+	// Without one the standard library still reads the gray it encoded.
+	gfx.RegisterPictureDecoder("jpeg-test", "", nil)
+	pix, _, _, n, err = jpegSamples(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d components, want the one gray has", n)
+	}
+	if pix[0] < 0x30 || pix[0] > 0x50 {
+		t.Errorf("gray came back as %d, want about 0x40", pix[0])
 	}
 }
