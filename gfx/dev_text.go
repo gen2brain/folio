@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"strconv"
 	"strings"
@@ -537,4 +538,53 @@ func advOf(c TextChar) float32 {
 
 func near(a, b raster.Point, tol float32) bool {
 	return abs32(a.X-b.X) <= tol && abs32(a.Y-b.Y) <= tol
+}
+
+// DefaultDPI is the resolution a page with no image on it renders at.
+const DefaultDPI = 300
+
+// NaturalDPI is the highest resolution any image on the page is drawn at, and
+// the box of the largest when the page is nothing but that image.
+func NaturalDPI(st *TextPage, page raster.Rect) (dpi float64, box raster.Rect, crop bool) {
+	if st == nil {
+		return DefaultDPI, box, false
+	}
+	var area float32
+	text := false
+	for i := range st.Blocks {
+		b := &st.Blocks[i]
+		if b.Image == nil {
+			text = true
+			continue
+		}
+		w, h := b.Image.Size()
+		bw, bh := b.Bounds.X1-b.Bounds.X0, b.Bounds.Y1-b.Bounds.Y0
+		if bw > 0 {
+			dpi = max(dpi, float64(w)*72/float64(bw))
+		}
+		if bh > 0 {
+			dpi = max(dpi, float64(h)*72/float64(bh))
+		}
+		if bw*bh > area {
+			area, box = bw*bh, b.Bounds
+		}
+	}
+	if dpi <= 0 {
+		dpi = DefaultDPI
+	}
+	pa := (page.X1 - page.X0) * (page.Y1 - page.Y0)
+	return dpi, box, !text && pa > 0 && area >= 0.5*pa
+}
+
+// CropTo cuts out the part of a rendered page box covers.
+func CropTo(img *image.RGBA, box raster.Rect, dpi float64) *image.RGBA {
+	s := dpi / 72
+	r := image.Rect(
+		int(float64(box.X0)*s), int(float64(box.Y0)*s),
+		int(float64(box.X1)*s+0.5), int(float64(box.Y1)*s+0.5),
+	).Intersect(img.Bounds())
+	if r.Empty() {
+		return img
+	}
+	return img.SubImage(r).(*image.RGBA)
 }

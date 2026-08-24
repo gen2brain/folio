@@ -8,7 +8,6 @@ import (
 	"io"
 
 	"github.com/gen2brain/folio/gfx"
-	"github.com/gen2brain/folio/raster"
 )
 
 // The structured text model comes from the gfx package.
@@ -86,61 +85,11 @@ func (p *Page) HTML() (string, error) {
 // Image renders the page at the resolution its own content is in. A page with
 // no text whose largest image covers half of it is cropped to that image.
 func (p *Page) Image() (*image.RGBA, error) {
-	dpi, box, crop := p.naturalDPI()
+	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
+	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds())
 	img, err := p.ImageDPI(dpi)
 	if img == nil || !crop {
 		return img, err
 	}
-	return cropTo(img, box, dpi), err
-}
-
-// defaultDPI is what a page with no image in it is rendered at.
-const defaultDPI = 300
-
-// naturalDPI is the highest resolution any image on the page is drawn at, and
-// the box of the largest when the page is nothing but that image.
-func (p *Page) naturalDPI() (dpi float64, box raster.Rect, crop bool) {
-	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
-	if st == nil {
-		return defaultDPI, box, false
-	}
-	var area float32
-	text := false
-	for i := range st.Blocks {
-		b := &st.Blocks[i]
-		if b.Image == nil {
-			text = true
-			continue
-		}
-		w, h := b.Image.Size()
-		bw, bh := b.Bounds.X1-b.Bounds.X0, b.Bounds.Y1-b.Bounds.Y0
-		if bw > 0 {
-			dpi = max(dpi, float64(w)*72/float64(bw))
-		}
-		if bh > 0 {
-			dpi = max(dpi, float64(h)*72/float64(bh))
-		}
-		if bw*bh > area {
-			area, box = bw*bh, b.Bounds
-		}
-	}
-	if dpi <= 0 {
-		dpi = defaultDPI
-	}
-	page := p.Bounds()
-	pa := (page.X1 - page.X0) * (page.Y1 - page.Y0)
-	return dpi, box, !text && pa > 0 && area >= 0.5*pa
-}
-
-// cropTo cuts out the part of a rendered page box covers.
-func cropTo(img *image.RGBA, box raster.Rect, dpi float64) *image.RGBA {
-	s := dpi / 72
-	r := image.Rect(
-		int(float64(box.X0)*s), int(float64(box.Y0)*s),
-		int(float64(box.X1)*s+0.5), int(float64(box.Y1)*s+0.5),
-	).Intersect(img.Bounds())
-	if r.Empty() {
-		return img
-	}
-	return img.SubImage(r).(*image.RGBA)
+	return gfx.CropTo(img, box, dpi), err
 }

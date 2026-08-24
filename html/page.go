@@ -326,8 +326,17 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 	return img, nil
 }
 
-// Image renders the page at 96 dots per inch, one device pixel per CSS pixel.
-func (p *Page) Image() (*image.RGBA, error) { return p.ImageDPI(96) }
+// Image renders the page at the resolution its own content is in. A page with
+// no text whose largest image covers half of it is cropped to that image.
+func (p *Page) Image() (*image.RGBA, error) {
+	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
+	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds())
+	img, err := p.ImageDPI(dpi)
+	if img == nil || !crop {
+		return img, err
+	}
+	return gfx.CropTo(img, box, dpi), err
+}
 
 // Text returns what the page says, a line of the text for each line box.
 func (p *Page) Text() (string, error) {
