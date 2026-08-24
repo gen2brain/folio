@@ -571,7 +571,7 @@ func (l *layout) imageBlock(b *box, x, w float32) {
 	if vis == nil {
 		return
 	}
-	iw, ih := pictureSize(b, vis, w, l.cbh)
+	iw, ih := pictureSize(b, vis, w, l.cbh, l.ph)
 	if iw <= 0 || ih <= 0 {
 		return
 	}
@@ -1040,7 +1040,7 @@ func (c *inlineCtx) addImage(b *box) {
 	c.text.WriteString(objectChar)
 	c.begun = true
 	n := len(c.items) - 1
-	c.items[n].iw, c.items[n].ih = pictureSize(b, vis, c.avail, c.l.cbh)
+	c.items[n].iw, c.items[n].ih = pictureSize(b, vis, c.avail, c.l.cbh, c.l.ph)
 	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: c.l.face(b.style)})
 }
 

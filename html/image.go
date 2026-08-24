@@ -176,7 +176,7 @@ func (l *layout) fail(err error) {
 
 // pictureSize is how much room a picture takes: what the style or the element
 // asks for, its own size otherwise, and never wider than the line.
-func pictureSize(b *box, v *visual, avail, cbh float32) (float32, float32) {
+func pictureSize(b *box, v *visual, avail, cbh, pageH float32) (float32, float32) {
 	w, h := v.w, v.h
 	if w <= 0 || h <= 0 {
 		return 0, 0
@@ -212,6 +212,10 @@ func pictureSize(b *box, v *visual, avail, cbh float32) (float32, float32) {
 	}
 	if avail > 0 && w > avail {
 		w, h = avail, avail*ratio
+	}
+	// A picture taller than the page is fitted to it.
+	if pageH > 0 && h > pageH && ratio > 0 {
+		h, w = pageH, pageH/ratio
 	}
 	return w, h
 }
