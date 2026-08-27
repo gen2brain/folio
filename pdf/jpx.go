@@ -1439,8 +1439,8 @@ func jpxIterate(ll, band jpxBand, u0, v0 int, reversible bool) jpxBand {
 		}
 	}
 
-	if w == 1 {
-		if u0&1 != 0 {
+	if w < 2 {
+		if w == 1 && u0&1 != 0 {
 			for k := 0; k < len(items); k += w {
 				items[k] *= 0.5
 			}
@@ -1455,8 +1455,8 @@ func jpxIterate(ll, band jpxBand, u0, v0 int, reversible bool) jpxBand {
 		}
 	}
 
-	if h == 1 {
-		if v0&1 != 0 {
+	if h < 2 {
+		if h == 1 && v0&1 != 0 {
 			for u := 0; u < w; u++ {
 				items[u] *= 0.5
 			}
