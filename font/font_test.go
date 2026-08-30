@@ -13,6 +13,8 @@ import (
 	"testing"
 )
 
+const refDir = "/media/adata/temp/corpus/pdf"
+
 // TestStandardFonts parses the fourteen substitutes and checks that every one
 // of them has the glyphs and the metrics the standard promises.
 func TestStandardFonts(t *testing.T) {
@@ -428,7 +430,7 @@ func TestWOFF(t *testing.T) {
 // TestWOFFCorpus reads the web fonts of the corpus, which is the only place
 // this has real ones.
 func TestWOFFCorpus(t *testing.T) {
-	dir := envOr("PDF_REF_DIR", "/temp/pdf")
+	dir := envOr("PDF_REF_DIR", refDir)
 	// The obfuscated copies of a book are scrambled until the container
 	// unscrambles them, which is the html package's work and not this one's.
 	all, _ := filepath.Glob(filepath.Join(dir, "corpus/books/epub3/30/*/EPUB/*.woff"))
@@ -792,7 +794,7 @@ func TestShapeDevanagari(t *testing.T) {
 // which gives the levels and the visual order of real character sequences. It
 // needs the reference directory tools/fetch.sh fills.
 func TestBidiCharacterConformance(t *testing.T) {
-	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), "/temp/pdf"), "specs/BidiCharacterTest.txt")
+	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), refDir), "specs/BidiCharacterTest.txt")
 	b, err := os.ReadFile(name)
 	if err != nil {
 		t.Skipf("no %s", name)
@@ -905,7 +907,7 @@ var bidiSample = map[string]rune{
 // levels and the order of every combination of classes rather than of real
 // characters.
 func TestBidiConformance(t *testing.T) {
-	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), "/temp/pdf"), "specs/BidiTest.txt")
+	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), refDir), "specs/BidiTest.txt")
 	b, err := os.ReadFile(name)
 	if err != nil {
 		t.Skipf("no %s", name)

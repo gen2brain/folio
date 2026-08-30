@@ -24,6 +24,8 @@ import (
 	"unicode/utf8"
 )
 
+const refDir = "/media/adata/temp/corpus/pdf"
+
 // buildEPUB writes the parts into the archive an EPUB is, mimetype first and
 // stored, which is what the specification asks for and what a reader sniffs.
 func buildEPUB(t *testing.T, parts map[string]string) []byte {
@@ -1113,7 +1115,7 @@ func FuzzCSS(fu *testing.F) {
 // TestLineBreakConformance runs the Unicode line break test, which is the
 // oracle for UAX #14. It needs the reference directory tools/fetch.sh fills.
 func TestLineBreakConformance(t *testing.T) {
-	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), "/temp/pdf"), "specs/LineBreakTest.txt")
+	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), refDir), "specs/LineBreakTest.txt")
 	b, err := os.ReadFile(name)
 	if err != nil {
 		t.Skipf("no %s", name)
