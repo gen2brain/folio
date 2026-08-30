@@ -26,16 +26,23 @@ type t2 struct {
 	hasW   bool
 	open   bool
 	steps  int
+	depth  int
 	trans  [32]float32
 }
 
+// maxSeac bounds the glyphs an accented character is built from.
+const maxSeac = 4
+
 // path builds the outline of a CFF glyph.
-func (c *cffFont) path(gid int) *raster.Path {
-	if gid < 0 || gid >= len(c.charStrings) {
+func (c *cffFont) path(gid int) *raster.Path { return c.pathAt(gid, 0) }
+
+// pathAt is path, depth accented characters deep.
+func (c *cffFont) pathAt(gid, depth int) *raster.Path {
+	if gid < 0 || gid >= len(c.charStrings) || depth > maxSeac {
 		return nil
 	}
 	subrs, defW, nomW := c.privateFor(gid)
-	t := &t2{f: c, subrs: subrs, width: defW, nomW: nomW}
+	t := &t2{f: c, subrs: subrs, width: defW, nomW: nomW, depth: depth}
 	t.run(c.charStrings[gid], 0)
 	t.closeContour()
 	if m, ok := c.matrixFor(gid); ok {
@@ -394,10 +401,10 @@ func (t *t2) seac(bchar, achar int, adx, ady float32) {
 		return
 	}
 	t.closeContour()
-	if p := t.f.path(base); p != nil {
+	if p := t.f.pathAt(base, t.depth+1); p != nil {
 		t.p.Append(p)
 	}
-	if p := t.f.path(accent); p != nil {
+	if p := t.f.pathAt(accent, t.depth+1); p != nil {
 		t.p.Append(p.Transform(raster.Translate(adx, ady)))
 	}
 }

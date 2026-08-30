@@ -10,6 +10,8 @@ type t1 struct {
 	sbx   float32
 	width float32
 
+	depth int
+
 	stack [48]float32
 	sp    int
 	ps    [32]float32
@@ -294,15 +296,19 @@ func (t *t1) seac(bchar, achar int, adx, ady float32) {
 	if base == "" || accent == "" {
 		return
 	}
+	if t.depth >= maxSeac {
+		return
+	}
+
 	t.closeContour()
 	if cs, ok := t.f.charstrings[base]; ok {
-		r := &t1{f: t.f}
+		r := &t1{f: t.f, depth: t.depth + 1}
 		r.run(cs, 0)
 		r.closeContour()
 		t.p.Append(&r.p)
 	}
 	if cs, ok := t.f.charstrings[accent]; ok {
-		r := &t1{f: t.f}
+		r := &t1{f: t.f, depth: t.depth + 1}
 		r.run(cs, 0)
 		r.closeContour()
 		t.p.Append(r.p.Transform(raster.Translate(t.sbx-r.sbx+adx, ady)))
