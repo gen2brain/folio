@@ -421,6 +421,13 @@ func vertOffset(code int) int {
 	return 0
 }
 
+// endRow ends a row that has more changing elements than it can hold.
+func (c *ccitt) endRow() {
+	c.err = true
+	c.codingPos = len(c.codingLine) - 1
+	c.codingLine[c.codingPos] = uint32(c.columns)
+}
+
 func (c *ccitt) addPixels(a1 uint32, black int) {
 	pos := c.codingPos
 	if a1 > c.codingLine[pos] {
@@ -430,6 +437,10 @@ func (c *ccitt) addPixels(a1 uint32, black int) {
 		}
 		if pos&1^black != 0 {
 			pos++
+		}
+		if pos >= len(c.codingLine) {
+			c.endRow()
+			return
 		}
 		c.codingLine[pos] = a1
 	}
@@ -446,6 +457,10 @@ func (c *ccitt) addPixelsNeg(a1 int64, black int) {
 		}
 		if pos&1^black != 0 {
 			pos++
+		}
+		if pos >= len(c.codingLine) {
+			c.endRow()
+			return
 		}
 		c.codingLine[pos] = uint32(a1)
 	case a1 < int64(c.codingLine[pos]):
