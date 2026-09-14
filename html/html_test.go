@@ -1377,6 +1377,61 @@ func TestLayoutPaginates(t *testing.T) {
 	}
 }
 
+func TestPageOf(t *testing.T) {
+	var body strings.Builder
+	for i := range 200 {
+		switch i {
+		case 120:
+			fmt.Fprintf(&body, "<p>paragraph <a id='inline'></a>number %d</p>", i)
+		case 150:
+			fmt.Fprintf(&body, "<p id='deep'>paragraph number %d</p>", i)
+		default:
+			fmt.Fprintf(&body, "<p>paragraph number %d</p>", i)
+		}
+	}
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       strings.Replace(pkg, `<itemref idref="cover" linear="no"/>`, "", 1),
+		"EPUB/nav.xhtml":         nav,
+		"EPUB/text/one.xhtml":    "<html><body>" + body.String() + "</body></html>",
+		"EPUB/text/two.xhtml":    "<html><body><p>Two</p></body></html>",
+	})
+	if _, err := d.Layout(&LayoutOptions{Width: 400, Height: 300, Margin: 10}); err != nil {
+		t.Fatal(err)
+	}
+	const one, two = "EPUB/text/one.xhtml", "EPUB/text/two.xhtml"
+	if got := d.PageOf(one, ""); got != 0 {
+		t.Errorf("the first part is on page %d, want 0", got)
+	}
+	if got := d.PageOf(one, "missing"); got != 0 {
+		t.Errorf("a fragment the part lacks led to page %d, want 0", got)
+	}
+	if got := d.PageOf("EPUB/text/none.xhtml", ""); got != -1 {
+		t.Errorf("a part the book lacks led to page %d, want -1", got)
+	}
+	for frag, says := range map[string]string{"deep": "paragraph number 150\n", "inline": "number 120\n"} {
+		n := d.PageOf(one, frag)
+		if n <= 0 {
+			t.Fatalf("#%s led to page %d, want one past the first", frag, n)
+		}
+		p, err := d.Page(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(pageText(t, p), says) {
+			t.Errorf("#%s led to page %d, which does not say %q", frag, n, says)
+		}
+	}
+	last := d.PageOf(two, "")
+	if p, _ := d.Page(last); last != d.NumPages()-1 || !strings.Contains(pageText(t, p), "Two") {
+		t.Errorf("the second part is on page %d of %d", last, d.NumPages())
+	}
+	o := d.Outline()
+	if len(o) == 0 || len(o[0].Children) == 0 || o[0].Children[0].Fragment != "deep" {
+		t.Fatalf("outline = %+v", o)
+	}
+}
+
 // TestLayoutPageBreak checks that a page break the book asks for is taken.
 func TestLayoutPageBreak(t *testing.T) {
 	d, _ := styledPage(t, `h2 { page-break-before: always }`,

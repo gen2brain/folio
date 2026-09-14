@@ -39,6 +39,19 @@ func (d pdfDoc) Metadata() Metadata {
 	return Metadata{Title: m.Title, Author: m.Author, Created: m.Created, Modified: m.Modified}
 }
 
+func (d pdfDoc) Outline() []Outline { return pdfOutline(d.d.Outline()) }
+
+func pdfOutline(src []pdf.Outline) []Outline {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]Outline, len(src))
+	for i, o := range src {
+		out[i] = Outline{Title: o.Title, Page: o.Page, URI: o.URI, Children: pdfOutline(o.Children)}
+	}
+	return out
+}
+
 func (d pdfDoc) Page(i int) (Page, error) {
 	p, err := d.d.Page(i)
 	if err != nil {
@@ -53,7 +66,7 @@ func (p pdfPage) Links() []Link {
 	src := p.Page.Links()
 	out := make([]Link, len(src))
 	for i, l := range src {
-		out[i] = Link{Rect: l.Rect, URI: l.URI}
+		out[i] = Link{Rect: l.Rect, URI: l.URI, Page: l.Page}
 	}
 	return out
 }
@@ -72,21 +85,40 @@ func (d bookDoc) Metadata() Metadata {
 	return Metadata{Title: m.Title, Author: m.Author, Created: m.Created, Modified: m.Modified}
 }
 
+func (d bookDoc) Outline() []Outline { return bookOutline(d.d, d.d.Outline()) }
+
+func bookOutline(d *html.Document, src []html.Outline) []Outline {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]Outline, len(src))
+	for i, o := range src {
+		out[i] = Outline{Title: o.Title, Page: d.PageOf(o.Path, o.Fragment), Children: bookOutline(d, o.Children)}
+	}
+	return out
+}
+
 func (d bookDoc) Page(i int) (Page, error) {
 	p, err := d.d.Page(i)
 	if err != nil {
 		return nil, err
 	}
-	return bookPage{p}, nil
+	return bookPage{p, d.d}, nil
 }
 
-type bookPage struct{ *html.Page }
+type bookPage struct {
+	*html.Page
+	doc *html.Document
+}
 
 func (p bookPage) Links() []Link {
 	src := p.Page.Links()
 	out := make([]Link, len(src))
 	for i, l := range src {
-		out[i] = Link{Rect: l.Rect, URI: l.URI}
+		out[i] = Link{Rect: l.Rect, URI: l.URI, Page: -1}
+		if l.URI == "" && l.Path != "" {
+			out[i].Page = p.doc.PageOf(l.Path, l.Fragment)
+		}
 	}
 	return out
 }
@@ -102,6 +134,8 @@ func (d svgDoc) NumPages() int      { return d.d.NumPages() }
 func (d svgDoc) Close() error       { return closeBoth(d.d.Close(), d.c) }
 func (d svgDoc) Metadata() Metadata { return Metadata{Title: d.d.Metadata().Title} }
 
+func (d svgDoc) Outline() []Outline { return nil }
+
 func (d svgDoc) Page(i int) (Page, error) {
 	p, err := d.d.Page(i)
 	if err != nil {
@@ -116,7 +150,7 @@ func (p svgPage) Links() []Link {
 	src := p.Page.Links()
 	out := make([]Link, len(src))
 	for i, l := range src {
-		out[i] = Link{Rect: l.Rect, URI: l.URI}
+		out[i] = Link{Rect: l.Rect, URI: l.URI, Page: -1}
 	}
 	return out
 }

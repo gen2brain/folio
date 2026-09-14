@@ -71,6 +71,8 @@ type laidPart struct {
 	height float32
 	// vertical is a part whose lines run down and whose pages run right to left.
 	vertical bool
+	// anchors are where down the column each element a link can name begins.
+	anchors map[string]float32
 }
 
 // Page is one page of a laid out book.
@@ -137,7 +139,7 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 		}
 
 		p := &laidPart{path: it.Path, root: l.root, tops: paginate(l.spans, pageLen),
-			height: l.y, vertical: vertical}
+			height: l.y, vertical: vertical, anchors: anchorsOf(root, l.root)}
 		parts = append(parts, p)
 		for i, top := range p.tops {
 			bottom := p.height
@@ -151,6 +153,76 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 	d.opt, d.parts, d.pages, d.laidOut = opt, parts, pages, true
 	d.layoutMu.Unlock()
 	return len(pages), errors.Join(errs...)
+}
+
+// PageOf is the page a place in the book is on: the part path names and, in
+// it, the element fragment names, counting from zero. A fragment the part
+// does not have leads to the part's first page, and a part the book does not
+// lay out to -1.
+func (d *Document) PageOf(path, fragment string) int {
+	d.autoLayout()
+	d.layoutMu.Lock()
+	defer d.layoutMu.Unlock()
+	for i, pg := range d.pages {
+		if pg.part.path != path {
+			continue
+		}
+		y, ok := pg.part.anchors[fragment]
+		if !ok {
+			return i
+		}
+		for j := i; j < len(d.pages) && d.pages[j].part == pg.part; j++ {
+			if y < d.pages[j].bottom {
+				return j
+			}
+		}
+		return i
+	}
+	return -1
+}
+
+// anchorsOf finds where each element with an id begins, taking an element
+// that made no box of its own from the nearest one around it.
+func anchorsOf(root *Node, top *box) map[string]float32 {
+	at := map[*Node]float32{}
+	var boxes func(b *box, y float32)
+	boxes = func(b *box, y float32) {
+		if b.kind == blockBox || b.kind == imageBox {
+			y = b.y
+		}
+		if b.node != nil {
+			if _, ok := at[b.node]; !ok {
+				at[b.node] = y
+			}
+		}
+		for _, k := range b.kids {
+			boxes(k, y)
+		}
+	}
+	if top != nil {
+		boxes(top, 0)
+	}
+	out := map[string]float32{}
+	var nodes func(n *Node, y float32)
+	nodes = func(n *Node, y float32) {
+		if v, ok := at[n]; ok {
+			y = v
+		}
+		if n.Type == xhtml.ElementNode {
+			for _, name := range [...]string{"id", "name"} {
+				if id := Attr(n, name); id != "" {
+					if _, ok := out[id]; !ok {
+						out[id] = y
+					}
+				}
+			}
+		}
+		for k := n.FirstChild; k != nil; k = k.NextSibling {
+			nodes(k, y)
+		}
+	}
+	nodes(root, 0)
+	return out
 }
 
 // autoLayout lays the book out at the size it asks for, or the default one,

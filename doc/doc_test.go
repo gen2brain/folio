@@ -2,6 +2,7 @@ package doc
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,6 +144,54 @@ func TestUnderlying(t *testing.T) {
 	}
 }
 
+func TestOutlineAndLinks(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html><html><head><title>Long</title></head><body>`)
+	b.WriteString(`<h1 id="start">Start</h1><p><a href="#end">to the end</a></p>`)
+	for i := range 400 {
+		fmt.Fprintf(&b, "<p>paragraph number %d</p>", i)
+	}
+	b.WriteString(`<h1 id="end">End</h1><p>the last words</p></body></html>`)
+	d, err := Load([]byte(b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	n := d.NumPages()
+	if n < 2 {
+		t.Fatalf("%d pages, want the book to run over several", n)
+	}
+	o := d.Outline()
+	if len(o) != 2 || o[0].Title != "Start" || o[1].Title != "End" {
+		t.Fatalf("outline = %+v", o)
+	}
+	if o[0].Page != 0 {
+		t.Errorf("Start is on page %d, want 0", o[0].Page)
+	}
+	if o[1].Page != n-1 {
+		t.Errorf("End is on page %d, want %d", o[1].Page, n-1)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := p.Links()
+	if len(links) != 1 || links[0].URI != "" || links[0].Page != n-1 {
+		t.Errorf("links = %+v, want one leading to page %d", links, n-1)
+	}
+
+	for _, c := range []struct{ name, data string }{{"pdf", onePagePDF}, {"svg", oneDrawing}} {
+		d, err := Load([]byte(c.data))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if o := d.Outline(); o != nil {
+			t.Errorf("%s: outline %+v, want none", c.name, o)
+		}
+		d.Close()
+	}
+}
+
 func TestOpenAndStream(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "drawing.svg")
 	if err := os.WriteFile(name, []byte(oneDrawing), 0o644); err != nil {
@@ -211,6 +260,7 @@ func FuzzDoc(fu *testing.F) {
 		if err != nil {
 			return
 		}
+		d.Outline()
 		p.Bounds()
 		p.Text()
 		p.Links()

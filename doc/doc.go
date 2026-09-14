@@ -70,9 +70,23 @@ type Metadata struct {
 type Link struct {
 	// Rect is the area the link covers, in the page's own space.
 	Rect raster.Rect
-	// URI is where a link out of the document points, and "" for one inside
-	// it, which only the underlying document can resolve.
+	// URI is where a link out of the document points, and "" for one inside it.
 	URI string
+	// Page is the page a link inside the document leads to, counting from
+	// zero, and -1 for one out of it or one that leads nowhere.
+	Page int
+}
+
+// Outline is one entry of a document's table of contents.
+type Outline struct {
+	Title string
+	// Page is the page the entry leads to, counting from zero, and -1 for an
+	// entry that leads out of the document or nowhere.
+	Page int
+	// URI is where an entry leading out of the document points.
+	URI string
+	// Children are the entries nested under this one.
+	Children []Outline
 }
 
 // Document is an open document of any of the three kinds.
@@ -88,6 +102,9 @@ type Document interface {
 	Page(i int) (Page, error)
 	// Metadata is the title and author the document gives.
 	Metadata() Metadata
+	// Outline is the table of contents as the tree it is. A book that carries
+	// none gets one built from its headings, and a drawing has none.
+	Outline() []Outline
 	// Close releases the document. It must not be called while a page renders.
 	Close() error
 }
