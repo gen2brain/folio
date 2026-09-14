@@ -26,9 +26,6 @@ type visual struct {
 	w, h float32
 }
 
-// decodePicture reads one of the formats a book carries a picture in.
-func decodePicture(b []byte) (*picture, error) { return gfx.DecodePicture(b) }
-
 // picture decodes the image an element names, once per part.
 func (l *layout) picture(b *box) *visual {
 	if b.node != nil && b.node.Namespace == "svg" && b.node.DataAtom == atom.Svg {
@@ -149,7 +146,7 @@ func (d *Document) visualOf(p string, raw []byte, pw, ph float32) (*visual, erro
 		bb := pg.Bounds()
 		return &visual{art: pg, w: bb.X1 - bb.X0, h: bb.Y1 - bb.Y0}, nil
 	}
-	pic, err := decodePicture(raw)
+	pic, err := d.pics.Open(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", p, err)
 	}

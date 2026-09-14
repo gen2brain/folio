@@ -90,6 +90,7 @@ type Page struct {
 // once, but not while another Layout is running.
 func (d *Document) Layout(o *LayoutOptions) (int, error) {
 	opt := o.or(&d.natural)
+	d.pics.Bytes = d.ImageCacheBytes
 	cw := opt.Width - 2*opt.Margin
 	ch := opt.Height - 2*opt.Margin
 	if cw <= 0 || ch <= 0 {

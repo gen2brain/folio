@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/gfx"
 )
 
 // Errors returned by this package.
@@ -133,8 +134,14 @@ type Outline struct {
 
 // Document is an open book.
 type Document struct {
+	// ImageCacheBytes bounds the decoded pictures the book keeps while its
+	// pages render. Zero is the default, negative is no cache at all. It is
+	// set before Layout.
+	ImageCacheBytes int
+
 	kind  Kind
 	close func() error
+	pics  gfx.PictureCache
 
 	meta     Metadata
 	spine    []Item
@@ -253,6 +260,7 @@ func NewStream(r io.Reader) (*Document, error) {
 
 // Close releases what the document holds.
 func (d *Document) Close() error {
+	d.pics.Purge()
 	if d.close == nil {
 		return nil
 	}

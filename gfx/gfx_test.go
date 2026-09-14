@@ -309,6 +309,91 @@ func TestRegisterPictureDecoder(t *testing.T) {
 	}
 }
 
+func TestPictureCache(t *testing.T) {
+	encode := func(r uint8) []byte {
+		var b bytes.Buffer
+		src := image.NewRGBA(image.Rect(0, 0, 4, 3))
+		for i := range src.Pix {
+			src.Pix[i] = 255
+		}
+		src.Set(0, 0, color.RGBA{R: r, G: 20, B: 30, A: 255})
+		if err := pngenc.Encode(&b, src); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+
+	c := &PictureCache{}
+	a, err := c.Open(encode(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.W != 4 || a.H != 3 || a.pix != nil {
+		t.Fatalf("opened %dx%d decoded=%v, want 4x3 undecoded", a.W, a.H, a.pix != nil)
+	}
+	px, err := a.Pixels(nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if px.W != 4 || px.H != 3 || px.Samples[0] != 10 {
+		t.Errorf("decoded %dx%d first sample %d, want 4x3 and 10", px.W, px.H, px.Samples[0])
+	}
+	if again, _ := a.Pixels(nil, 1); again != px {
+		t.Error("a second draw decoded the picture again")
+	}
+	cmyk, err := a.Pixels(DeviceCMYK, 1)
+	if err != nil || cmyk.Model != DeviceCMYK.Model() {
+		t.Errorf("CMYK pixels %v, %v", cmyk, err)
+	}
+
+	small := &PictureCache{Bytes: len(px.Samples) + 64}
+	first, _ := small.Open(encode(1))
+	second, _ := small.Open(encode(2))
+	p1, _ := first.Pixels(nil, 1)
+	second.Pixels(nil, 1)
+	if again, _ := first.Pixels(nil, 1); again == p1 {
+		t.Error("a cache with room for one picture kept both")
+	}
+
+	none := &PictureCache{Bytes: -1}
+	n, _ := none.Open(encode(3))
+	n1, _ := n.Pixels(nil, 1)
+	if n2, _ := n.Pixels(nil, 1); n1 == n2 {
+		t.Error("a cache with no room kept a picture")
+	}
+
+	c.Purge()
+	if again, _ := a.Pixels(nil, 1); again == px {
+		t.Error("Purge kept a decoded picture")
+	}
+
+	broken := encode(4)
+	broken = broken[:len(broken)-20]
+	b, err := c.Open(broken)
+	if err != nil {
+		t.Fatalf("a picture whose header reads opened with %v", err)
+	}
+	if _, err := b.Pixels(nil, 1); err == nil {
+		t.Error("a truncated picture decoded")
+	}
+
+	done := make(chan struct{})
+	for range 8 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for range 50 {
+				a.Pixels(nil, 1)
+				a.Pixels(DeviceCMYK, 1)
+				first.Pixels(nil, 1)
+				second.Pixels(nil, 1)
+			}
+		}()
+	}
+	for range 8 {
+		<-done
+	}
+}
+
 // fakeBounds is an image that claims more pixels than a picture may allocate
 // without holding any.
 type fakeBounds struct{}

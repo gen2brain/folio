@@ -100,9 +100,12 @@ var ErrUnsupported = errors.New("gfx: unsupported")
 // in and hands back an Image a device can draw.
 func DecodeImage(b []byte) (Image, error) { return DecodePicture(b) }
 
-// Picture is a decoded raster image.
+// Picture is a raster image, decoded when it is made or, when it was opened
+// through a PictureCache, when a device first asks for its pixels.
 type Picture struct {
-	pix *raster.Pixmap
+	pix   *raster.Pixmap
+	raw   []byte
+	cache *PictureCache
 	// W and H are the picture's size in pixels.
 	W, H int
 	mu   sync.Mutex
@@ -134,6 +137,9 @@ func (p *Picture) Smooth() bool { return true }
 
 // Pixels implements gfx.Image.
 func (p *Picture) Pixels(cs *ColorSpace, shrink int) (*raster.Pixmap, error) {
+	if p.raw != nil {
+		return p.cache.pixels(p, cs)
+	}
 	if cs == nil || cs.Model() == p.pix.Model {
 		return p.pix, nil
 	}
@@ -183,6 +189,14 @@ func boundPicture(w, h int) error {
 // DecodePicture reads one of the raster formats a document carries a picture
 // in, through a decoder RegisterPictureDecoder installed or the standard one.
 func DecodePicture(b []byte) (*Picture, error) {
+	px, err := decodePixmap(b)
+	if err != nil {
+		return nil, err
+	}
+	return &Picture{pix: px, W: px.W, H: px.H}, nil
+}
+
+func decodePixmap(b []byte) (*raster.Pixmap, error) {
 	var src image.Image
 	var err error
 	if dec := pictureDecoder(b); dec != nil {
@@ -213,5 +227,5 @@ func DecodePicture(b []byte) (*Picture, error) {
 	for y := range r.Dy() {
 		copy(px.Samples[y*px.Stride:], rgba.Pix[y*rgba.Stride:y*rgba.Stride+r.Dx()*4])
 	}
-	return &Picture{pix: px, W: r.Dx(), H: r.Dy()}, nil
+	return px, nil
 }
