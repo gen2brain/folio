@@ -355,6 +355,68 @@ func TestFallback(t *testing.T) {
 	}
 }
 
+func TestCovers(t *testing.T) {
+	check := func(path string) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := Parse(b)
+		if err != nil {
+			return
+		}
+		e := &entry{path: path}
+		for r := rune(0); r < 0x3000; r++ {
+			if got, want := e.covers(r), f.GIDForRune(r) > 0; got != want {
+				t.Fatalf("%s: covers(%U) = %v, the parsed font says %v", path, r, got, want)
+			}
+		}
+		for r := range sameShape {
+			if got, want := e.covers(r), f.GIDForRune(r) > 0; got != want {
+				t.Fatalf("%s: covers(%U) = %v, the parsed font says %v", path, r, got, want)
+			}
+		}
+	}
+	check(filepath.Join("..", "testdata", "mini.ttf"))
+	ix := systemIndex()
+	for i, e := range ix.all {
+		if i >= 12 {
+			break
+		}
+		check(e.path)
+	}
+	if (&entry{path: filepath.Join(t.TempDir(), "missing.ttf")}).covers('a') {
+		t.Error("a missing file covers a character")
+	}
+
+	const r = 0x10fffd
+	scanned := func() int {
+		n := 0
+		for _, e := range ix.all {
+			if e.font == nil {
+				continue
+			}
+			named := false
+			for _, name := range fallbackFamilies[scriptOf(r)] {
+				named = named || hasPrefixFold(foldName(e.family), foldName(name))
+			}
+			if !named {
+				n++
+			}
+		}
+		return n
+	}
+	before := scanned()
+	f := Fallback(r, true, true)
+	want := before
+	if f != nil {
+		want++
+	}
+	if after := scanned(); after > want {
+		t.Errorf("a fallback search kept %d fonts it did not choose", after-want)
+	}
+}
+
 // TestAddFontDir checks that a caller's own directory is searched, which is
 // what a program shipping its own fonts needs.
 func TestAddFontDir(t *testing.T) {

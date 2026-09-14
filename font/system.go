@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -150,6 +151,21 @@ func walkFonts(dir string, depth int, fn func(string)) {
 // describe reads the name table of a font file and nothing else: the table
 // directory says where it is, so four short reads answer what a file holds.
 func describe(path string) *entry {
+	tables := sfntTables(path, 1<<20, "name", "OS/2", "head")
+	if len(tables) == 0 {
+		return nil
+	}
+	var probe Font
+	probe.readNames(&sfnt{tables: tables})
+	if probe.Family == "" {
+		return nil
+	}
+	return &entry{path: path, family: probe.Family, weight: probe.Weight, italic: probe.Italic}
+}
+
+// sfntTables reads the named tables of a font file's first face, each no
+// longer than limit, without reading the rest of the file.
+func sfntTables(path string, limit int, names ...string) map[string][]byte {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -179,37 +195,42 @@ func describe(path string) *entry {
 	if _, err := f.ReadAt(dir, off+12); err != nil && err != io.EOF {
 		return nil
 	}
-	s := &sfnt{tables: map[string][]byte{}}
+	tables := map[string][]byte{}
 	for i := range n {
 		e := 16 * i
 		if e+16 > len(dir) {
 			break
 		}
 		name := tag(dir, e)
-		switch name {
-		case "name", "OS/2", "head":
-		default:
+		if !slices.Contains(names, name) {
 			continue
 		}
 		start, length := int64(be32(dir, e+8)), be32(dir, e+12)
-		if length <= 0 || length > 1<<20 {
+		if length <= 0 || length > limit {
 			continue
 		}
 		b := make([]byte, length)
 		if _, err := f.ReadAt(b, start); err != nil && err != io.EOF {
 			continue
 		}
-		s.tables[name] = b
+		tables[name] = b
 	}
-	if len(s.tables) == 0 {
-		return nil
+	return tables
+}
+
+// covers reports whether the file maps r, reading its character map alone.
+func (e *entry) covers(r rune) bool {
+	tables := sfntTables(e.path, maxFontBytes, "cmap")
+	if tables == nil {
+		return false
 	}
-	var probe Font
-	probe.readNames(s)
-	if probe.Family == "" {
-		return nil
+	s := &sfnt{tables: tables}
+	s.readCmap()
+	if s.lookupUnicode(r) > 0 {
+		return true
 	}
-	return &entry{path: path, family: probe.Family, weight: probe.Weight, italic: probe.Italic}
+	alt, ok := sameShape[r]
+	return ok && s.lookupUnicode(alt) > 0
 }
 
 // foldName is what two family names are compared as: no case, no spaces and
@@ -323,6 +344,9 @@ func findFallback(k script, r rune, bold, italic bool) *Font {
 	for _, e := range ix.all {
 		if opened++; opened > maxScanOpen {
 			break
+		}
+		if !e.covers(r) {
+			continue
 		}
 		if f := e.load(); f != nil && f.GIDForRune(r) > 0 {
 			return f
