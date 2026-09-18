@@ -1,32 +1,20 @@
 package syntax
 
-// JBIG2 bilevel image decoding, ITU-T T.88, in the embedded form ISO 32000-1
-// 7.4.7 defines: no file header, and the globals stream carries the segments
-// the page stream refers to. Ported from pdf.js.
+// JBIG2 bilevel image decoding, ITU-T T.88, embedded as ISO 32000-1 7.4.7. Ported from pdf.js.
 
 import "sync"
 
 const (
 	// maxJBPixels bounds what one JBIG2 bitmap may allocate.
 	maxJBPixels = 1 << 28
-	// maxJBSymbols bounds how many symbols a dictionary may carry, so that
-	// a file naming itself in a cycle cannot grow one without end.
+	// maxJBSymbols bounds how many symbols a dictionary may carry.
 	maxJBSymbols = 1 << 20
-	// maxJBBudget bounds the pixels one stream may decode altogether. It
-	// starts small and the page information segment raises it to a multiple
-	// of the page area, so that a handful of segment headers cannot ask for
-	// unbounded work while a real page still has room for its regions, its
-	// intermediate buffers and its symbols.
+	// maxJBBudget bounds the pixels one stream may decode altogether.
 	maxJBBudget  = 2 * maxJBPixels
 	startJBudget = 1 << 22
 )
 
-// A jbBitmap is one bit a pixel, like the page it is composited into. A region
-// the size of a page is the largest thing a stream asks for, and a byte a pixel
-// made it eight times what the page itself costs.
-//
-// xoff is where column zero sits inside the first byte of a row, which lets
-// sub share the samples of a bitmap it does not start at a byte boundary of.
+// A jbBitmap is one bit a pixel; xoff is the bit column zero starts at in a row.
 type jbBitmap struct {
 	w, h, stride int
 	xoff         int
@@ -34,15 +22,14 @@ type jbBitmap struct {
 }
 
 func newJBBitmap(w, h int) (*jbBitmap, error) {
-	if w <= 0 || h <= 0 || w > maxJBPixels || h > maxJBPixels || int64(w)*int64(h) > maxJBPixels {
+	stride := (w + 7) / 8
+	if w <= 0 || h <= 0 || w > maxJBPixels || h > maxJBPixels || int64(stride)*int64(h) > maxJBPixels/8 {
 		return nil, errInvalidf("JBIG2 bitmap is %dx%d", w, h)
 	}
-	stride := (w + 7) / 8
 	return &jbBitmap{w: w, h: h, stride: stride, pix: make([]uint8, stride*h)}, nil
 }
 
-// row returns the bytes a row occupies, which is not the same as its pixels:
-// only a caller that means to work on the bits itself wants this.
+// row returns the bytes a row occupies.
 func (b *jbBitmap) row(y int) []uint8 { return b.pix[y*b.stride:][:b.stride] }
 
 func (b *jbBitmap) at(x, y int) uint8 {
@@ -53,8 +40,7 @@ func (b *jbBitmap) at(x, y int) uint8 {
 	return b.pix[y*b.stride+i>>3] >> uint(7-i&7) & 1
 }
 
-// bitAt reads a pixel the caller has already bounded, which the decoders can
-// do more cheaply than at because they know where the window sits.
+// bitAt reads a pixel the caller has already bounded.
 func (b *jbBitmap) bitAt(x, y int) uint32 {
 	i := b.xoff + x
 	return uint32(b.pix[y*b.stride+i>>3]>>uint(7-i&7)) & 1
@@ -113,8 +99,7 @@ const (
 	jbNumInt
 )
 
-// jbCoder is one segment's arithmetic decoder and the context arrays that go
-// with it; T.88 resets them at every segment this reads.
+// jbCoder is one segment's arithmetic decoder and its context arrays.
 type jbCoder struct {
 	mq     *MQ
 	budget *int64
@@ -122,8 +107,7 @@ type jbCoder struct {
 	iaid   []uint8
 	gb     []uint8
 	gr     []uint8
-	// refKey and refTmpl cache the label tables of the refinement template,
-	// which every symbol of a dictionary refines through the same one.
+	// refKey and refTmpl cache the label tables of the refinement template.
 	refKey  refKey
 	refTmpl *refTemplate
 }
@@ -137,21 +121,19 @@ func newJBCoder(data []byte, start, end int, budget *int64) *jbCoder {
 	return &jbCoder{mq: NewMQ(data, start, end), budget: budget}
 }
 
-// spend takes a bitmap's area out of the stream's budget.
-func (c *jbCoder) spend(w, h int) error {
-	if c.budget == nil {
+// jbSpend takes a bitmap's area out of a stream's budget.
+func jbSpend(budget *int64, w, h int) error {
+	if budget == nil {
 		return nil
 	}
-	*c.budget -= int64(w) * int64(h)
-	if *c.budget < 0 {
+	*budget -= int64(w) * int64(h)
+	if *budget < 0 {
 		return errInvalidf("JBIG2 stream decodes more pixels than its page")
 	}
 	return nil
 }
 
-// restart begins a new arithmetic decoder over the block a Huffman coded
-// segment byte aligns before each refinement, keeping the statistics the
-// segment has accumulated so far.
+// restart begins a new arithmetic decoder, keeping the statistics.
 func (c *jbCoder) restart(data []byte, start, end int) {
 	c.mq = NewMQ(data, start, end)
 }
@@ -291,8 +273,7 @@ func jbLog2(x int) int {
 	return n
 }
 
-// jbNominalTemplate0 reports whether at is the nominal adaptive template of a
-// template 0 generic region, which has a loop of its own.
+// jbNominalTemplate0 reports whether at is the nominal template 0 adaptive template.
 func jbNominalTemplate0(at []jbPoint) bool {
 	return len(at) == 4 &&
 		at[0] == jbPoint{3, -1} && at[1] == jbPoint{-3, -1} &&
@@ -306,9 +287,6 @@ func (c *jbCoder) bitmapTemplate0(w, h int) (*jbBitmap, error) {
 	}
 	const keep = 0x7bf7
 	ctx := c.generic()
-	// The two rows above are read through their own bytes rather than through
-	// at: the label carries the rest of the window along by shifting, so the
-	// only pixels this asks for are the two arriving at the right of it.
 	get := func(r []uint8, x int) uint32 {
 		if r == nil || x >= w {
 			return 0
@@ -337,11 +315,9 @@ func (c *jbCoder) bitmapTemplate0(w, h int) (*jbBitmap, error) {
 	return bm, nil
 }
 
-// 6.2 Generic region decoding procedure. The template is sorted into raster
-// order, which is a permutation of the context index and so leaves the decoded
-// bits alone while letting the inner loop shift most of a label along.
+// 6.2 Generic region decoding procedure.
 func (c *jbCoder) genericBitmap(w, h, template int, prediction bool, skip *jbBitmap, at []jbPoint) (*jbBitmap, error) {
-	if err := c.spend(w, h); err != nil {
+	if err := jbSpend(c.budget, w, h); err != nil {
 		return nil, err
 	}
 	if template == 0 && skip == nil && !prediction && jbNominalTemplate0(at) {
@@ -436,7 +412,7 @@ func (c *jbCoder) genericBitmap(w, h, template int, prediction bool, skip *jbBit
 
 // 6.3 Generic refinement region decoding procedure.
 func (c *jbCoder) refinementBitmap(w, h, template int, ref *jbBitmap, dx, dy int, prediction bool, at []jbPoint) (*jbBitmap, error) {
-	if err := c.spend(w, h); err != nil {
+	if err := jbSpend(c.budget, w, h); err != nil {
 		return nil, err
 	}
 	var cbuf, rbuf [16]jbPoint
@@ -456,11 +432,6 @@ func (c *jbCoder) refinementBitmap(w, h, template int, ref *jbBitmap, dx, dy int
 	pseudo := jbRefinementReusedContexts[template]
 	ctx := c.refine()
 
-	// Reading a neighbour through at costs a bounds check and a multiply, and
-	// the loop runs thirteen times a pixel. Where every point of the template
-	// falls inside the three by three around the pixel, which is every file
-	// that does not move an adaptive pixel far away, the neighbourhood is six
-	// rows of three bits that slide along with j.
 	if t := c.refTemplate(template, coding, reference, at); t != nil {
 		c.refineNear(bm, ref, dx, dy, t, ctx, pseudo, prediction)
 		return bm, nil
@@ -473,8 +444,7 @@ func (c *jbCoder) refinementBitmap(w, h, template int, ref *jbBitmap, dx, dy int
 		}
 		for j := 0; j < w; j++ {
 			if ltp != 0 {
-				// 6.3.5.6, a pixel whose reference neighborhood is
-				// uniform takes that value without a decision.
+				// 6.3.5.6 typical prediction.
 				if v, ok := jbTypical(ref, j-dx, i-dy); ok {
 					bm.set(j, i, v)
 					continue
@@ -509,18 +479,13 @@ func jbTypical(ref *jbBitmap, x, y int) (uint8, bool) {
 	return 0, false
 }
 
-// refTemplate is a refinement template whose every point lies in the three by
-// three square around the pixel. cells holds one entry per point, as the row
-// it reads and the bit of that window, and the label is those bits top down.
+// refTemplate is a refinement template inside the three by three square.
 type refTemplate struct {
 	coding, reference *[512]uint32
 	rbits             uint
 }
 
-// refTemplate returns the tables for one template, building them the first
-// time it is asked and once more whenever an adaptive pixel moves. A symbol
-// dictionary refines every one of its symbols through the same template, and
-// the tables are a thousand times the work of the smallest symbol.
+// refTemplate returns the tables for one template, rebuilt when an adaptive pixel moves.
 func (c *jbCoder) refTemplate(template int, coding, reference []jbPoint, at []jbPoint) *refTemplate {
 	key := refKey{template: template}
 	if template == 0 && len(at) >= 2 {
@@ -534,8 +499,7 @@ func (c *jbCoder) refTemplate(template int, coding, reference []jbPoint, at []jb
 	return t
 }
 
-// newRefTemplate turns a template into the label each state of the two three
-// by three neighborhoods maps to, nil for one that reaches outside them.
+// newRefTemplate builds the label tables of a template, nil if it leaves the square.
 func newRefTemplate(coding, reference []jbPoint) *refTemplate {
 	cod, ok := refLabels(coding)
 	if !ok {
@@ -548,16 +512,13 @@ func newRefTemplate(coding, reference []jbPoint) *refTemplate {
 	return &refTemplate{coding: cod, reference: ref, rbits: uint(len(reference))}
 }
 
-// refLabels is the label a template contributes for every one of the 512
-// states three rows of three bits can be in.
+// refLabels is the label a template contributes for each of the 512 window states.
 func refLabels(pts []jbPoint) (*[512]uint32, bool) {
 	var shift [16]uint
 	for k, p := range pts {
 		if p.x < -1 || p.x > 1 || p.y < -1 || p.y > 1 || k >= len(shift) {
 			return nil, false
 		}
-		// Row y sits at (1-y)*3 in the packed window and column x at 1-x
-		// inside it, with the leftmost column highest.
 		shift[k] = uint((1-int(p.y))*3 + 1 - int(p.x))
 	}
 	t := new([512]uint32)
@@ -571,8 +532,7 @@ func refLabels(pts []jbPoint) (*[512]uint32, bool) {
 	return t, true
 }
 
-// refRows is the three rows of a bitmap a refinement template reaches, and
-// the sliding window of each.
+// refRows is the three rows a refinement template reaches, each with its window.
 type refRows struct {
 	rows [3][]uint8
 	win  [3]uint32
@@ -606,7 +566,6 @@ func (r *refRows) bitOf(k, x int) uint32 {
 func (r *refRows) step() {
 	r.right++
 	var b0, b1, b2 uint32
-	// The column is the same for all three rows, so it is bounded once.
 	if x := r.right; x >= 0 && x < r.w {
 		i := r.xoff + x
 		by, sh := i>>3, uint(7-i&7)
@@ -625,12 +584,10 @@ func (r *refRows) step() {
 	r.win[2] = r.win[2]<<1&7 | b2
 }
 
-// packed is the whole neighborhood as one number: the top row highest, and
-// the leftmost column of each row highest inside it.
+// packed is the neighborhood as one number, top row and leftmost column highest.
 func (r *refRows) packed() uint32 { return r.win[0]<<6 | r.win[1]<<3 | r.win[2] }
 
-// uniform reports the value 6.3.5.6 gives a pixel whose whole reference
-// neighborhood is one color.
+// uniform reports the value 6.3.5.6 gives a uniform reference neighborhood.
 func (r *refRows) uniform() (uint8, bool) {
 	switch or := r.win[0] | r.win[1] | r.win[2]; {
 	case or == 0:
@@ -641,8 +598,7 @@ func (r *refRows) uniform() (uint8, bool) {
 	return 0, false
 }
 
-// refineNear is 6.3 for a template that stays inside the three by three
-// square, which is what every file of the corpus writes.
+// refineNear is 6.3 for a template inside the three by three square.
 func (c *jbCoder) refineNear(bm, ref *jbBitmap, dx, dy int, t *refTemplate,
 	ctx []uint8, pseudo uint32, prediction bool) {
 	var cr, rr refRows
@@ -664,8 +620,6 @@ func (c *jbCoder) refineNear(bm, ref *jbBitmap, dx, dy int, t *refTemplate,
 			v = uint8(c.mq.ReadBit(ctx, t.coding[cr.packed()]<<t.rbits|t.reference[rr.packed()]))
 		place:
 			bm.set(j, i, v)
-			// The window has already read the pixel this decided, so it is
-			// corrected before it slides over to become the one at x-1.
 			cr.win[1] = cr.win[1]&^2 | uint32(v)<<1
 			cr.step()
 			rr.step()
@@ -673,8 +627,7 @@ func (c *jbCoder) refineNear(bm, ref *jbBitmap, dx, dy int, t *refTemplate,
 	}
 }
 
-// jbReader is the bit reader the Huffman coded parts of a segment use; the
-// arithmetic parts read the same bytes through mq instead.
+// jbReader is the bit reader of the Huffman coded parts of a segment.
 type jbReader struct {
 	data     []byte
 	pos, end int
@@ -689,9 +642,7 @@ func newJBReader(data []byte, start, end int) *jbReader {
 	return &jbReader{data: data, pos: start, end: end, shift: -1}
 }
 
-// jbAdvance is pos moved on by n bytes, stopping at end. The sum is taken in
-// 64 bits: a segment may name a size of two thousand million, which overflows
-// an int where one is 32 bits wide and lands the reader before its own data.
+// jbAdvance is pos moved on by n bytes, stopping at end.
 func jbAdvance(pos, n, end int) int {
 	if n <= 0 {
 		return pos
@@ -736,8 +687,7 @@ func (r *jbReader) next() int {
 	return v
 }
 
-// jbHuffLine is one line of a code table, Annex B.1: a prefix code that stands
-// for a range, and the range width in bits that follows the prefix.
+// jbHuffLine is one line of a code table, Annex B.1.
 type jbHuffLine struct {
 	rangeLow   int32
 	prefixLen  uint8
@@ -780,8 +730,7 @@ func (n *jbHuffNode) insert(line jbHuffLine, shift int) {
 	n.children[bit].insert(line, shift-1)
 }
 
-// decode returns the next value, or ok false at an out of band code, at the end
-// of the data, or when the segment named a table it does not carry.
+// decode returns the next value, or false at an out of band code or a missing table.
 func (t *jbHuffTable) decode(r *jbReader) (int32, bool) {
 	if t == nil || t.root == nil {
 		return 0, false
@@ -1083,8 +1032,7 @@ var jbStandardTables = [16][]jbHuffLine{
 	},
 }
 
-// jbStandardTrees builds the fifteen standard tables once, because they are
-// the same for every file and two files may be decoding at once.
+// jbStandardTrees builds the fifteen standard tables once.
 var jbStandardTrees = sync.OnceValue(func() [16]*jbHuffTable {
 	var t [16]*jbHuffTable
 	for n := 1; n <= 15; n++ {
@@ -1100,8 +1048,7 @@ func jbStandardTable(n int) (*jbHuffTable, error) {
 	return jbStandardTrees()[n], nil
 }
 
-// jbCombine composites the columns [x0, x1) of row sy of src onto row dy of
-// dst, starting at column x + x0.
+// jbCombine composites columns [x0, x1) of src row sy onto dst row dy at column x + x0.
 func jbCombine(dst, src *jbBitmap, x, dy, sy, x0, x1, op int) {
 	for j := x0; j < x1; j++ {
 		v := src.at(j, sy)
@@ -1159,6 +1106,9 @@ type jbTextTables struct {
 
 // 6.4 Text region decoding procedure.
 func jbTextRegion(p *jbTextParams, syms []*jbBitmap, t *jbTextTables, c *jbCoder, r *jbReader) (*jbBitmap, error) {
+	if err := jbSpend(c.budget, p.w, p.h); err != nil {
+		return nil, err
+	}
 	bm, err := newJBBitmap(p.w, p.h)
 	if err != nil {
 		return nil, err
@@ -1210,8 +1160,7 @@ func jbTextRegion(p *jbTextParams, syms []*jbBitmap, t *jbTextTables, c *jbCoder
 			var id uint32
 			switch {
 			case p.huffman && t.symbolID == nil:
-				// 6.5.8.2.3, an aggregate names its symbols with
-				// plain fixed width codes.
+				// 6.5.8.2.3 fixed width codes.
 				id = r.bits(p.symCodeLen)
 			case p.huffman:
 				v, ok := t.symbolID.decode(r)
@@ -1265,9 +1214,7 @@ func jbTextRegion(p *jbTextParams, syms []*jbBitmap, t *jbTextTables, c *jbCoder
 				}
 			}
 
-			// 6.4.5 3(c), where the reference corner says which
-			// way along S the symbol grows and so whether the
-			// coordinate advances before or after it is placed.
+			// 6.4.5 3(c).
 			if p.transposed && p.refCorner&1 == 0 {
 				currentS += symH - 1
 			} else if !p.transposed && p.refCorner&2 != 0 {
@@ -1327,8 +1274,7 @@ type jbSymbolTables struct {
 	deltaHeight, deltaWidth, bitmapSize, aggInstances *jbHuffTable
 }
 
-// jbAggregateTables is the fixed table set 6.5.8.2.3 gives the text region a
-// Huffman coded symbol dictionary aggregates through.
+// jbAggregateTables is the fixed table set of 6.5.8.2.3.
 func jbAggregateTables() (*jbTextTables, error) {
 	t := &jbTextTables{}
 	for _, p := range []struct {
@@ -1372,8 +1318,6 @@ func jbSymbolDictionary(d *jbSymbolDict, input []*jbBitmap, t *jbSymbolTables, c
 	}
 
 	currentHeight := 0
-	// A height class must produce at least one symbol, so a stream that
-	// keeps opening them without ever closing one is not going anywhere.
 	classes := d.numNew + 1024
 	for len(newSymbols) < d.numNew && classes > 0 {
 		classes--
@@ -1428,7 +1372,7 @@ func jbSymbolDictionary(d *jbSymbolDict, input []*jbBitmap, t *jbSymbolTables, c
 			r.align()
 			var collective *jbBitmap
 			if size == 0 {
-				collective, err = jbUncompressedBitmap(r, totalWidth, currentHeight)
+				collective, err = jbUncompressedBitmap(c, r, totalWidth, currentHeight)
 			} else {
 				end := jbAdvance(r.pos, int(size), r.end)
 				sub := newJBReader(r.data, r.pos, end)
@@ -1495,8 +1439,7 @@ func jbSymbolDictionary(d *jbSymbolDict, input []*jbBitmap, t *jbSymbolTables, c
 	return exported, nil
 }
 
-// jbRefinedSymbol is 6.5.8.2, a symbol coded as a refinement of one already
-// decoded or as a small text region over several of them.
+// jbRefinedSymbol is 6.5.8.2, a refinement or aggregate coded symbol.
 func jbRefinedSymbol(d *jbSymbolDict, t *jbSymbolTables, agg *jbTextTables, input, newSymbols []*jbBitmap, w, h, symCodeLen int, c *jbCoder, r *jbReader) (*jbBitmap, error) {
 	var instances int32 = 1
 	if d.huffman {
@@ -1556,7 +1499,10 @@ func jbRefinedSymbol(d *jbSymbolDict, t *jbSymbolTables, agg *jbTextTables, inpu
 	return bm, nil
 }
 
-func jbUncompressedBitmap(r *jbReader, w, h int) (*jbBitmap, error) {
+func jbUncompressedBitmap(c *jbCoder, r *jbReader, w, h int) (*jbBitmap, error) {
+	if err := jbSpend(c.budget, w, h); err != nil {
+		return nil, err
+	}
 	bm, err := newJBBitmap(w, h)
 	if err != nil {
 		return nil, err
@@ -1572,7 +1518,7 @@ func jbUncompressedBitmap(r *jbReader, w, h int) (*jbBitmap, error) {
 
 // jbMMRBitmap decodes an MMR region, CCITT Group 4 with black as one.
 func jbMMRBitmap(c *jbCoder, r *jbReader, w, h int, endOfBlock bool) (*jbBitmap, error) {
-	if err := c.spend(w, h); err != nil {
+	if err := jbSpend(c.budget, w, h); err != nil {
 		return nil, err
 	}
 	bm, err := newJBBitmap(w, h)
@@ -1581,8 +1527,6 @@ func jbMMRBitmap(c *jbCoder, r *jbReader, w, h int, endOfBlock bool) (*jbBitmap,
 	}
 	g := newGroup4(r.next, w, h, endOfBlock)
 	eof := false
-	// Group 4 hands back a byte of eight pixels, which is the bitmap's own
-	// format, so a row is copied rather than taken apart and put back.
 	trailing := uint8(0xff)
 	if r := w & 7; r != 0 {
 		trailing = ^uint8(0) << uint(8-r)
@@ -1659,6 +1603,9 @@ func jbHalftoneRegion(p *jbHalftone, patterns []*jbBitmap, c *jbCoder, r *jbRead
 		int64(p.gridW)*int64(p.gridH) > maxJBPixels {
 		return nil, errInvalidf("JBIG2 halftone grid is %dx%d", p.gridW, p.gridH)
 	}
+	if err := jbSpend(c.budget, p.regionW, p.regionH); err != nil {
+		return nil, err
+	}
 	region, err := newJBBitmap(p.regionW, p.regionH)
 	if err != nil {
 		return nil, err
@@ -1673,6 +1620,9 @@ func jbHalftoneRegion(p *jbHalftone, patterns []*jbBitmap, c *jbCoder, r *jbRead
 	// 6.6.5.1, the cells the region never sees are not coded at all.
 	var skip *jbBitmap
 	if p.skip {
+		if err = jbSpend(c.budget, p.gridW, p.gridH); err != nil {
+			return nil, err
+		}
 		if skip, err = newJBBitmap(p.gridW, p.gridH); err != nil {
 			return nil, err
 		}
@@ -1698,8 +1648,7 @@ func jbHalftoneRegion(p *jbHalftone, patterns []*jbBitmap, c *jbCoder, r *jbRead
 		}
 	}
 
-	// Annex C, the gray-scale image the planes encode. MMR planes run on in
-	// one stream and each ends with an end of block code.
+	// Annex C, the gray-scale image the planes encode.
 	gray := make([]*jbBitmap, planes)
 	for i := planes - 1; i >= 0; i-- {
 		var plane *jbBitmap
@@ -1818,9 +1767,7 @@ func jbSegmentHeader(data []byte, start int) (jbSegment, int, error) {
 	pos += 4
 
 	if length == 0xffffffff {
-		// 7.2.7, a generic region may run to a terminating sequence and
-		// declare its real height in the four bytes that follow it,
-		// rather than say how long it is up front.
+		// 7.2.7, a generic region of unknown length.
 		if s.kind != 36 && s.kind != 38 && s.kind != 39 {
 			return s, 0, errInvalidf("JBIG2 segment %d has no length", s.number)
 		}
@@ -1851,8 +1798,7 @@ func jbSegmentHeader(data []byte, start int) (jbSegment, int, error) {
 	return s, s.end, nil
 }
 
-// jbPage is the page bitmap, packed a bit a pixel with one for black, which is
-// the form the image dictionary describes.
+// jbPage is the page bitmap, packed a bit a pixel with one for black.
 type jbPage struct {
 	w, h     int
 	stride   int
@@ -1939,8 +1885,7 @@ func (p *jbPage) draw(info jbRegionInfo, bm *jbBitmap, op int) {
 	}
 }
 
-// extract copies the page under a region back out, which is what a refinement
-// region that names no intermediate region refines.
+// extract copies the page under a region back out.
 func (p *jbPage) extract(info jbRegionInfo) (*jbBitmap, error) {
 	bm, err := newJBBitmap(info.w, info.h)
 	if err != nil {
@@ -1976,8 +1921,7 @@ type jbig2Decoder struct {
 	maxBudget int64
 }
 
-// emit stores an intermediate region for a later segment to refer to, or draws
-// an immediate one onto the page.
+// emit stores an intermediate region or draws an immediate one onto the page.
 func (d *jbig2Decoder) emit(seg jbSegment, info jbRegionInfo, bm *jbBitmap) {
 	switch seg.kind {
 	case 4, 20, 36, 40:
@@ -1990,20 +1934,21 @@ func (d *jbig2Decoder) emit(seg jbSegment, info jbRegionInfo, bm *jbBitmap) {
 	}
 }
 
-// reference returns what a refinement region refines: an intermediate region
-// it names, or the page underneath it, 7.4.7.2.
+// reference returns what a refinement region refines, 7.4.7.2.
 func (d *jbig2Decoder) reference(seg jbSegment, info jbRegionInfo) (*jbBitmap, bool, error) {
 	for _, n := range seg.referredTo {
 		if bm := d.regions[n]; bm != nil {
 			return bm, false, nil
 		}
 	}
+	if err := jbSpend(&d.budget, info.w, info.h); err != nil {
+		return nil, false, err
+	}
 	bm, err := d.page.extract(info)
 	return bm, true, err
 }
 
-// segments walks one chunk, which is either the globals stream or the image
-// stream; both carry segments in the embedded organization, header then data.
+// segments walks the segments of the globals or the image stream.
 func (d *jbig2Decoder) segments(data []byte) error {
 	pos := 0
 	for pos < len(data) {
@@ -2037,8 +1982,7 @@ func (d *jbig2Decoder) inputSymbols(refs []uint32) []*jbBitmap {
 	return syms
 }
 
-// customTable returns the index'th Tables segment among those referred to,
-// 7.4.2.1.6 and 7.4.3.1.6.
+// customTable returns the index'th Tables segment referred to, 7.4.2.1.6 and 7.4.3.1.6.
 func (d *jbig2Decoder) customTable(index int, refs []uint32) (*jbHuffTable, error) {
 	seen := 0
 	for _, n := range refs {
@@ -2052,8 +1996,7 @@ func (d *jbig2Decoder) customTable(index int, refs []uint32) (*jbHuffTable, erro
 	return nil, errInvalidf("JBIG2 names custom table %d", index)
 }
 
-// selectTable picks a standard table for a selector below 3 and a custom one
-// for 3, advancing the custom index as the tables are consumed in order.
+// selectTable picks a standard table for a selector below 3 and the next custom one for 3.
 func (d *jbig2Decoder) selectTable(sel, base int, refs []uint32, index *int) (*jbHuffTable, error) {
 	if sel == 3 {
 		t, err := d.customTable(*index, refs)
@@ -2441,15 +2384,10 @@ func jbCoded(f *File, s *Stream) bool {
 	return false
 }
 
-// jbig2Decode expands a JBIG2 embedded stream into packed one bit rows. JBIG2
-// writes one for black and a gray image reads zero as black, so the page is
-// inverted on the way out, as ISO 32000-1 7.4.7 requires.
+// jbig2Decode expands a JBIG2 embedded stream into packed rows, inverted as ISO 32000-1 7.4.7 requires.
 func jbig2Decode(f *File, data []byte, parms Dict, self Ref) ([]byte, error) {
 	d := jbig2Decoder{budget: startJBudget, maxBudget: maxJBBudget}
 	if f != nil {
-		// A globals stream carries segments, not a JBIG2 image, so it is
-		// never itself JBIG2 coded; one that is, or one that names the
-		// image it belongs to, is a cycle rather than a file.
 		if s := f.GetStream(parms["JBIG2Globals"]); s != nil && s.Ref != self && !jbCoded(f, s) {
 			globals, err := s.Data()
 			if err != nil {
