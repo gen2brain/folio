@@ -6,9 +6,7 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// JPEG 2000 decoding, ITU-T T.800, ported from pdf.js with OpenJPEG read for
-// the parts it leaves out. The codestream carries its own geometry and
-// precision, which ISO 32000-1 7.4.9 says wins over the image dictionary.
+// JPEG 2000 decoding, ITU-T T.800, ported from pdf.js with OpenJPEG read for the rest.
 
 type jpxComponent struct {
 	precision      int
@@ -69,9 +67,7 @@ type jpxCodeblock struct {
 	chunks                 []jpxChunk
 }
 
-// jpxChunk is one codeword segment of a codeblock. Without the bypass or
-// terminate all styles a codeblock is one segment however many packets it
-// arrives in, so consecutive chunks that do not terminate are read as one.
+// jpxChunk is one codeword segment of a codeblock.
 type jpxChunk struct {
 	data       []byte
 	passes     int
@@ -104,8 +100,7 @@ type jpxResolution struct {
 	level                  int
 	subbands               []*jpxSubband
 	prec                   jpxPrecinctParams
-	// byPrecinct lists each precinct's codeblocks in the order B.10.8
-	// gives them, which is what a packet carries.
+	// byPrecinct lists each precinct's codeblocks in the order of B.10.8.
 	byPrecinct [][]*jpxCodeblock
 }
 
@@ -147,17 +142,14 @@ type jpxContext struct {
 	qcd        *jpxQuant
 	qcc        map[int]*jpxQuant
 	current    *jpxTilePart
-	// indexed keeps the samples at the precision the codestream carries,
-	// which is what an image whose color space is Indexed reads them at.
+	// indexed keeps the samples at the precision the codestream carries.
 	indexed bool
 }
 
-// maxJPXBlocks bounds the code blocks one tile may be divided into, so that a
-// header a few bytes long cannot ask for a structure the image cannot hold.
+// maxJPXBlocks bounds the code blocks one tile may be divided into.
 const maxJPXBlocks = 1 << 20
 
-// jpxImage is one decoded codestream: interleaved samples, one byte a
-// component, plus what the codestream says about itself.
+// jpxImage is one decoded codestream, interleaved samples one byte a component.
 type jpxImage struct {
 	width, height int
 	comps         int
@@ -208,9 +200,7 @@ func jpxU32(data []byte, i int) int {
 	return int(data[i])<<24 | int(data[i+1])<<16 | int(data[i+2])<<8 | int(data[i+3])
 }
 
-// Section B.10.2 Tag trees. A node holds the value decoded so far and whether
-// it is final; decoding stops at a threshold and resumes in a later layer
-// where it left off, which is what lets an empty packet carry no bits at all.
+// B.10.2 Tag trees; decoding stops at a threshold and resumes in a later layer.
 type jpxTagNode struct {
 	value int
 	known bool
@@ -235,8 +225,7 @@ func newJPXTagTree(w, h int) *jpxTagTree {
 	return t
 }
 
-// decode reads the value at (i, j), stopping once it is known or has reached
-// threshold. It reports whether the value is final.
+// decode reads the value at (i, j) up to threshold and reports whether it is final.
 func (t *jpxTagTree) decode(r *jpxPacketReader, i, j, threshold int) (int, bool) {
 	n := len(t.levels)
 	for l := 0; l < n; l++ {
@@ -574,8 +563,7 @@ func jpxTileGrids(ctx *jpxContext) error {
 	return nil
 }
 
-// B.7 Division of a subband into codeblocks, with the precinct sizes B.6 says
-// the resolution is divided by.
+// B.7 Division of a subband into codeblocks, within the precincts of B.6.
 func jpxBlockDims(cod *jpxCOD, r int) (ppx, ppy, xcb, ycb int) {
 	ppx, ppy = 15, 15
 	if cod.customPrecincts {
@@ -749,8 +737,7 @@ func jpxBuildPackets(ctx *jpxContext, tile *jpxTile) error {
 	return nil
 }
 
-// jpxPassType is the pass a codeblock's nth coding pass runs, D.2: the first
-// bit plane starts at the cleanup pass and the three then repeat.
+// jpxPassType is the pass a codeblock's nth coding pass runs, D.2.
 func jpxPassType(n int) int { return (n + 2) % 3 }
 
 const (
@@ -759,8 +746,7 @@ const (
 	jpxCleanup
 )
 
-// jpxRawPass reports whether the bypass style codes this pass as raw bits
-// rather than arithmetically, D.6.
+// jpxRawPass reports whether the bypass style codes this pass as raw bits, D.6.
 func jpxRawPass(n int, bypass bool) bool {
 	return bypass && n >= 10 && jpxPassType(n) != jpxCleanup
 }
@@ -776,8 +762,7 @@ func jpxTerminates(n int, bypass, termall bool) bool {
 	return n == 9 || n >= 10 && jpxPassType(n) != jpxSignificance
 }
 
-// jpxSegments splits n passes starting at pass start into codeword segments,
-// which B.10.7.2 gives a length each.
+// jpxSegments splits n passes starting at pass start into codeword segments, B.10.7.2.
 func jpxSegments(start, n int, bypass, termall bool) []int {
 	if !bypass && !termall {
 		return []int{n}
@@ -797,8 +782,7 @@ func jpxSegments(start, n int, bypass, termall bool) []int {
 	return out
 }
 
-// jpxPacketReader reads a tile-part's packet headers, which are bit stuffed:
-// a zero bit follows every 0xff byte, B.10.1.
+// jpxPacketReader reads a tile-part's bit stuffed packet headers, B.10.1.
 type jpxPacketReader struct {
 	data     []byte
 	pos      int
@@ -897,8 +881,7 @@ func jpxParsePackets(ctx *jpxContext, tile *jpxTile, data []byte) error {
 		if !ok {
 			break
 		}
-		// An empty packet still carries its end of packet header
-		// marker, B.10.1, so the tail of the loop has to run for it.
+		// B.10.1, an empty packet still carries its end of packet header marker.
 		empty := r.readBits(1) == 0
 		queue = queue[:0]
 		for _, cb := range packet.codeblocks {
@@ -1021,8 +1004,7 @@ type jpxBitModel struct {
 	vsc         bool
 }
 
-// bit reads one decision, from the raw bit stream when the bypass style has
-// put this pass outside the arithmetic coder.
+// bit reads one decision, raw when the bypass style asks for it.
 func (m *jpxBitModel) bit(label uint32) int {
 	if m.raw != nil {
 		return int(m.raw.readBits(1))
@@ -1121,8 +1103,7 @@ func (m *jpxBitModel) significancePass() {
 	}
 }
 
-// signBit is the sign of a newly significant coefficient, raw under the
-// bypass style and from the sign contexts of D.3.2 otherwise.
+// signBit is the sign of a newly significant coefficient, D.3.2.
 func (m *jpxBitModel) signBit(row, column, index int) uint8 {
 	if m.raw != nil {
 		return uint8(m.raw.readBits(1))
@@ -1302,8 +1283,7 @@ func jpxExtendRows(rows [][]float32, offset, size int) {
 	}
 }
 
-// jpxReversibleFilterRows is jpxReversibleFilter down every column of a band
-// at once, which is what keeps the vertical pass reading whole rows.
+// jpxReversibleFilterRows is jpxReversibleFilter down every column of a band at once.
 func jpxReversibleFilterRows(rows [][]float32, offset, length int) {
 	half := length >> 1
 	j := offset
@@ -1422,8 +1402,7 @@ func jpxIrreversibleFilter(x []float32, offset, length int) {
 
 const jpxPad = 4
 
-// jpxIterate is F.3.3 to F.3.5: interleave the lower level into the three high
-// pass bands, then filter every row and every column.
+// jpxIterate is F.3.3 to F.3.5, one level of the inverse wavelet.
 func jpxIterate(ll, band jpxBand, u0, v0 int, reversible bool) jpxBand {
 	filter := jpxIrreversibleFilter
 	if reversible {
@@ -1483,9 +1462,7 @@ func jpxIterate(ll, band jpxBand, u0, v0 int, reversible bool) jpxBand {
 
 var jpxSubbandGain = map[string]int{"LL": 0, "LH": 1, "HL": 1, "HH": 2}
 
-// jpxCopyCoefficients decodes every codeblock of a subband and writes the
-// dequantized coefficients into the resolution level, interleaved where F.3.3
-// wants them so the transform does not have to move them again.
+// jpxCopyCoefficients decodes a subband into the resolution level, interleaved as F.3.3 asks.
 func jpxCopyCoefficients(coeff []float32, levelW int, sb *jpxSubband, delta float64, mb int, reversible bool, cod *jpxCOD) {
 	x0, y0 := sb.tbx0, sb.tby0
 	width := sb.tbx1 - sb.tbx0
@@ -1510,9 +1487,6 @@ func jpxCopyCoefficients(coeff []float32, levelW int, sb *jpxSubband, delta floa
 		m.vsc = cod.verticalStripe
 		pass := 0
 		for i := 0; i < len(cb.chunks); {
-			// Chunks that do not terminate continue the same codeword
-			// segment, which is the whole codeblock unless the bypass
-			// or terminate all style breaks it up.
 			raw := cb.chunks[i].raw
 			last, passes, total := i, 0, 0
 			for {
@@ -1658,8 +1632,7 @@ func jpxPow2(n int) float64 {
 	return v
 }
 
-// A.6.1 and A.6.2, the coding style of COD or COC. COC carries only the
-// component part, so it starts from a copy of the style already in force.
+// A.6.1 and A.6.2, the coding style of COD or COC.
 func jpxReadCodingStyle(data []byte, j, end int, base *jpxCOD, component bool) (*jpxCOD, error) {
 	cod := &jpxCOD{}
 	if base != nil {
@@ -1750,7 +1723,6 @@ func jpxReadQuant(data []byte, j, end int) (*jpxQuant, error) {
 }
 
 // jpxParseCodestream reads the markers of A.4 and decodes every tile it finds.
-// A file that stops early keeps what it decoded, as every other reader does.
 func jpxParseCodestream(data []byte, start, end int) (*jpxContext, error) {
 	ctx := &jpxContext{coc: map[int]*jpxCOD{}, qcc: map[int]*jpxQuant{}}
 	pos := start
@@ -1884,7 +1856,7 @@ func jpxParseCodestream(data []byte, start, end int) (*jpxContext, error) {
 				part.dataEnd = end
 			}
 			ctx.mainHeader = false
-			if part.partIndex == 0 {
+			if part.partIndex == 0 || ctx.current == nil {
 				part.cod = ctx.cod
 				part.qcd = ctx.qcd
 				part.coc = map[int]*jpxCOD{}
@@ -1959,15 +1931,10 @@ func jpxInitTile(ctx *jpxContext, tile *jpxTile, part *jpxTilePart) error {
 	return nil
 }
 
-// jpxAssemble runs the inverse wavelet on every tile component, undoes the
-// multiple component transform of G.2 and writes interleaved eight bit
-// samples, upsampling any component the codestream subsampled.
+// jpxAssemble inverts the wavelet and the G.2 component transform into eight bit samples.
 func jpxAssemble(ctx *jpxContext) (*jpxImage, error) {
 	siz := &ctx.siz
 	w, h, n := siz.xsiz-siz.xosiz, siz.ysiz-siz.yosiz, siz.csiz
-	// The codestream carries its own geometry, so it is what has to be held
-	// to the sample count the image layer allows: the wavelet needs a float
-	// for every one of them at every level.
 	if w <= 0 || h <= 0 || w > maxImagePixels || h > maxImagePixels ||
 		int64(w)*int64(h)*int64(n) > maxImagePixels {
 		return nil, fmt.Errorf("%w: JPX is %dx%d with %d components", ErrInvalid, w, h, n)
@@ -2067,8 +2034,7 @@ func jpxWriteComponent(img *jpxImage, ctx *jpxContext, tile *jpxTile, c int, ban
 	}
 }
 
-// jpxWriteRow is the body of jpxWriteComponent for a component the image is
-// not subsampled in, where the samples run one to one.
+// jpxWriteRow is jpxWriteComponent for a component that is not subsampled.
 func jpxWriteRow(out []uint8, stride int, row []float32, half, shift int) {
 	switch {
 	case shift == 0:
@@ -2101,10 +2067,7 @@ func jpxClamp(v int) uint8 {
 	return uint8(min(max(v, 0), 255))
 }
 
-// jpxComponents reports how many components a codestream carries, reading no
-// further than its size marker. The image dictionary may leave the color space
-// out and let the codestream say, ISO 32000-1 7.4.9, and a caller that only
-// wants to know what the image is should not have to decode it.
+// jpxComponents reports how many components a codestream carries, from its size marker.
 func jpxComponents(data []byte) int {
 	for i := 0; i+42 <= len(data); i++ {
 		if data[i] == 0xff && data[i+1] == 0x4f && data[i+2] == 0xff && data[i+3] == 0x51 {
@@ -2114,8 +2077,7 @@ func jpxComponents(data []byte) int {
 	return 0
 }
 
-// jpxDecode reads a JPEG 2000 codestream, bare or wrapped in the JP2 boxes of
-// ISO 15444-1 Annex I, and returns interleaved eight bit samples.
+// jpxDecode reads a bare or JP2 wrapped codestream into interleaved eight bit samples.
 func jpxDecode(data []byte, indexed bool) (*jpxImage, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("%w: JPX stream is %d bytes", ErrInvalid, len(data))
