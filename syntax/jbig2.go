@@ -1237,6 +1237,9 @@ func jbTextRegion(p *jbTextParams, syms []*jbBitmap, t *jbTextTables, c *jbCoder
 					y -= symH - 1
 				}
 			}
+			if err := jbSpend(c.budget, symW, symH); err != nil {
+				return nil, err
+			}
 			bm.draw(sym, x, y, p.combOp)
 			if p.transposed && p.refCorner&1 != 0 {
 				currentS += symH - 1
