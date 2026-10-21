@@ -4,7 +4,7 @@
 
 Document rendering in pure Go.
 
-**PDF**, **SVG**, **EPUB**, **MOBI**, **CHM**, **FB2**, **DOCX**, **PPTX**, **XLSX**, **HTML** and plain text.
+**PDF**, **SVG**, **EPUB**, **MOBI**, **AZW3**, **CHM**, **FB2**, **DOCX**, **PPTX**, **XLSX**, **HTML** and plain text.
 
 ### Rendering
 
@@ -19,12 +19,12 @@ txt, err := p.Text()
 
 ### Supported
 
- |                                      |                                                                                                                            |
- |--------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
- | **PDF**                              | paths, text, images, shadings, patterns, transparency, annotations, layers; damaged files repaired, encrypted files opened |
- | **SVG**                              | shapes, paths, text on a path and down the page, paint servers, clipping, masking, markers, filters                        |
- | **EPUB, MOBI, CHM, FB2, HTML, text** | container, HTML, CSS cascade and layout: floats, tables, pagination, writing modes, embedded fonts                         |
- | **DOCX, PPTX, XLSX**                 | styles, lists, tables, pictures, footnotes; a slide is a page, a sheet a part, cells formatted as the file asks            |
+ |                                            |                                                                                                                            |
+ |--------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
+ | **PDF**                                    | paths, text, images, shadings, patterns, transparency, annotations, layers; damaged files repaired, encrypted files opened |
+ | **SVG**                                    | shapes, paths, text on a path and down the page, paint servers, clipping, masking, markers, filters                        |
+ | **EPUB, MOBI, AZW3, CHM, FB2, HTML, text** | container, HTML, CSS cascade and layout: floats, tables, pagination, writing modes, embedded fonts                         |
+ | **DOCX, PPTX, XLSX**                       | styles, lists, tables, pictures, footnotes; a slide is a page, a sheet a part, cells formatted as the file asks            |
 
 A page also reads as structured text with the box every character occupies, as plain text, as its links, as SVG and as HTML, and a reflowable document as Markdown. A document carries its outline, metadata and page labels.
 

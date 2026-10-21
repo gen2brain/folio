@@ -1,5 +1,5 @@
-// Package html reads reflowable documents: EPUB, MOBI, CHM, FB2, DOCX, PPTX,
-// XLSX and plain text.
+// Package html reads reflowable documents: EPUB, MOBI and AZW3, CHM, FB2, DOCX,
+// PPTX, XLSX and plain text.
 //
 //	doc, err := html.Open("book.epub")
 //	defer doc.Close()
@@ -92,7 +92,7 @@ func (k Kind) String() string {
 
 // Item is one part of a book: a chapter, a stylesheet, an image.
 type Item struct {
-	// Path is what the container calls it, and what a link resolves against.
+	// Path is the part's name in the container.
 	Path string
 	// Type is the media type the container declares.
 	Type string
@@ -100,16 +100,14 @@ type Item struct {
 	ID string
 	// Properties are the manifest properties of an EPUB item.
 	Properties []string
-	// Linear is false for a spine item the package marks as auxiliary, which
-	// a reader may leave out of the main flow.
+	// Linear is false for a spine item the package marks as auxiliary.
 	Linear bool
 }
 
-// IsChapter reports whether the item is a part with text in it rather than a
-// picture, which a spine may carry as well.
+// IsChapter reports whether the item is a part with text in it.
 func (i Item) IsChapter() bool { return i.Type == "" || isChapter(i.Type) }
 
-// Metadata is what a book says about itself.
+// Metadata is a book's title, authors and the rest of its description.
 type Metadata struct {
 	Title       string
 	Author      string
@@ -134,9 +132,8 @@ type Outline struct {
 
 // Document is an open book.
 type Document struct {
-	// ImageCacheBytes bounds the decoded pictures the book keeps while its
-	// pages render. Zero is the default, negative is no cache at all. It is
-	// set before Layout.
+	// ImageCacheBytes bounds the decoded pictures kept while pages render: zero
+	// is the default, negative is none. It is set before Layout.
 	ImageCacheBytes int
 
 	kind  Kind
@@ -150,27 +147,22 @@ type Document struct {
 	read     func(path string) ([]byte, error)
 	// base is the directory the paths are relative to.
 	base string
-	// tocID is what the spine calls the EPUB 2 table of contents, and
-	// obfuscated the parts a publisher scrambled and the key to each.
+	// tocID names the EPUB 2 table of contents; obfuscated keys scrambled parts.
 	obfuscated map[string][]byte
 	tocID      string
 	headings   sync.Once
-	// filepos are the byte offsets a MOBI names its own places by, which
-	// become anchors when the markup is read.
-	filepos []int
+	// filepos are the byte offsets of each part a MOBI names places by.
+	filepos map[string][]int
 	// chmHome is the page a CHM opens at.
 	chmHome string
-	// natural is the page the document itself asks for, which a caller may
-	// take by leaving the size out of LayoutOptions.
+	// natural is the page size the document asks for.
 	natural LayoutOptions
 
 	// fontMu guards the font programs the book carries, read once each.
 	fontMu sync.Mutex
 	fonts  map[string]*font.Font
 
-	// layoutMu guards what Layout produced, which every page reads, and
-	// autoMu keeps two goroutines from laying the book out at once when
-	// neither asked for a size.
+	// layoutMu guards what Layout produced; autoMu serializes an unsized layout.
 	layoutMu sync.Mutex
 	autoMu   sync.Mutex
 	opt      LayoutOptions
@@ -220,8 +212,7 @@ func NewReader(r io.ReaderAt, size int64) (*Document, error) {
 	return openText(r, size)
 }
 
-// isFB2 reports the head of a file that declares itself a FictionBook, which
-// is an XML document rather than a container.
+// isFB2 reports the head of a file that declares itself a FictionBook.
 func isFB2(b []byte) bool {
 	if len(b) > 512 {
 		b = b[:512]
@@ -247,9 +238,8 @@ func readAll(r io.ReaderAt, size int64) ([]byte, error) {
 // Load reads a book from a buffer.
 func Load(b []byte) (*Document, error) { return NewReader(newByteReader(b), int64(len(b))) }
 
-// NewStream reads a document from a stream that cannot be seeked, which means
-// reading all of it into memory first. A caller with an untrusted source
-// bounds it with io.LimitReader.
+// NewStream reads a document from a stream, all of it into memory first. An
+// untrusted source should be bounded with io.LimitReader.
 func NewStream(r io.Reader) (*Document, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
@@ -281,8 +271,8 @@ func (d *Document) Spine() []Item { return d.spine }
 // Manifest is every part the book carries, nil for a container listing none.
 func (d *Document) Manifest() []Item { return d.manifest }
 
-// Outline returns the table of contents as the tree it is. A book that
-// carries none gets one built from the headings of its parts.
+// Outline returns the table of contents, built from the headings of the parts
+// when the book carries none.
 func (d *Document) Outline() []Outline {
 	d.headings.Do(func() {
 		if len(d.outline) == 0 {
@@ -300,8 +290,8 @@ func (d *Document) Read(p string) ([]byte, error) {
 	return d.read(p)
 }
 
-// Resolve turns a link inside one part into the path of another. An absolute
-// path stands alone, a relative one reads against base, a fragment is cut.
+// Resolve turns a link inside the part at base into the path of another, with
+// any fragment cut.
 func Resolve(base, ref string) string {
 	if i := strings.IndexAny(ref, "#?"); i >= 0 {
 		ref = ref[:i]

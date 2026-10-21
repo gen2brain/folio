@@ -22,8 +22,7 @@ const (
 	ncxParent  = 21
 )
 
-// indxTag is one row of the TAGX table: the tag, its value count, the bit of
-// the control byte marking it present, and whether the row ends that byte.
+// indxTag is one row of the TAGX table.
 type indxTag struct{ id, values, mask, control byte }
 
 // indxEntry is one row of an index: its label and the tags it carries.
@@ -50,8 +49,7 @@ func (e *indxEntry) value(id byte, i int) (uint32, bool) {
 	return 0, false
 }
 
-// readIndex reads the set of records an index spans: a master record naming
-// the tags, the entry records after it, and the string records after those.
+// readIndex reads an index: its master record, its entries and its strings.
 func readIndex(recs [][]byte, at int) ([]indxEntry, [][]byte) {
 	if at <= 0 || at >= len(recs) {
 		return nil, nil
@@ -109,8 +107,7 @@ func readTAGX(b []byte) ([]indxTag, int) {
 	return out, ctrl
 }
 
-// readEntries reads one record of index entries, which are found through the
-// IDXT table at its end.
+// readEntries reads one record of index entries through its IDXT table.
 func readEntries(out []indxEntry, rec []byte, tags []indxTag, ctrl int) []indxEntry {
 	if len(rec) < indxHeader || string(rec[:4]) != "INDX" {
 		return out
@@ -139,8 +136,7 @@ func readEntries(out []indxEntry, rec []byte, tags []indxTag, ctrl int) []indxEn
 	return out
 }
 
-// readEntry reads one entry: a label, the control bytes saying which tags it
-// carries, and the values of those tags.
+// readEntry reads one entry: a label, its control bytes and its tag values.
 func readEntry(b []byte, tags []indxTag, ctrl int) (indxEntry, bool) {
 	var e indxEntry
 	if len(b) < 1 {
@@ -154,8 +150,6 @@ func readEntry(b []byte, tags []indxTag, ctrl int) (indxEntry, bool) {
 	control := b[1+n : 1+n+ctrl]
 	p := 1 + n + ctrl
 
-	// All the bits of a mask wider than one set means the count is in the
-	// entry, not in the byte.
 	type pending struct {
 		tag   indxTag
 		count uint32
@@ -228,8 +222,7 @@ func bits8(v byte) int {
 	return n
 }
 
-// varlen reads the integer written seven bits at a time, most significant
-// first, ending at the byte with its top bit set. Zero bytes is no end.
+// varlen reads an integer written seven bits a byte, ended by the top bit.
 func varlen(b []byte, at int) (uint32, int) {
 	var v uint32
 	for i := 0; i < 4; i++ {
@@ -245,11 +238,10 @@ func varlen(b []byte, at int) (uint32, int) {
 	return 0, 0
 }
 
-// cncxString reads one of the strings the index keeps in the records after
-// its entries, which is where a label longer than a byte lives.
+// cncxString reads a string from the records after an index's entries.
 func cncxString(recs [][]byte, at uint32) string {
-	i := int(at >> 15)
-	off := int(at & 0x7fff)
+	i := int(at >> 16)
+	off := int(at & 0xffff)
 	if i >= len(recs) {
 		return ""
 	}

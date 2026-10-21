@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"cmp"
+	"compress/zlib"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -26,8 +27,7 @@ import (
 
 const refDir = "/media/adata/temp/corpus/pdf"
 
-// buildEPUB writes the parts into the archive an EPUB is, mimetype first and
-// stored, which is what the specification asks for and what a reader sniffs.
+// buildEPUB writes the parts into an EPUB archive, mimetype first and stored.
 func buildEPUB(t *testing.T, parts map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -85,8 +85,7 @@ const pkg = `<?xml version="1.0"?>
  </spine>
 </package>`
 
-// The nav is wrapped in a section and its titles are wrapped in spans, which
-// is what real books do and what a shape matcher misses.
+// nav wraps its section and titles the way real books do.
 const nav = `<?xml version="1.0"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <body><section>
@@ -187,8 +186,7 @@ func TestEPUBOutline(t *testing.T) {
 	}
 }
 
-// TestEPUBNCX checks the EPUB 2 table of contents, which a book carries
-// instead of a navigation document or as well as one.
+// TestEPUBNCX checks the EPUB 2 table of contents.
 func TestEPUBNCX(t *testing.T) {
 	pkg2 := strings.Replace(pkg,
 		`<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`,
@@ -215,8 +213,7 @@ func TestEPUBNCX(t *testing.T) {
 	}
 }
 
-// TestEPUBNoSpine checks a package that lists its chapters and forgets to put
-// them in the spine, which is still a book worth reading.
+// TestEPUBNoSpine checks a package whose chapters are missing from the spine.
 func TestEPUBNoSpine(t *testing.T) {
 	pkg2 := strings.Replace(pkg, `<itemref idref="one"/>`, "", 1)
 	pkg2 = strings.Replace(pkg2, `<itemref idref="two"/>`, "", 1)
@@ -297,8 +294,7 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-// FuzzBook opens arbitrary bytes as a book and then asks it everything: the
-// metadata, the spine, the outline and every part. None of it may panic.
+// FuzzBook opens arbitrary bytes as a book and reads everything it has.
 func FuzzBook(fu *testing.F) {
 	fu.Add(buildEPUB(&testing.T{}, map[string]string{
 		"META-INF/container.xml": container,
@@ -309,6 +305,7 @@ func FuzzBook(fu *testing.F) {
 	fu.Add([]byte("plain text"))
 	fu.Add([]byte("<html><head><title>t</title></head><body><p>markup</p></body></html>"))
 	fu.Add(buildMOBI([]byte("<html><body>Hi</body></html>"), []byte{0x81}, []byte("\x89PNG\r\n\x1a\n0123456789")))
+	fu.Add(buildKF8(fu, []byte("\x00\x01\x00\x00 not a whole font")))
 	fu.Add(buildCHM(&testing.T{}, map[string][]byte{
 		"/#SYSTEM":       {0x03, 0x00, 0x00, 0x00},
 		"/Pages/one.htm": []byte(`<html><body><p>One.</p></body></html>`),
@@ -348,9 +345,7 @@ func FuzzBook(fu *testing.F) {
 	})
 }
 
-// buildMOBI writes the smallest PalmDB that is a book: a header, a record
-// list, the record that describes the rest, one compressed text record and
-// one picture.
+// buildMOBI writes the smallest PalmDB book: one text record and one picture.
 func buildMOBI(text []byte, trailing []byte, image []byte) []byte {
 	rec0 := make([]byte, 16+232)
 	be16(rec0[0:], 2)                 // PalmDOC LZ77
@@ -451,11 +446,8 @@ func TestMOBI(t *testing.T) {
 	}
 }
 
-// TestMOBITrailing checks that the entries a record carries after its data
-// are taken off, which is what tells the text from the index behind it.
+// TestMOBITrailing checks that trailing entries come off a text record.
 func TestMOBITrailing(t *testing.T) {
-	// One trailing entry of four bytes, its own size written backwards in the
-	// last byte with the top bit marking where it ends.
 	trailing := []byte{'x', 'y', 'z', 0x80 | 4}
 	d, err := Load(buildMOBI([]byte("Hello"), trailing, nil))
 	if err != nil {
@@ -467,8 +459,7 @@ func TestMOBITrailing(t *testing.T) {
 	}
 }
 
-// TestMOBIRepeat checks the two byte form of the compression, which points
-// back into what has already been written and may run past the end of it.
+// TestMOBIRepeat checks a back reference that runs past the end of the output.
 func TestMOBIRepeat(t *testing.T) {
 	rec := []byte{2, 'a', 'b', 0x80, byte(2<<3 | (6 - 3))}
 	if got := string(palmDoc(nil, rec)); got != "abababab" {
@@ -603,8 +594,7 @@ const selDoc = `<html><body>
 <div id="d2"><a id="a1" href="x.html" title="t">Link</a></div>
 </body></html>`
 
-// matchIDs returns the identifiers of every element a selector matches, in
-// document order, which is what a selector table is checked against.
+// matchIDs returns the identifiers of every element a selector matches.
 func matchIDs(t *testing.T, sel string) []string {
 	t.Helper()
 	root, err := Parse([]byte(selDoc))
@@ -683,9 +673,7 @@ func TestCSSSelectors(t *testing.T) {
 	}
 }
 
-// TestCSSNamespacedAttr checks the one namespaced attribute a book writes.
-// An XHTML part parsed as HTML keeps the prefix in the attribute name, so a
-// selector for it has to look for both spellings.
+// TestCSSNamespacedAttr checks a namespaced attribute in both its spellings.
 func TestCSSNamespacedAttr(t *testing.T) {
 	root, err := Parse([]byte(`<html xmlns:epub="http://www.idpf.org/2007/ops"><body>` +
 		`<div epub:type="chapter" id="i">x</div><div id="j">y</div></body></html>`))
@@ -764,8 +752,7 @@ func TestCSSSpecificity(t *testing.T) {
 	}
 }
 
-// styleOf computes the style of the one element of a fragment that carries an
-// identifier.
+// styleOf computes the style of the element of a fragment with the given id.
 func styleOf(t *testing.T, sheet, body, id string) *Style {
 	t.Helper()
 	root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
@@ -822,8 +809,6 @@ func TestCSSCascade(t *testing.T) {
 		t.Errorf("an important style attribute lost to an important rule: %v", s.Color)
 	}
 
-	// The user agent sheet is what an unstyled book looks like, and it loses
-	// to anything the author writes.
 	s = styleOf(t, ``, `<h1 id="i">t</h1>`, "i")
 	if s.FontSize != 32 || s.FontWeight != 700 || s.Display != DisplayBlock {
 		t.Errorf("h1 = %+v", *s)
@@ -857,8 +842,7 @@ func TestCSSInheritance(t *testing.T) {
 	}
 }
 
-// TestCSSMediumFontSize checks that the size a reader is set to is what the
-// keywords and the root em are multiples of.
+// TestCSSMediumFontSize checks that the keywords and the root em scale with the reader's size.
 func TestCSSMediumFontSize(t *testing.T) {
 	root, err := Parse([]byte(`<html><body><p id="i" style="font-size: large">t</p></body></html>`))
 	if err != nil {
@@ -916,9 +900,6 @@ func TestCSSShorthands(t *testing.T) {
 		t.Errorf("padding = %+v %+v %+v %+v", s.PaddingTop, s.PaddingRight, s.PaddingBottom, s.PaddingLeft)
 	}
 
-	// A longhand after a shorthand wins whatever order the two are applied
-	// in, which is why the shorthand is split before the cascade and not
-	// after it.
 	s = styleOf(t, `#i { margin: 1px; margin-top: 9px }`, `<p id="i">t</p>`, "i")
 	if s.MarginTop != Px(9) || s.MarginLeft != Px(1) {
 		t.Errorf("margin = %+v %+v", s.MarginTop, s.MarginLeft)
@@ -1094,8 +1075,7 @@ func TestCSSImportCycle(t *testing.T) {
 	}
 }
 
-// FuzzCSS reads arbitrary bytes as a stylesheet and applies them to a tree. A
-// stylesheet is untrusted input like everything else here.
+// FuzzCSS applies arbitrary bytes as a stylesheet to a tree.
 func FuzzCSS(fu *testing.F) {
 	fu.Add(uaCSS)
 	fu.Add(`p{color:red}`)
@@ -1112,8 +1092,7 @@ func FuzzCSS(fu *testing.F) {
 	})
 }
 
-// TestLineBreakConformance runs the Unicode line break test, which is the
-// oracle for UAX #14. It needs the reference directory tools/fetch.sh fills.
+// TestLineBreakConformance runs the Unicode line break test from the reference directory.
 func TestLineBreakConformance(t *testing.T) {
 	name := filepath.Join(cmp.Or(os.Getenv("PDF_REF_DIR"), refDir), "specs/LineBreakTest.txt")
 	b, err := os.ReadFile(name)
@@ -1152,9 +1131,7 @@ func TestLineBreakConformance(t *testing.T) {
 	t.Logf("%d cases", total)
 }
 
-// lineBreakCase reads one case of the Unicode test: code points in hex with
-// the division sign where a break is allowed and the times sign where it is
-// not.
+// lineBreakCase reads one case of the Unicode line break test.
 func lineBreakCase(line string) (string, map[int]bool, bool) {
 	var text strings.Builder
 	want := map[int]bool{}
@@ -1173,15 +1150,11 @@ func lineBreakCase(line string) (string, map[int]bool, bool) {
 		}
 		text.WriteRune(rune(v))
 	}
-	// The break before the first character is never one, and the one after
-	// the last always is; neither is what lineBreaks reports.
 	delete(want, 0)
 	return text.String(), want, true
 }
 
-// TestLineBreaks is the part of UAX #14 that matters to a book, kept in the
-// repository so that CI covers it without the reference directory. The
-// division sign marks where a break is allowed.
+// TestLineBreaks covers the cases of UAX #14 a book needs, without the reference directory.
 func TestLineBreaks(t *testing.T) {
 	cases := []string{
 		"one ÷two ÷three",
@@ -1236,8 +1209,6 @@ func FuzzLineBreak(fu *testing.F) {
 	fu.Add("日本語のテキスト")
 	fu.Add("a‍̈b\r\n (1.5)")
 	fu.Fuzz(func(t *testing.T, s string) {
-		// A break lands where a character starts, which for a string that is
-		// not valid UTF-8 is where the decoder puts a replacement.
 		starts := map[int]bool{len(s): true}
 		for i := range s {
 			starts[i] = true
@@ -1265,8 +1236,7 @@ func BenchmarkLineBreaks(b *testing.B) {
 	}
 }
 
-// onePart is a package with a single chapter in its spine, which is what a
-// layout test wants: page zero is the fragment under test.
+// onePart is a package with a single chapter in its spine.
 const onePart = `<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub">
  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -1324,8 +1294,7 @@ func TestLayout(t *testing.T) {
 	}
 }
 
-// TestLayoutWraps checks that a line breaks where it no longer fits and that
-// the words survive it.
+// TestLayoutWraps checks that a line breaks where it no longer fits.
 func TestLayoutWraps(t *testing.T) {
 	long := strings.Repeat("word ", 40)
 	d, p := styledPage(t, `body, p { margin: 0; font-size: 16px }`,
@@ -1346,8 +1315,7 @@ func TestLayoutWraps(t *testing.T) {
 	}
 }
 
-// TestLayoutPaginates checks that every line reaches exactly one page, which
-// is the whole of what pagination is answerable for.
+// TestLayoutPaginates checks that every line reaches exactly one page.
 func TestLayoutPaginates(t *testing.T) {
 	var body strings.Builder
 	for i := range 200 {
@@ -1450,8 +1418,7 @@ func TestLayoutPageBreak(t *testing.T) {
 	}
 }
 
-// TestLayoutMarginsCollapse checks the rule the rest of block layout is a
-// special case of: two vertical margins that meet become the larger.
+// TestLayoutMarginsCollapse checks that adjoining vertical margins collapse to the larger.
 func TestLayoutMarginsCollapse(t *testing.T) {
 	at := func(sheet string) []float32 {
 		d, _ := styledPage(t, sheet, "<div><p>one</p></div><p>two</p>",
@@ -1470,8 +1437,6 @@ func TestLayoutMarginsCollapse(t *testing.T) {
 		walk(d.parts[0].root)
 		return ys
 	}
-	// The div has no padding, so the paragraph's margin collapses through it
-	// and out to the body, and the two paragraphs share one gap.
 	ys := at(`body { margin: 0 } div { margin: 0 } p { margin: 20px 0 }`)
 	if len(ys) != 2 {
 		t.Fatalf("%d lines", len(ys))
@@ -1528,8 +1493,7 @@ func hasInk(img *image.RGBA) bool {
 	return false
 }
 
-// FuzzLayout lays arbitrary markup out and renders a page of it. A book is
-// untrusted input, and layout is where its numbers turn into allocations.
+// FuzzLayout lays out arbitrary markup and renders a page of it.
 func FuzzLayout(fu *testing.F) {
 	fu.Add("<p>one two three</p>", "p { margin: 1em }")
 	fu.Add("<ul><li>a</li><li>b</li></ul>", "li { list-style-type: decimal }")
@@ -1561,11 +1525,7 @@ func FuzzLayout(fu *testing.F) {
 	})
 }
 
-// TestLayoutConcurrent renders the pages of one book from several goroutines,
-// which is what a reader drawing ahead of the page it shows does.
-// TestLayoutPlacedDeep checks a box placed below everything in the flow. The
-// column runs to the bottom of what it holds, and a page is culled by how far
-// its subtree reaches rather than by the height of the box itself.
+// TestLayoutPlacedDeep checks an absolute box placed below everything in the flow.
 func TestLayoutPlacedDeep(t *testing.T) {
 	d, _ := styledPage(t, `body, p { margin: 0 } .a { position: absolute; top: 300px }`,
 		`<p>one</p><span class="a">deep</span>`,
@@ -1629,8 +1589,6 @@ func TestCSSBorders(t *testing.T) {
 		t.Errorf("widths = %v %v %v %v", s.BorderTop.Width, s.BorderRight.Width, s.BorderBottom.Width, s.BorderLeft.Width)
 	}
 
-	// A border with no colour of its own is the colour of the text, which is
-	// why the cascade computes that one before the rest.
 	s = styleOf(t, `#i { color: green; border: 1px solid }`, `<p id="i">t</p>`, "i")
 	if s.BorderTop.Color != (Color{0, 128, 0, 255}) {
 		t.Errorf("border colour = %v, want the text colour", s.BorderTop.Color)
@@ -1652,8 +1610,7 @@ func TestCSSBorders(t *testing.T) {
 	}
 }
 
-// TestLayoutBorders checks that a border takes room and stops a margin
-// collapsing through the box.
+// TestLayoutBorders checks that a border takes room and stops margin collapsing.
 func TestLayoutBorders(t *testing.T) {
 	lines := func(sheet string) []float32 {
 		d, _ := styledPage(t, sheet, "<div><p>one</p></div><p>two</p>",
@@ -1682,9 +1639,7 @@ func TestLayoutBorders(t *testing.T) {
 	}
 }
 
-// TestCSSBorderRadius reads the corner shorthand in every shape it is
-// written in: one value for all four corners, four for one each, and a slash
-// that gives the vertical radii their own list.
+// TestCSSBorderRadius reads the border-radius shorthand in every form.
 func TestCSSBorderRadius(t *testing.T) {
 	px := func(v float32) Length { return Length{Value: v, Unit: UnitPx} }
 	for _, tc := range []struct {
@@ -1708,8 +1663,6 @@ func TestCSSBorderRadius(t *testing.T) {
 		}
 	}
 
-	// No edge may be asked for more than its length: the four are scaled by
-	// the same factor until none is.
 	s := styleOf(t, `#i { border-radius: 100px }`, `<p id="i">t</p>`, "i")
 	r, round := radii(s, 50, 50)
 	if !round || r[0] != (radius{25, 25}) || r[2] != (radius{25, 25}) {
@@ -1720,9 +1673,7 @@ func TestCSSBorderRadius(t *testing.T) {
 	}
 }
 
-// TestLayoutBorderRadius renders the corners: a rounded background does not
-// reach the corner of its box, a rounded border is a ring, and four colours
-// meet on the diagonals.
+// TestLayoutBorderRadius renders rounded backgrounds and borders.
 func TestLayoutBorderRadius(t *testing.T) {
 	at := func(img *image.RGBA, x, y int) [3]uint8 {
 		i := img.PixOffset(x, y)
@@ -1786,9 +1737,7 @@ func TestLayoutBorderRadius(t *testing.T) {
 	}
 }
 
-// TestLayoutMargins checks what a margin nobody wrote is. The initial value
-// is zero, not auto: a block with a width of its own sits at the left edge,
-// and only a margin written as auto centres it.
+// TestLayoutMargins checks the initial margin and auto centring.
 func TestLayoutMargins(t *testing.T) {
 	left := func(sheet string) float32 {
 		t.Helper()
@@ -1822,8 +1771,7 @@ func TestLayoutMargins(t *testing.T) {
 	}
 }
 
-// TestLayoutFloat checks that a float narrows the lines beside it and that
-// clear moves a box below.
+// TestLayoutFloat checks that a float narrows the lines beside it and clear moves below.
 func TestLayoutFloat(t *testing.T) {
 	d, _ := styledPage(t, `body, p { margin: 0 } .f { float: left; width: 100px; height: 40px }`,
 		`<div class="f"></div><p>`+strings.Repeat("word ", 60)+`</p><p class="c">after</p>`,
@@ -1861,9 +1809,7 @@ func TestLayoutFloat(t *testing.T) {
 	}
 }
 
-// TestGeneratedContent checks the boxes a rule asks for before and after the
-// content of an element: what they say, that a later declaration takes the
-// box away again, and that they inherit from the element they hang off.
+// TestGeneratedContent checks the ::before and ::after boxes.
 func TestGeneratedContent(t *testing.T) {
 	d, p := styledPage(t, `p { margin: 0; color: red }
 		p::before { content: "X " } p:after { content: " Z" }`,
@@ -1873,8 +1819,6 @@ func TestGeneratedContent(t *testing.T) {
 		t.Errorf("page text = %q", got)
 	}
 
-	// The reset every book copies from another book: a rule that asks for an
-	// empty box and then takes it away.
 	d2, p2 := styledPage(t, `q::before, q::after { content: ''; content: none }`,
 		"<p>a<q>b</q>c</p>", &LayoutOptions{Width: 400, Height: 400, Margin: 10})
 	defer d2.Close()
@@ -1925,8 +1869,7 @@ func TestGeneratedContent(t *testing.T) {
 	}
 }
 
-// TestLayoutClearfix checks the one thing a container needs generated content
-// for: a box after its floats, cleared, gives it their height.
+// TestLayoutClearfix checks that a cleared generated box contains its floats.
 func TestLayoutClearfix(t *testing.T) {
 	const body = `<div class="c"><div class="f">f</div></div><p>after</p>`
 	const sheet = `* { margin: 0 } .f { float: left; width: 50px; height: 60px }`
@@ -1965,9 +1908,7 @@ func TestLayoutClearfix(t *testing.T) {
 	}
 }
 
-// TestLayoutFloatText checks that what a float says is extracted. Its text
-// is not on the lines of the block it was written in, so a walk that stops at
-// the lines of a block loses it.
+// TestLayoutFloatText checks that the text of a float is extracted.
 func TestLayoutFloatText(t *testing.T) {
 	d, p := styledPage(t, `p { margin: 0 } .f { float: left; width: 30px }`,
 		`<p>one <span class="f">FLOAT</span> two</p>`,
@@ -1978,9 +1919,7 @@ func TestLayoutFloatText(t *testing.T) {
 	}
 }
 
-// TestLayoutTable checks the grid a table makes: the columns sit side by
-// side, a cell that spans columns covers them, and one that spans rows makes
-// the rows below it start lower.
+// TestLayoutTable checks the table grid, column spans and row spans.
 func TestLayoutTable(t *testing.T) {
 	d, _ := styledPage(t, `body, table { margin: 0 } td { padding: 0 }`,
 		`<table><tr><td>a</td><td>b</td><td>c</td></tr>`+
@@ -2030,8 +1969,6 @@ func TestLayoutTable(t *testing.T) {
 	if c := at(1, 2); c == nil {
 		t.Fatalf("no cell in the third column of the second row")
 	}
-	// The row under the one that spans it has its cells in columns one and
-	// two, not zero.
 	if c := at(3, 0); c != nil {
 		t.Errorf("a cell landed under the one that spans down: %+v", c)
 	}
@@ -2049,9 +1986,7 @@ func TestLayoutTable(t *testing.T) {
 	}
 }
 
-// TestCollapseResolution checks which border wins an edge two cells share:
-// hidden takes it away, the wider wins, and at the same width the style
-// order of CSS 2.1 decides, with the nearer owner taking a tie.
+// TestCollapseResolution checks which border wins a shared edge in the collapsing model.
 func TestCollapseResolution(t *testing.T) {
 	b := func(w float32, st BorderStyle) Border { return Border{Width: w, Style: st} }
 	for _, tc := range []struct {
@@ -2073,9 +2008,7 @@ func TestCollapseResolution(t *testing.T) {
 	}
 }
 
-// TestLayoutCollapse renders a table both ways. Separate borders draw the
-// line between two cells twice, collapsed borders draw it once, and a hidden
-// edge takes it away.
+// TestLayoutCollapse renders a table with separate and collapsed borders.
 func TestLayoutCollapse(t *testing.T) {
 	across := func(sheet, body string) int {
 		t.Helper()
@@ -2109,8 +2042,7 @@ func TestLayoutCollapse(t *testing.T) {
 	}
 }
 
-// TestLayoutSpacing checks the gap a table leaves around its cells when its
-// borders are not collapsed.
+// TestLayoutSpacing checks border-spacing in the separate borders model.
 func TestLayoutSpacing(t *testing.T) {
 	geom := func(sheet string) [][2]float32 {
 		t.Helper()
@@ -2145,9 +2077,7 @@ func TestLayoutSpacing(t *testing.T) {
 	}
 }
 
-// TestCSSWritingMode reads the writing mode in the spellings a book writes
-// it in, including the two prefixed ones EPUB 3 was published with and the
-// old names that mean a horizontal line.
+// TestCSSWritingMode reads writing-mode in its standard, prefixed and legacy spellings.
 func TestCSSWritingMode(t *testing.T) {
 	for _, tc := range []struct {
 		decl string
@@ -2170,8 +2100,6 @@ func TestCSSWritingMode(t *testing.T) {
 		t.Errorf("text-orientation gave %d", got)
 	}
 
-	// A character stands upright in vertical text when UAX #50 says it
-	// does, and turns with the line otherwise.
 	f := face{vertical: true}
 	for _, tc := range []struct {
 		r    rune
@@ -2195,9 +2123,7 @@ func TestCSSWritingMode(t *testing.T) {
 	}
 }
 
-// TestLayoutVertical lays a Japanese page out down the page and right to
-// left, which is where the ink lands: the first line is against the right
-// edge and runs from the top.
+// TestLayoutVertical lays out a Japanese page top to bottom and right to left.
 func TestLayoutVertical(t *testing.T) {
 	needsFaceFor(t, '\u65e5')
 	d, p := styledPage(t, `html { -epub-writing-mode: vertical-rl; font-size: 20px }
@@ -2233,8 +2159,7 @@ func TestLayoutVertical(t *testing.T) {
 	}
 }
 
-// TestCSSBackground reads the picture behind a box: the shorthand in the
-// order a book writes it, the longhands, and both spellings of an address.
+// TestCSSBackground reads the background shorthand and longhands.
 func TestCSSBackground(t *testing.T) {
 	pct := func(v float32) Length { return Length{Value: v, Unit: UnitPercent} }
 	for _, tc := range []struct {
@@ -2265,8 +2190,6 @@ func TestCSSBackground(t *testing.T) {
 		t.Errorf("background-size gave %v %v", got.BackgroundW, got.BackgroundH)
 	}
 
-	// An address in a sheet is relative to the sheet, not to the part that
-	// links it.
 	sheet := ParseCSS([]byte(`p { background-image: url(pic.png) }
 		div { background: url("../up.png") }`), OriginAuthor)
 	resolveURLs(sheet, "EPUB/css/main.css")
@@ -2277,8 +2200,7 @@ func TestCSSBackground(t *testing.T) {
 	}
 }
 
-// TestLayoutBackdrop paints the picture behind a box: where it sits, how it
-// is tiled and how big it is drawn, all clipped to the box.
+// TestLayoutBackdrop paints a background image: position, tiling and size, clipped.
 func TestLayoutBackdrop(t *testing.T) {
 	m := image.NewRGBA(image.Rect(0, 0, 8, 8))
 	for y := range 8 {
@@ -2353,8 +2275,6 @@ func TestCSSTypography(t *testing.T) {
 	if !s.SmallCaps || s.LetterSpacing != 2 || s.TextTransform != TransformUpper {
 		t.Errorf("style = %+v", *s)
 	}
-	// All three are inherited, which is what makes a run of small capitals
-	// survive the emphasis inside it.
 	s = styleOf(t, `div { font-variant: small-caps; letter-spacing: 2px }`,
 		`<div><em id="i">t</em></div>`, "i")
 	if !s.SmallCaps || s.LetterSpacing != 2 {
@@ -2369,8 +2289,7 @@ func TestCSSTypography(t *testing.T) {
 	}
 }
 
-// TestLayoutTracking checks that letter spacing reaches the measurement, not
-// only the drawing.
+// TestLayoutTracking checks that letter spacing reaches measurement as well as drawing.
 func TestLayoutTracking(t *testing.T) {
 	width := func(sheet string) float32 {
 		d, _ := styledPage(t, sheet, `<p id="i">abcdef</p>`, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
@@ -2424,8 +2343,7 @@ func TestLayoutSized(t *testing.T) {
 	}
 }
 
-// TestLayoutPositioned checks that a relative box moves without moving the
-// flow and that an absolute one is placed against its positioned ancestor.
+// TestLayoutPositioned checks relative and absolute positioning.
 func TestLayoutPositioned(t *testing.T) {
 	boxes := func(sheet, body string) map[string]*box {
 		d, _ := styledPage(t, sheet, body, &LayoutOptions{Width: 400, Height: 400, Margin: 0})
@@ -2468,8 +2386,7 @@ func TestLayoutPositioned(t *testing.T) {
 	}
 }
 
-// TestLayoutFallbackFace checks that a character the base fourteen cannot
-// draw finds a face that can, which is what a book in any other script needs.
+// TestLayoutFallbackFace checks that a character outside the base fourteen finds a face.
 func TestLayoutFallbackFace(t *testing.T) {
 	base := styleFace(&Style{FontSize: 16, FontWeight: 400}, nil)
 	if base.m.has('日') {
@@ -2543,8 +2460,6 @@ func TestCSSFontFace(t *testing.T) {
 		len(got.Src) != 1 || got.Src[0] != "a.otf" {
 		t.Errorf("first = %+v", got)
 	}
-	// A local face is not a place this can read, so it is left out; the two
-	// urls after it stay in the order they were written.
 	if got := s.Faces[1]; got.Weight != 700 || !got.Italic ||
 		len(got.Src) != 2 || got.Src[0] != "b.woff" || got.Src[1] != "c.ttf" {
 		t.Errorf("second = %+v", got)
@@ -2556,8 +2471,7 @@ func TestCSSFontFace(t *testing.T) {
 	}
 }
 
-// TestLayoutEmbeddedFont checks that a book which brings a font with it is
-// drawn in it, whatever the machine has.
+// TestLayoutEmbeddedFont checks that a book's own font is used.
 func TestLayoutEmbeddedFont(t *testing.T) {
 	var raw []byte
 	var err error
@@ -2604,9 +2518,7 @@ func TestLayoutEmbeddedFont(t *testing.T) {
 	}
 }
 
-// TestLayoutVerticalAlign covers the two places vertical-align means
-// something: where an inline box sits on the line it is on, and where the
-// content of a table cell sits in the height its row came to.
+// TestLayoutVerticalAlign checks vertical-align on a line and in a table cell.
 func TestLayoutVerticalAlign(t *testing.T) {
 	frags := func(sheet, body string) []frag {
 		t.Helper()
@@ -2641,8 +2553,6 @@ func TestLayoutVerticalAlign(t *testing.T) {
 		t.Errorf("a subscript is at %v, want it below the baseline", f[3].dy)
 	}
 
-	// The edge alignments are measured against the line, so the two of them
-	// sit exactly one line apart when nothing else makes the line taller.
 	f = frags(`.t { vertical-align: top } .b { vertical-align: bottom }`,
 		`<p>a<span class="t">b</span><span class="b">c</span></p>`)
 	if len(f) != 3 {
@@ -2699,9 +2609,7 @@ func TestLayoutVerticalAlign(t *testing.T) {
 	}
 }
 
-// TestLayoutPercentHeight covers CSS 2.1 10.5: a percentage height is a
-// percentage of the containing block's height, and auto when that block has
-// no height of its own. It used to be resolved against the width.
+// TestLayoutPercentHeight checks a percentage height against the containing block, CSS 2.1 10.5.
 func TestLayoutPercentHeight(t *testing.T) {
 	height := func(sheet string) float32 {
 		t.Helper()
@@ -2722,8 +2630,6 @@ func TestLayoutPercentHeight(t *testing.T) {
 		return found
 	}
 
-	// The page is 400 wide and 200 tall, so a height resolved against the
-	// wrong axis is unmistakable.
 	auto := height(`#b { height: 50% }`)
 	if auto > 100 {
 		t.Errorf("inside a block with no height of its own a percentage came to %v, want auto", auto)
@@ -2742,9 +2648,7 @@ func TestLayoutPercentHeight(t *testing.T) {
 	}
 }
 
-// TestLayoutInlineBlock puts a box on a line: it is as wide as what it holds,
-// it sits beside the text rather than under it, and its baseline is the one
-// of its last line.
+// TestLayoutInlineBlock checks an inline-block's width, place and baseline.
 func TestLayoutInlineBlock(t *testing.T) {
 	lay := func(sheet, body string) (*box, []frag, float32) {
 		t.Helper()
@@ -2757,8 +2661,6 @@ func TestLayoutInlineBlock(t *testing.T) {
 		var walk func(*box)
 		walk = func(b *box) {
 			if b.node != nil && Attr(b.node, "id") == "k" {
-				// What the box holds is a line of its own, and the
-				// fragments wanted here are the ones on the line it sits on.
 				found = b
 				return
 			}
@@ -2796,14 +2698,10 @@ func TestLayoutInlineBlock(t *testing.T) {
 	if k.w <= 0 || k.w > 100 {
 		t.Errorf("the box came out %v wide, want it to shrink to what it holds", k.w)
 	}
-	// The text either side of it and the box are on one line of the block,
-	// and the box holds a line of its own.
 	if lines != 1 {
 		t.Errorf("%v lines outside the box, want the text either side of it on one", lines)
 	}
 
-	// A block does not share a line, so the same markup laid out as a block
-	// puts the box below the text that comes before it.
 	block, _, _ := lay(`#k { display: block }`, `<p>ab<span id="k">cd</span>ef</p>`)
 	if block == nil {
 		t.Fatal("the block left no box")
@@ -2814,9 +2712,7 @@ func TestLayoutInlineBlock(t *testing.T) {
 	}
 }
 
-// TestSVGInSpine covers a book whose spine items are drawings rather than
-// documents, which is how a pre-paginated book is written, and an img that
-// names one from inside a chapter.
+// TestSVGInSpine covers drawings in the spine and an img naming one.
 func TestSVGInSpine(t *testing.T) {
 	const svgPkg = `<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub">
@@ -2828,8 +2724,6 @@ func TestSVGInSpine(t *testing.T) {
  </manifest>
  <spine><itemref idref="one"/><itemref idref="two"/></spine>
 </package>`
-	// The drawing is half as wide as it is tall, so a square page fits it to
-	// the height and centres it, leaving the page either side.
 	const page1 = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="200" viewBox="0 0 100 200">` +
 		`<rect width="100" height="200" fill="red"/>` +
 		`<text x="5" y="100" font-size="20">Drawn page</text></svg>`
@@ -2850,8 +2744,6 @@ func TestSVGInSpine(t *testing.T) {
 		t.Fatalf("%d pages, want one for the drawing and one for the chapter", n)
 	}
 
-	// The drawing is a page of the book, and the text in it is what the page
-	// says even though no box tree holds it.
 	p, err := d.Page(0)
 	if err != nil {
 		t.Fatal(err)
@@ -2912,12 +2804,8 @@ func palmDB(kind string, recs [][]byte) []byte {
 	return out
 }
 
-// TestMOBIHuffcdic covers the compression a MOBI may carry instead of LZ77:
-// a HUFF record of code tables and a CDIC record of the phrases they name.
+// TestMOBIHuffcdic covers HUFF/CDIC compression.
 func TestMOBIHuffcdic(t *testing.T) {
-	// Every top byte is a whole eight bit code, and each is arranged to name
-	// phrase zero: the index is the maximum for the code less the code, and
-	// the maximum is written as the byte itself.
 	huff := make([]byte, huffMinSize)
 	copy(huff, "HUFF")
 	be32(huff[4:], huffHeader)
@@ -2944,21 +2832,17 @@ func TestMOBIHuffcdic(t *testing.T) {
 	if got := string(h.unpack(nil, []byte{0}, 0)); got != "hello" {
 		t.Fatalf("unpacked %q, want hello", got)
 	}
-	// A record of two bytes is two codes, so the phrase comes out twice.
 	if got := string(h.unpack(nil, []byte{0, 0}, 0)); got != "hellohello" {
 		t.Fatalf("unpacked %q, want it twice", got)
 	}
 }
 
-// TestMOBIMarkup covers the tags and the links MOBI writes that HTML has no
-// idea about.
+// TestMOBIMarkup covers MOBI's own tags and links.
 func TestMOBIMarkup(t *testing.T) {
 	head := `<html><body><a filepos=0000000042 >go</a>` +
 		`<mbp:pagebreak/><idx:entry/>`
 	in := []byte(head + `<p>x</p><img recindex="00003"/>` +
 		`<img src="kindle:embed:0002?mime=image/jpeg"/></body></html>`)
-	// The place a link names is where the paragraph starts, which is where
-	// the anchor for it has to go.
 	at := len(head)
 	got := string(mobiMarkup(in, []int{at}))
 	for _, want := range []string{
@@ -2972,25 +2856,17 @@ func TestMOBIMarkup(t *testing.T) {
 			t.Errorf("markup has no %s:\n%s", want, got)
 		}
 	}
-	// A tag of its own that closes nothing is dropped, or the tree it opens
-	// would run to the end of the book.
 	if strings.Contains(got, "idx:entry") || strings.Contains(got, "mbp:") {
 		t.Errorf("a tag of its own survived:\n%s", got)
 	}
-	// The anchor goes where the offset says, which is at the paragraph.
 	if i := strings.Index(got, `<a id="`+filepos(at)+`">`); i < 0 ||
 		!strings.HasPrefix(got[i:], `<a id="`+filepos(at)+`"></a><p>x</p>`) {
 		t.Errorf("the anchor landed in the wrong place:\n%s", got)
 	}
 }
 
-// TestMOBIIndex covers the index a book keeps its table of contents in: a
-// record naming the tags, a record of entries, and a record of the strings
-// they point at.
+// TestMOBIIndex covers the index a MOBI table of contents is kept in.
 func TestMOBIIndex(t *testing.T) {
-	// The master record: one record of entries follows it, then one of
-	// strings. TAGX says an entry may carry a place, a label and a level,
-	// each named by one bit of one control byte.
 	master := make([]byte, 192)
 	copy(master, "INDX")
 	be32(master[4:], 192)
@@ -3035,7 +2911,7 @@ func TestMOBIIndex(t *testing.T) {
 		cncx = append(cncx, s...)
 	}
 
-	out, pos := mobiOutline([][]byte{nil, master, body, cncx}, 1)
+	out, pos := mobiOutline([][]byte{nil, master, body, cncx}, 1, mobiFilepos)
 	if len(out) != 1 || out[0].Title != "One" || len(out[0].Children) != 1 {
 		t.Fatalf("outline = %+v", out)
 	}
@@ -3050,8 +2926,266 @@ func TestMOBIIndex(t *testing.T) {
 	}
 }
 
-// varint writes a number the way an index entry carries one: seven bits at a
-// time, most significant first, with the top bit ending it.
+// kf8Row is one entry of a test index, with values in TAGX order.
+type kf8Row struct {
+	label string
+	vals  [][]int
+}
+
+// buildIndex writes an index with one control byte, and its string record.
+func buildIndex(tags []indxTag, rows []kf8Row, cncx []byte) [][]byte {
+	master := make([]byte, 192)
+	copy(master, "INDX")
+	be32(master[4:], 192)
+	be32(master[24:], 1)
+	be32(master[36:], uint32(len(rows)))
+	if cncx != nil {
+		be32(master[52:], 1)
+	}
+	tagx := make([]byte, 12, 12+4*len(tags)+4)
+	copy(tagx, "TAGX")
+	be32(tagx[8:], 1)
+	for _, t := range tags {
+		tagx = append(tagx, t.id, t.values, t.mask, 0)
+	}
+	tagx = append(tagx, 0, 0, 0, 1)
+	be32(tagx[4:], uint32(len(tagx)))
+	master = append(master, tagx...)
+
+	body := make([]byte, 56)
+	copy(body, "INDX")
+	be32(body[4:], 56)
+	var offs []int
+	for _, r := range rows {
+		offs = append(offs, len(body))
+		e := append([]byte{byte(len(r.label))}, r.label...)
+		var ctrl byte
+		var vals []byte
+		for i, v := range r.vals {
+			if v == nil {
+				continue
+			}
+			ctrl |= tags[i].mask
+			for _, x := range v {
+				vals = append(vals, varint(x)...)
+			}
+		}
+		body = append(append(append(body, e...), ctrl), vals...)
+	}
+	be32(body[20:], uint32(len(body)))
+	be32(body[24:], uint32(len(rows)))
+	idxt := make([]byte, 4+2*len(rows))
+	copy(idxt, "IDXT")
+	for i, o := range offs {
+		be16(idxt[4+2*i:], uint16(o))
+	}
+	body = append(body, idxt...)
+	out := [][]byte{master, body}
+	if cncx != nil {
+		out = append(out, cncx)
+	}
+	return out
+}
+
+// buildKF8 writes a two-file KF8 book with a stylesheet, a font, a picture and contents.
+func buildKF8(t testing.TB, font []byte) []byte {
+	skel0 := `<html><head><link rel="stylesheet" href="kindle:flow:0001?mime=text/css"/></head><body aid="0"></body></html>`
+	frag0 := `<p>One <a href="kindle:pos:fid:0001:off:0000000000">on</a><img src="kindle:embed:0001?mime=image/png"/></p>`
+	skel1 := `<html><head></head><body aid="1"></body></html>`
+	frag1 := `<p id="two">Two</p>`
+	css := `@font-face { font-family: f; src: url(kindle:embed:0002?mime=application/x-font-ttf) } p { font-family: f }`
+	flow0 := skel0 + frag0 + skel1 + frag1
+	text := []byte(flow0 + css)
+	at0 := strings.Index(skel0, "</body>")
+	start1 := len(skel0) + len(frag0)
+	at1 := start1 + strings.Index(skel1, "</body>")
+
+	var z bytes.Buffer
+	w := zlib.NewWriter(&z)
+	w.Write(font)
+	w.Close()
+	key := []byte("scrambled")
+	packed := z.Bytes()
+	for i := 0; i < len(packed) && i < 1040; i++ {
+		packed[i] ^= key[i%len(key)]
+	}
+	fontRec := make([]byte, 24)
+	copy(fontRec, "FONT")
+	be32(fontRec[4:], uint32(len(font)))
+	be32(fontRec[8:], 3)
+	be32(fontRec[12:], uint32(24+len(key)))
+	be32(fontRec[16:], uint32(len(key)))
+	be32(fontRec[20:], 24)
+	fontRec = append(append(fontRec, key...), packed...)
+
+	fdst := make([]byte, 12+16)
+	copy(fdst, "FDST")
+	be32(fdst[4:], 12)
+	be32(fdst[8:], 2)
+	be32(fdst[16:], uint32(len(flow0)))
+	be32(fdst[20:], uint32(len(flow0)))
+	be32(fdst[24:], uint32(len(text)))
+
+	skel := buildIndex([]indxTag{{id: skelCount, values: 1, mask: 1}, {id: kf8Range, values: 2, mask: 2}}, []kf8Row{
+		{"SKEL0000000000", [][]int{{1}, {0, len(skel0)}}},
+		{"SKEL0000000001", [][]int{{1}, {start1, len(skel1)}}},
+	}, nil)
+	frag := buildIndex([]indxTag{{id: fragFile, values: 1, mask: 1}, {id: kf8Range, values: 2, mask: 2}}, []kf8Row{
+		{strconv.Itoa(at0), [][]int{{0}, {0, len(frag0)}}},
+		{strconv.Itoa(at1), [][]int{{1}, {1, len(frag1)}}},
+	}, nil)
+	var cncx []byte
+	label := map[string]int{}
+	for _, s := range []string{"A", "B", "A1"} {
+		label[s] = len(cncx)
+		cncx = append(append(cncx, byte(0x80|len(s))), s...)
+	}
+	// Level by level, as KF8 stores them: A1 is A's child but comes after B.
+	ncx := buildIndex([]indxTag{{id: ncxLabel, values: 1, mask: 1}, {id: ncxLevel, values: 1, mask: 2},
+		{id: kf8Range, values: 2, mask: 4}, {id: ncxParent, values: 1, mask: 8}}, []kf8Row{
+		{"0", [][]int{{label["A"]}, {0}, {0, 0}, nil}},
+		{"1", [][]int{{label["B"]}, {0}, {1, 0}, nil}},
+		{"2", [][]int{{label["A1"]}, {1}, {0, 4}, {0}}},
+	}, cncx)
+
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
+	recs := [][]byte{nil, text, png, fontRec, fdst}
+	skelAt := len(recs)
+	recs = append(recs, skel...)
+	fragAt := len(recs)
+	recs = append(recs, frag...)
+	ncxAt := len(recs)
+	recs = append(recs, ncx...)
+	recs = append(recs, []byte("\xe9\x8e\r\n"))
+
+	rec0 := make([]byte, 16+264)
+	be16(rec0[0:], 1)
+	be32(rec0[4:], uint32(len(flow0)))
+	be16(rec0[8:], 1)
+	be16(rec0[10:], 4096)
+	copy(rec0[16:], "MOBI")
+	be32(rec0[20:], 264)
+	be32(rec0[0x24:], 8)
+	be32(rec0[28:], 65001)
+	be32(rec0[0x54:], uint32(len(rec0)))
+	be32(rec0[0x6c:], 2)
+	be32(rec0[0xc0:], 4)
+	be32(rec0[0xc4:], 2)
+	be32(rec0[0xf4:], uint32(ncxAt))
+	be32(rec0[0xf8:], uint32(fragAt))
+	be32(rec0[0xfc:], uint32(skelAt))
+	recs[0] = rec0
+
+	head := make([]byte, 78+8*len(recs))
+	copy(head, "A Book")
+	copy(head[60:], "BOOKMOBI")
+	be16(head[76:], uint16(len(recs)))
+	off := len(head)
+	for i, r := range recs {
+		be32(head[78+8*i:], uint32(off))
+		off += len(r)
+	}
+	out := head
+	for _, r := range recs {
+		out = append(out, r...)
+	}
+	return out
+}
+
+func TestKF8(t *testing.T) {
+	mini, err := os.ReadFile(filepath.Join("..", "testdata", "mini.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := buildKF8(t, mini)
+	d, err := openMOBI(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spine []string
+	for _, it := range d.Spine() {
+		spine = append(spine, it.Path)
+	}
+	if !slices.Equal(spine, []string{"part00000.html", "part00001.html"}) {
+		t.Fatalf("spine = %v", spine)
+	}
+	types := map[string]string{}
+	for _, it := range d.Manifest() {
+		types[it.Path] = it.Type
+	}
+	if types["flow00001.css"] != "text/css" || types["00001"] != "image/png" || types["00002"] != "font/ttf" {
+		t.Fatalf("manifest = %v", types)
+	}
+
+	head := `<html><head><link rel="stylesheet" href="flow00001.css"/></head><body aid="0">`
+	stored := len(`<html><head><link rel="stylesheet" href="kindle:flow:0001?mime=text/css"/></head><body aid="0">`)
+	frag := filepos(len(`<html><head></head><body aid="1">`))
+	one, _ := d.Read("part00000.html")
+	if want := head + `<a id="` + filepos(stored) + `"></a><p>O<a id="` + filepos(stored+4) + `"></a>ne ` +
+		`<a href="part00001.html#` + frag + `">on</a><img src="00001"/></p></body></html>`; string(one) != want {
+		t.Errorf("part 0 = %s\nwant     %s", one, want)
+	}
+	two, _ := d.Read("part00001.html")
+	if want := `<html><head></head><body aid="1"><a id="` + frag + `"></a><p id="two">Two</p></body></html>`; string(two) != want {
+		t.Errorf("part 1 = %s\nwant     %s", two, want)
+	}
+
+	css, _ := d.Read("flow00001.css")
+	if !strings.Contains(string(css), "url(00002)") {
+		t.Errorf("stylesheet = %s", css)
+	}
+	f, _ := d.Read("00002")
+	if !bytes.Equal(f, mini) {
+		t.Errorf("font is %d bytes, want %d", len(f), len(mini))
+	}
+	if _, err := font.Parse(f); err != nil {
+		t.Error(err)
+	}
+
+	// A1 is A's child although the index lists B between them.
+	o := d.Outline()
+	if len(o) != 2 || o[0].Title != "A" || o[1].Title != "B" || len(o[0].Children) != 1 || o[0].Children[0].Title != "A1" {
+		t.Fatalf("outline = %+v", o)
+	}
+	if o[0].Path != "part00000.html" || o[0].Children[0].Fragment != filepos(stored+4) ||
+		o[1].Path != "part00001.html" || o[1].Fragment != frag {
+		t.Errorf("outline places = %+v", o)
+	}
+
+	text, err := d.Text()
+	if err != nil || strings.Contains(text, "font-family") || !strings.Contains(text, "Two") {
+		t.Errorf("text = %q, %v", text, err)
+	}
+}
+
+// TestKF8SkippedFragment checks that a fragment is found by its place in the
+// FRAG index when one before it is broken.
+func TestKF8SkippedFragment(t *testing.T) {
+	skel := `<html><body></body></html>`
+	flow := []byte(skel + "<p>a</p>" + "<p>b</p>")
+	at := strings.Index(skel, "</body>")
+	skels := buildIndex([]indxTag{{id: skelCount, values: 1, mask: 1}, {id: kf8Range, values: 2, mask: 2}},
+		[]kf8Row{{"SKEL0000000000", [][]int{{3}, {0, len(skel)}}}}, nil)
+	frags := buildIndex([]indxTag{{id: fragFile, values: 1, mask: 1}, {id: kf8Range, values: 2, mask: 2}}, []kf8Row{
+		{strconv.Itoa(at), [][]int{{0}, {0, 1 << 20}}},
+		{strconv.Itoa(at), [][]int{{0}, {1, 8}}},
+		{strconv.Itoa(at + 8), [][]int{{0}, {2, 8}}},
+	}, nil)
+	recs := append(append([][]byte{nil}, skels...), frags...)
+	recs = append(recs, nil)
+	k := kf8Files(recs, mobi{skel: 1, frag: 3}, flow)
+	if got := string(k.files[0]); got != `<html><body><p>a</p><p>b</p></body></html>` {
+		t.Fatalf("file = %s", got)
+	}
+	if _, _, ok := k.locate(0, 0); ok {
+		t.Error("the broken fragment was located")
+	}
+	if _, o, ok := k.locate(2, 0); !ok || o != at+8 {
+		t.Errorf("fragment 2 is at %d, %v, want %d", o, ok, at+8)
+	}
+}
+
+// varint writes a number the way an index entry carries one.
 func varint(v int) []byte {
 	var b []byte
 	for {
@@ -3065,9 +3199,7 @@ func varint(v int) []byte {
 	return b
 }
 
-// TestMOBIHybrid covers a file holding a KF7 book and a KF8 one, which is
-// what a converter writes: the newer half is the book, and the records of the
-// older one are not part of it.
+// TestMOBIHybrid covers a file holding a KF7 and a KF8 book.
 func TestMOBIHybrid(t *testing.T) {
 	old := buildMOBI([]byte("<html><body><p>Old</p></body></html>"), nil, nil)
 	recs := [][]byte{}
@@ -3080,8 +3212,6 @@ func TestMOBIHybrid(t *testing.T) {
 		}
 		recs = append(recs, old[off:end])
 	}
-	// The older half says where the newer one starts, and the record before
-	// it says so too.
 	exth := make([]byte, 12+12)
 	copy(exth, "EXTH")
 	be32(exth[4:], uint32(len(exth)))
@@ -3120,8 +3250,7 @@ func be32of(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
-// TestMOBIEncrypted checks that a book nobody may read says so rather than
-// handing back what the compression made of the cipher.
+// TestMOBIEncrypted checks that an encrypted book is refused.
 func TestMOBIEncrypted(t *testing.T) {
 	b := buildMOBI([]byte("<html><body><p>Hello</p></body></html>"), nil, nil)
 	off := int(be32of(b[78:]))
@@ -3131,8 +3260,7 @@ func TestMOBIEncrypted(t *testing.T) {
 	}
 }
 
-// TestPlainTextBook covers a file that is text rather than markup, which is a
-// book of one part and has to lay out like any other.
+// TestPlainTextBook covers a plain text file as a book.
 func TestPlainTextBook(t *testing.T) {
 	d, err := Load([]byte("One line.\n\nAnother line.\n"))
 	if err != nil {
@@ -3151,14 +3279,12 @@ func TestPlainTextBook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The lines of a text file are kept, which is what pre asks for.
 	if got := pageText(t, p); !strings.Contains(got, "One line.\n") {
 		t.Fatalf("the page reads %q", got)
 	}
 }
 
-// buildCHM assembles an ITSF archive out of uncompressed files, so that a
-// test can exercise the directory without a compressor.
+// buildCHM assembles an ITSF archive of uncompressed files.
 func buildCHM(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
 	const blockLen = 4096
@@ -3221,9 +3347,7 @@ func buildCHM(t *testing.T, files map[string][]byte) []byte {
 	return append(out, data...)
 }
 
-// TestCHM covers the container: the directory it lists its files in, the
-// sitemap it takes a spine and a table of contents from, and the case a path
-// may be written in either of.
+// TestCHM covers the CHM directory, its sitemap and case-insensitive paths.
 func TestCHM(t *testing.T) {
 	const hhc = `<html><body><ul>` +
 		`<li><object type="text/sitemap"><param name="Name" value="One">` +
@@ -3262,8 +3386,6 @@ func TestCHM(t *testing.T) {
 	if got := d.Metadata().Title; got != "A Title" {
 		t.Errorf("the title is %q", got)
 	}
-	// A CHM is case insensitive, and the sitemap writes the separator either
-	// way round.
 	if b, err := d.Read("pages/ONE.htm"); err != nil || !bytes.Contains(b, []byte("First")) {
 		t.Errorf("reading a part by another case gave %q, %v", b, err)
 	}
@@ -3274,8 +3396,6 @@ func TestCHM(t *testing.T) {
 	if want := []string{"Pages/one.htm", "Pages/two.htm"}; !slices.Equal(spine, want) {
 		t.Errorf("the spine is %q, want %q", spine, want)
 	}
-	// The picture is in the manifest and not in the spine, and the metadata
-	// files are in neither.
 	for _, it := range d.Manifest() {
 		if strings.HasPrefix(it.Path, "#") {
 			t.Errorf("%q reached the manifest", it.Path)
@@ -3290,9 +3410,7 @@ func TestCHM(t *testing.T) {
 	}
 }
 
-// TestLZXRaw covers the framing around a block the compressor gave up on: the
-// header the first frame carries, the offsets a raw block restates, and the
-// translation of an x86 call the compressor rewrote.
+// TestLZXRaw covers an uncompressed LZX block and the x86 call translation.
 func TestLZXRaw(t *testing.T) {
 	d, err := newLZX(15)
 	if err != nil {
@@ -3347,9 +3465,7 @@ func buildOffice(t *testing.T, parts map[string]string) []byte {
 const docxNS = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
 	`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`
 
-// TestDOCX covers what a word processing document turns into: headings from
-// the styles it declares, a list from the numbering it names, a table, a run
-// with type of its own, a link, and the page the section asks for.
+// TestDOCX covers styles, numbering, tables, runs, links and the page size of a document.
 func TestDOCX(t *testing.T) {
 	doc := `<w:document ` + docxNS + `><w:body>` +
 		`<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A Heading</w:t></w:r></w:p>` +
@@ -3436,8 +3552,7 @@ func TestDOCX(t *testing.T) {
 	}
 }
 
-// TestPPTX covers a presentation: one page per slide, at the size the deck
-// declares, with a shape placed where the layout under it says.
+// TestPPTX covers slides, the deck size and shape placement.
 func TestPPTX(t *testing.T) {
 	const aNS = `xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
 		`xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ` +
@@ -3493,8 +3608,6 @@ func TestPPTX(t *testing.T) {
 	if !bytes.Contains(one, []byte("left:96px;top:96px;width:192px;height:96px")) {
 		t.Errorf("the shape is not where it says: %s", one)
 	}
-	// The second slide carries no geometry of its own and takes the layout's,
-	// along with the type it sets for the text.
 	two, err := d.Read("slide2.xhtml")
 	if err != nil {
 		t.Fatal(err)
@@ -3519,8 +3632,7 @@ func TestPPTX(t *testing.T) {
 const xlsxNS = `xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
 	`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`
 
-// TestXLSX covers a workbook: the strings its cells share, the formats its
-// numbers are written with, the cells a merge covers, and one sheet per page.
+// TestXLSX covers shared strings, number formats, merges and one page per sheet.
 func TestXLSX(t *testing.T) {
 	sheet := `<worksheet ` + xlsxNS + `><cols><col min="1" max="2" width="20"/></cols>` +
 		`<sheetData>` +
@@ -3580,8 +3692,6 @@ func TestXLSX(t *testing.T) {
 		"<h1>First</h1>",
 		`<colgroup><col style="width:140px"/><col style="width:140px"/></colgroup>`,
 		">Name<", ">Two runs<",
-		// 45000 in the built in date format, 1234.5 with a currency and two
-		// decimals, and a percentage.
 		">03-15-23<", ">$1,234.50<", ">13%<",
 		">TRUE<", ">in &amp; line<",
 		`colspan="3"`,
@@ -3605,7 +3715,6 @@ func TestXLSX(t *testing.T) {
 	if n, err := d.Layout(nil); err != nil || n < 2 {
 		t.Fatalf("laid out %d pages, %v", n, err)
 	}
-	// A row is read across rather than one cell under the other.
 	p, err := d.Page(0)
 	if err != nil {
 		t.Fatal(err)
@@ -3615,9 +3724,7 @@ func TestXLSX(t *testing.T) {
 	}
 }
 
-// TestFB2 covers a FictionBook: what it says about itself, the sections it
-// nests, the text written beside its elements, the pictures it carries at its
-// end, and the notes another part of it links to.
+// TestFB2 covers a FictionBook: metadata, sections, pictures and notes.
 func TestFB2(t *testing.T) {
 	const src = `<?xml version="1.0" encoding="UTF-8"?>` +
 		`<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"` +
@@ -3676,7 +3783,6 @@ func TestFB2(t *testing.T) {
 			t.Errorf("the book has no %q", want)
 		}
 	}
-	// A poem's title names the poem rather than a chapter.
 	if bytes.Contains(body, []byte("<h3>A Poem")) {
 		t.Error("a poem's title became a heading")
 	}
@@ -3707,8 +3813,7 @@ func TestFB2(t *testing.T) {
 	}
 }
 
-// TestFB2Encoding covers a book written in a code page rather than in UTF-8,
-// which is what a Russian one usually is.
+// TestFB2Encoding covers a FictionBook in a code page.
 func TestFB2Encoding(t *testing.T) {
 	const cyrillic = "\u041f\u0440\u0438\u0432\u0435\u0442"
 	var body []byte
@@ -3741,10 +3846,7 @@ func TestFB2Encoding(t *testing.T) {
 	}
 }
 
-// TestMarkdown covers the document as Markdown: the headings, lists, tables,
-// links and emphasis it was written with, the escaping of what Markdown would
-// otherwise read as syntax, and the HTML it falls back to for a table a pipe
-// one cannot hold.
+// TestMarkdown covers the document written as Markdown.
 func TestMarkdown(t *testing.T) {
 	part := `<html><body>` +
 		`<h1>A Title</h1>` +
@@ -3777,8 +3879,6 @@ line  two</code></pre>` +
 	}
 	for _, want := range []string{
 		"# A Title\n",
-		// The white space of a code span in a paragraph collapses the way
-		// the markup it came from does.
 		"Some **bold**, *italic*, `a b` and [a link](two.xhtml).",
 		// An underscore inside a word is not emphasis and is left alone.
 		"snake_case",
@@ -3803,8 +3903,7 @@ line  two</code></pre>` +
 	}
 }
 
-// TestNewStream covers reading a document from a stream that cannot be
-// seeked, which is what a caller with a pipe or a network body has.
+// TestNewStream covers reading a document from a stream that cannot seek.
 func TestNewStream(t *testing.T) {
 	raw := buildEPUB(t, map[string]string{
 		"META-INF/container.xml": container,
@@ -3830,9 +3929,7 @@ func TestNewStream(t *testing.T) {
 	}
 }
 
-// TestPageLinks covers the links a page reports: where they are, what they
-// point at, and that a link broken over two lines comes back as two areas
-// while one written as two runs on the same line comes back as one.
+// TestPageLinks covers the links a page reports and their areas.
 func TestPageLinks(t *testing.T) {
 	body := `<html><body style="font-size:16px"><p>` +
 		`<a href="https://example.com">out</a> and ` +
@@ -3846,8 +3943,6 @@ func TestPageLinks(t *testing.T) {
 		"EPUB/text/two.xhtml":    "<html/>",
 		"EPUB/images/cover.png":  "\x89PNG",
 	})
-	// The book carries a cover that is not a picture, which the layout
-	// records and carries on past.
 	if n, _ := d.Layout(&LayoutOptions{Width: 800, Height: 1200, Margin: 40}); n == 0 {
 		t.Fatal("the book laid out to nothing")
 	}
@@ -3883,8 +3978,7 @@ func TestPageLinks(t *testing.T) {
 	}
 }
 
-// TestPageSVGAndHTML covers the two ways a page comes back as markup: the
-// drawing it is, and the text where it was laid out.
+// TestPageSVGAndHTML covers a page returned as SVG and as HTML.
 func TestPageSVGAndHTML(t *testing.T) {
 	d := openBook(t, map[string]string{
 		"META-INF/container.xml": container,
@@ -3928,9 +4022,7 @@ func TestPageSVGAndHTML(t *testing.T) {
 	}
 }
 
-// TestBidiLayout covers what the algorithm does to a line: the pieces are
-// placed in the order they are drawn, kept in the order they were written,
-// and a run that goes right to left is drawn backwards and mirrored.
+// TestBidiLayout covers the bidirectional reordering and mirroring of a line.
 func TestBidiLayout(t *testing.T) {
 	const heb = "שלום" // shalom
 	needsFaceFor(t, []rune(heb)[0])
@@ -3942,8 +4034,6 @@ func TestBidiLayout(t *testing.T) {
 		"EPUB/text/two.xhtml":    "<html/>",
 		"EPUB/images/cover.png":  "\x89PNG",
 	})
-	// The book carries a cover that is not a picture, which the layout
-	// records and carries on past.
 	if n, _ := d.Layout(&LayoutOptions{Width: 400, Height: 400, Margin: 0}); n == 0 {
 		t.Fatal("the book laid out to nothing")
 	}
@@ -3951,7 +4041,6 @@ func TestBidiLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// What the page says is what was written, not the shape of it.
 	if got := strings.TrimSpace(pageText(t, p)); got != heb+" (abc) "+heb {
 		t.Fatalf("the page reads %q", got)
 	}
@@ -3973,14 +4062,10 @@ func TestBidiLayout(t *testing.T) {
 	if len(frags) < 2 {
 		t.Fatalf("%d fragments", len(frags))
 	}
-	// The paragraph runs right to left, so what was written first is drawn
-	// furthest right.
 	if frags[0].x <= frags[len(frags)-1].x {
 		t.Errorf("the first fragment is at %v and the last at %v, want it further right",
 			frags[0].x, frags[len(frags)-1].x)
 	}
-	// The Hebrew is drawn backwards, and the Latin between the brackets is
-	// not.
 	first := frags[0]
 	if !first.rtl {
 		t.Fatalf("the first fragment is %q and not right to left", first.text)
@@ -3999,7 +4084,6 @@ func TestBidiLayout(t *testing.T) {
 	if got := visualText("(", true); got != ")" {
 		t.Errorf("a bracket is drawn as %q, want %q", got, ")")
 	}
-	// The line as it is drawn, which is what fribidi makes of the same text.
 	slices.SortFunc(frags, func(a, b frag) int { return cmp.Compare(a.x, b.x) })
 	var vis strings.Builder
 	for i := range frags {
@@ -4010,9 +4094,7 @@ func TestBidiLayout(t *testing.T) {
 	}
 }
 
-// needsFaceFor skips a test that draws a script the base fourteen have no
-// glyphs for, which needs a face from the machine and not every machine has
-// one. A bare CI runner is the case that matters.
+// needsFaceFor skips a test when the machine has no face for r.
 func needsFaceFor(t *testing.T, r rune) {
 	t.Helper()
 	if font.Fallback(r, false, false) == nil {
@@ -4107,8 +4189,7 @@ func TestLooseMarkup(t *testing.T) {
 	}
 }
 
-// TestInlineSVG covers an svg element written into a chapter, and the ratio
-// its viewBox fixes for a percentage height.
+// TestInlineSVG covers an svg element in a chapter and its percentage height.
 func TestInlineSVG(t *testing.T) {
 	const pkg = `<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub">

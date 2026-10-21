@@ -9,13 +9,10 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
-// Node is a parsed element of a part, and Parse is what produces one. The
-// tree is x/net/html's, which is the HTML5 tree builder the layout engine
-// walks rather than a tree of its own.
+// Node is a parsed element of a part, in x/net/html's tree.
 type Node = xhtml.Node
 
-// Parse reads one part of a book into a DOM. Anything a browser accepts
-// parses; nothing about it fails.
+// Parse reads one part of a book into a DOM.
 func Parse(b []byte) (*Node, error) { return xhtml.Parse(bytes.NewReader(b)) }
 
 // ParsePart reads a part by path.
@@ -28,7 +25,7 @@ func (d *Document) ParsePart(path string) (*Node, error) {
 		return Parse(plainMarkup(b))
 	}
 	if d.kind == KindMOBI {
-		b = mobiMarkup(b, d.filepos)
+		b = mobiMarkup(b, d.filepos[path])
 	}
 	return Parse(b)
 }
@@ -43,15 +40,13 @@ func (d *Document) typeOf(path string) string {
 	return ""
 }
 
-// plainMarkup wraps a part that is text rather than markup, which is what a
-// plain file and an older MOBI hold. The user agent sheet gives pre the white
-// space handling the lines of a text file need.
+// plainMarkup wraps a text part in a pre element.
 func plainMarkup(b []byte) []byte {
 	return []byte("<html><body><pre>" + xhtml.EscapeString(string(b)) + "</pre></body></html>")
 }
 
-// Text returns what the whole book says, a blank line between blocks, which
-// is the text of every part of the spine in order.
+// Text returns the text of every part of the spine in order, a blank line
+// between blocks.
 func (d *Document) Text() (string, error) {
 	var b strings.Builder
 	var first error
@@ -68,8 +63,6 @@ func (d *Document) Text() (string, error) {
 			}
 			text = NodeText(root)
 		default:
-			// A drawing in the spine is a page of the book and says what it
-			// draws, which no box tree holds.
 			s, err := d.drawnText(item)
 			if err != nil {
 				if first == nil {
@@ -87,24 +80,20 @@ func (d *Document) Text() (string, error) {
 	return b.String(), first
 }
 
-// NodeText returns what a subtree says, with a newline where a block element
-// ends and nothing where an inline one does.
+// NodeText returns the text of a subtree, a newline after each block element.
 func NodeText(n *Node) string {
 	var w textWriter
 	w.walk(n, false)
 	return strings.TrimLeft(w.b.String(), "\n")
 }
 
-// textWriter collects the text of a tree, holding back the whitespace between
-// elements until something is written after it.
+// textWriter collects the text of a tree, deferring whitespace between elements.
 type textWriter struct {
 	b strings.Builder
-	// space and breaks are the whitespace owed before the next character: a
-	// space, or that many newlines.
+	// space and breaks are the whitespace owed before the next character.
 	space  bool
 	breaks int
-	// last is the character written, which decides whether a space between
-	// two wide ones is worth keeping.
+	// last is the character written last.
 	last rune
 }
 
@@ -190,8 +179,7 @@ func (w *textWriter) write(s string) {
 	}
 }
 
-// wide reports a character of a script written without spaces between words,
-// where the whitespace of the markup is not a word break.
+// wide reports a character of a script written without spaces between words.
 func wide(r rune) bool {
 	switch {
 	case r >= 0x1100 && r <= 0x11ff,
@@ -251,8 +239,7 @@ func Walk(n *Node, fn func(*Node) bool) {
 	}
 }
 
-// fromHeadings builds a table of contents out of the headings of every part,
-// which is the only one a book with no navigation has.
+// fromHeadings builds a table of contents from the headings of every part.
 func (d *Document) fromHeadings() []Outline {
 	var flat []Outline
 	var level []int
@@ -282,7 +269,7 @@ func (d *Document) fromHeadings() []Outline {
 	return nest(flat, level)
 }
 
-// heading is what depth an element is a heading at, zero for anything else.
+// heading returns the heading depth of an element, zero for anything else.
 func heading(a atom.Atom) int {
 	switch a {
 	case atom.H1:
