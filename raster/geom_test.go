@@ -1,6 +1,9 @@
 package raster
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestMatrixConcat(t *testing.T) {
 	m := Concat(Translate(10, 20), Scale(2, 3))
@@ -60,6 +63,30 @@ func TestRectAccumulation(t *testing.T) {
 	m := Matrix{A: 1, D: -1}
 	if got, want := m.ApplyRect(Rect{0, 0, 200, 100}), (Rect{0, -100, 200, 0}); got != want {
 		t.Errorf("flipped rect = %v, want %v", got, want)
+	}
+}
+
+// TestRectOuter checks that Outer stays within MaxCoord whatever the floats.
+func TestRectOuter(t *testing.T) {
+	inf := float32(math.Inf(1))
+	nan := float32(math.NaN())
+	for _, r := range []Rect{
+		{X0: -inf, Y0: -inf, X1: inf, Y1: inf},
+		{X0: 0, Y0: 0, X1: 1e30, Y1: 1e30},
+		{X0: -1e30, Y0: nan, X1: 0, Y1: 1},
+	} {
+		x0, y0, x1, y1 := r.Outer()
+		for _, v := range []int{x0, y0, x1, y1} {
+			if v < -MaxCoord || v > MaxCoord {
+				t.Errorf("%v gave %d", r, v)
+			}
+		}
+		if w, h := int64(x1-x0), int64(y1-y0); w*h < 0 {
+			t.Errorf("%v gave an area that wraps", r)
+		}
+	}
+	if NewMask(MaxCoord+1, 1) != nil {
+		t.Error("a pixmap wider than MaxCoord was made")
 	}
 }
 

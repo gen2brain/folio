@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	pngenc "image/png"
+	"math"
 	"sort"
 	"testing"
 
@@ -433,14 +434,14 @@ func TestNaturalDPI(t *testing.T) {
 		{"a tall picture down the page",
 			[]TextBlock{block(800, 1600, 0, 0, 450, 900)}, 128, true},
 		{"a thin strip across the foot of the page",
-			[]TextBlock{block(81915, 1, 0, 791, 4178, 792)}, 1411, false},
+			[]TextBlock{block(81915, 1, 0, 791, 4178, 792)}, 802, false},
 		{"a small picture reaching neither edge",
 			[]TextBlock{block(100, 100, 10, 10, 110, 110)}, 72, false},
 		{"a picture on a page with text",
 			[]TextBlock{block(1200, 1800, 0, 0, 600, 900), text}, 144, false},
 	} {
 		st := &TextPage{Bounds: page, Blocks: c.blocks}
-		dpi, _, crop := NaturalDPI(st, page, CropArea)
+		dpi, _, crop := NaturalDPI(st, page, CropArea, -1)
 		if int(dpi) != int(c.dpi) {
 			t.Errorf("%s: %v dpi, want %v", c.name, dpi, c.dpi)
 		}
@@ -449,17 +450,33 @@ func TestNaturalDPI(t *testing.T) {
 		}
 	}
 
-	if dpi, _, crop := NaturalDPI(nil, page, CropArea); dpi != DefaultDPI || crop {
+	if dpi, _, crop := NaturalDPI(nil, page, CropArea, -1); dpi != DefaultDPI || crop {
 		t.Errorf("no text page gave %v %v, want %v false", dpi, crop, DefaultDPI)
 	}
 
 	// A book crops at a lower share.
 	land := &TextPage{Bounds: page, Blocks: []TextBlock{block(1400, 1000, 0, 0, 600, 428)}}
-	if _, _, crop := NaturalDPI(land, page, BookCropArea); !crop {
+	if _, _, crop := NaturalDPI(land, page, BookCropArea, -1); !crop {
 		t.Error("a landscape picture on a book page was not cropped to")
 	}
 	strip := &TextPage{Bounds: page, Blocks: []TextBlock{block(81915, 1, 0, 791, 4178, 792)}}
-	if _, _, crop := NaturalDPI(strip, page, BookCropArea); crop {
+	if _, _, crop := NaturalDPI(strip, page, BookCropArea, -1); crop {
 		t.Error("a thin strip was cropped to even at the book share")
+	}
+
+	tiny := &TextPage{Bounds: page, Blocks: []TextBlock{block(8192, 8192, 0, 0, 1, 1), text}}
+	for _, lim := range []int{1 << 28, 1 << 20, 4} {
+		dpi, _, _ := NaturalDPI(tiny, page, CropArea, lim)
+		w, h := math.Ceil(600*dpi/72)+1, math.Ceil(900*dpi/72)+1
+		if !(dpi >= 1) || (w*h > float64(lim) && dpi > 1) {
+			t.Errorf("limit %d: %v dpi is %vx%v", lim, dpi, w, h)
+		}
+	}
+	for _, lim := range []int{1 << 28, -1} {
+		dpi, _, _ := NaturalDPI(tiny, page, CropArea, lim)
+		w, h := math.Ceil(600*dpi/72)+1, math.Ceil(900*dpi/72)+1
+		if w*h > NaturalPixels || w*h < NaturalPixels*0.97 {
+			t.Errorf("limit %d: %v dpi is %vx%v, want just under %d pixels", lim, dpi, w, h, NaturalPixels)
+		}
 	}
 }

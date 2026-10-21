@@ -11,6 +11,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"testing/iotest"
 
 	"github.com/gen2brain/folio/font"
+	"github.com/gen2brain/folio/gfx"
 	"unicode/utf8"
 )
 
@@ -3161,6 +3163,45 @@ func TestKF8(t *testing.T) {
 	text, err := d.Text()
 	if err != nil || strings.Contains(text, "font-family") || !strings.Contains(text, "Two") {
 		t.Errorf("text = %q, %v", text, err)
+	}
+}
+
+// TestPagePixelLimit checks a picture drawn far smaller than it is.
+func TestPagePixelLimit(t *testing.T) {
+	var pic bytes.Buffer
+	if err := png.Encode(&pic, image.NewGray(image.Rect(0, 0, 4000, 8))); err != nil {
+		t.Fatal(err)
+	}
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml": `<html><head><style>img { width: 1px; height: 1px }</style></head><body>` +
+			`<p>text <img src="pic.png"/></p></body></html>`,
+		"EPUB/text/pic.png": pic.String(),
+	})
+	if _, err := d.Layout(nil); err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := p.Image()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx()*b.Dy() > gfx.NaturalPixels || b.Dx() < 1000 {
+		t.Errorf("natural image is %v", b.Size())
+	}
+	if _, err := p.ImageDPI(1e6); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("ImageDPI(1e6) = %v, want the pixel limit", err)
+	}
+	if _, err := p.ImageDPI(math.Inf(1)); err == nil {
+		t.Error("ImageDPI(+Inf) rendered")
+	}
+	d.PixelLimit = 1 << 10
+	if _, err := p.ImageDPI(72); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("ImageDPI(72) under a limit of 1024 = %v", err)
 	}
 }
 

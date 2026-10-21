@@ -376,10 +376,13 @@ func (p *Page) pageMatrix(o LayoutOptions) raster.Matrix {
 
 // ImageDPI renders the page at a resolution.
 func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
-	b := p.DeviceBounds(dpi)
-	w, h := int(b.X1-b.X0), int(b.Y1-b.Y0)
+	x0, y0, x1, y1 := p.DeviceBounds(dpi).Outer()
+	w, h := x1-x0, y1-y0
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("%w: page is %dx%d", ErrInvalid, w, h)
+	}
+	if lim := p.doc.pixelLimit(); lim >= 0 && int64(w)*int64(h) > int64(lim) {
+		return nil, fmt.Errorf("%w: %dx%d is over the pixel limit of %d", ErrUnsupported, w, h, lim)
 	}
 	px := raster.NewPixmap(raster.ModelRGB, w, h, false)
 	px.ClearWhite()
@@ -403,7 +406,7 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 // no text whose largest image covers a quarter of it is cropped to that image.
 func (p *Page) Image() (*image.RGBA, error) {
 	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
-	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds(), gfx.BookCropArea)
+	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds(), gfx.BookCropArea, p.doc.pixelLimit())
 	img, err := p.ImageDPI(dpi)
 	if img == nil || !crop {
 		return img, err
@@ -501,4 +504,14 @@ func (t *textCollector) row(b *box) {
 			t.row(k)
 		}
 	}
+}
+
+// defaultPixelLimit is the pixel area a page may allocate when PixelLimit is zero.
+const defaultPixelLimit = 1 << 28
+
+func (d *Document) pixelLimit() int {
+	if d.PixelLimit == 0 {
+		return defaultPixelLimit
+	}
+	return d.PixelLimit
 }

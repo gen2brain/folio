@@ -51,6 +51,9 @@ func newPixmap(model Model, n, w, h int, alpha bool) *Pixmap {
 	if comps == 0 {
 		return nil
 	}
+	if w > MaxCoord || h > MaxCoord {
+		return nil
+	}
 	size := int64(w) * int64(h) * int64(comps)
 	if size > maxPixmapBytes || size > int64(math.MaxInt) {
 		return nil

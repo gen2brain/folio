@@ -69,7 +69,7 @@ func (g *gradient) Shader(model raster.Model, ctm raster.Matrix, box raster.Rect
 			lut[i*n+k] = uint8((uint32(lut[i*n+k])*uint32(a) + 127) / 255)
 		}
 	}
-	return raster.NewGradient(raster.GradientSpec{
+	sh := raster.NewGradient(raster.GradientSpec{
 		Matrix: ctm,
 		LUT:    lut,
 		A:      alpha,
@@ -84,6 +84,10 @@ func (g *gradient) Shader(model raster.Model, ctm raster.Matrix, box raster.Rect
 		Ext0: true,
 		Ext1: true,
 	})
+	if sh == nil {
+		return nil
+	}
+	return sh
 }
 
 // ramp turns a fraction of the whole table into a fraction of one period,

@@ -135,6 +135,9 @@ type Document struct {
 	// ImageCacheBytes bounds the decoded pictures kept while pages render: zero
 	// is the default, negative is none. It is set before Layout.
 	ImageCacheBytes int
+	// PixelLimit bounds the pixel area a rendered page may allocate. Zero is
+	// the default of 2^28 and a negative number is no limit at all.
+	PixelLimit int
 
 	kind  Kind
 	close func() error

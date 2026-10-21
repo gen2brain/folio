@@ -75,8 +75,18 @@ func (r Rect) Outer() (x0, y0, x1, y1 int) {
 	if r.IsEmpty() {
 		return 0, 0, 0, 0
 	}
-	return int(math.Floor(float64(r.X0))), int(math.Floor(float64(r.Y0))),
-		int(math.Ceil(float64(r.X1))), int(math.Ceil(float64(r.Y1)))
+	return outerInt(math.Floor(float64(r.X0))), outerInt(math.Floor(float64(r.Y0))),
+		outerInt(math.Ceil(float64(r.X1))), outerInt(math.Ceil(float64(r.Y1)))
+}
+
+// MaxCoord bounds the device coordinates Outer returns.
+const MaxCoord = 1 << 30
+
+func outerInt(v float64) int {
+	if v != v {
+		return 0
+	}
+	return int(max(min(v, MaxCoord), -MaxCoord))
 }
 
 // Contains reports whether s lies entirely within r.

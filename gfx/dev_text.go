@@ -550,11 +550,16 @@ const CropArea = 0.5
 // BookCropArea is CropArea for a page of a book.
 const BookCropArea = 0.25
 
-// NaturalDPI is the highest resolution any image on the page is drawn at, and
-// the box of the largest when no text is drawn and it covers minArea.
-func NaturalDPI(st *TextPage, page raster.Rect, minArea float64) (dpi float64, box raster.Rect, crop bool) {
+// NaturalPixels bounds the pixel area of a page rendered at its natural resolution.
+const NaturalPixels = 1 << 26
+
+// NaturalDPI is the highest resolution any image on the page is drawn at,
+// lowered until the page fits in NaturalPixels and in limit pixels, and the box
+// of the largest image when no text is drawn and it covers minArea. A negative
+// limit is none.
+func NaturalDPI(st *TextPage, page raster.Rect, minArea float64, limit int) (dpi float64, box raster.Rect, crop bool) {
 	if st == nil {
-		return DefaultDPI, box, false
+		return fitDPI(DefaultDPI, page, limit), box, false
 	}
 	var area float32
 	text := false
@@ -576,11 +581,31 @@ func NaturalDPI(st *TextPage, page raster.Rect, minArea float64) (dpi float64, b
 			area, box = bw*bh, b.Bounds
 		}
 	}
-	if dpi <= 0 {
+	if !(dpi > 0) {
 		dpi = DefaultDPI
 	}
 	pa := (page.X1 - page.X0) * (page.Y1 - page.Y0)
-	return dpi, box, !text && pa > 0 && float64(area) >= minArea*float64(pa)
+	return fitDPI(dpi, page, limit), box, !text && pa > 0 && float64(area) >= minArea*float64(pa)
+}
+
+// fitDPI lowers dpi until the page, rounded out to whole pixels, is within
+// NaturalPixels and limit pixels.
+func fitDPI(dpi float64, page raster.Rect, limit int) float64 {
+	w, h := float64(page.X1-page.X0)/72, float64(page.Y1-page.Y0)/72
+	if limit < 0 || limit > NaturalPixels {
+		limit = NaturalPixels
+	}
+	if !(w > 0) || !(h > 0) {
+		return dpi
+	}
+	area := func(d float64) float64 { return (math.Ceil(w*d) + 1) * (math.Ceil(h*d) + 1) }
+	if math.IsInf(dpi, 0) || area(dpi) > float64(limit) {
+		dpi = (math.Sqrt(float64(limit)) - 2) / math.Sqrt(w*h)
+		for dpi > 1 && area(dpi) > float64(limit) {
+			dpi *= 0.99
+		}
+	}
+	return max(dpi, 1)
 }
 
 // CropTo cuts out the part of a rendered page box covers.

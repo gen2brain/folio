@@ -665,6 +665,38 @@ func TestMaskAndMarker(t *testing.T) {
 
 // TestGradientSpread covers what spreadMethod does past the ends of a ramp,
 // which the shader pads and this writes out as the periods the shape reaches.
+// TestHugeDrawing checks that a drawing too large to allocate is refused.
+func TestHugeDrawing(t *testing.T) {
+	for _, size := range []string{"1e30", "1e38", "4294967296", "99999999999999999999"} {
+		d, err := Load([]byte(`<svg width="` + size + `" height="` + size + `"><rect width="10" height="10"/></svg>`))
+		if err != nil {
+			continue
+		}
+		p, _ := d.Page(0)
+		if _, err := p.ImageDPI(72); err == nil {
+			t.Errorf("%s: a drawing of %s was rendered", size, size)
+		}
+	}
+}
+
+// TestGradientSingular checks a gradient whose transform has no inverse.
+func TestGradientSingular(t *testing.T) {
+	for _, kind := range []string{"linearGradient", "radialGradient"} {
+		d, err := Load([]byte(`<svg viewBox="0 0 200 200">
+		  <` + kind + ` id="g" gradientTransform="matrix(0 0 0 0 0 0)">
+		    <stop offset="0" stop-color="white"/><stop offset="1" stop-color="green"/>
+		  </` + kind + `>
+		  <rect x="20" y="20" width="160" height="160" fill="url(#g)"/></svg>`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := d.Page(0)
+		if _, err := p.ImageDPI(72); err != nil {
+			t.Errorf("%s: %v", kind, err)
+		}
+	}
+}
+
 func TestGradientSpread(t *testing.T) {
 	build := func(mode string) *gradient {
 		t.Helper()
