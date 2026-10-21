@@ -13,6 +13,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -306,6 +307,11 @@ func FuzzBook(fu *testing.F) {
 	fu.Add([]byte("<html><head><title>t</title></head><body><p>markup</p></body></html>"))
 	fu.Add(buildMOBI([]byte("<html><body>Hi</body></html>"), []byte{0x81}, []byte("\x89PNG\r\n\x1a\n0123456789")))
 	fu.Add(buildKF8(fu, []byte("\x00\x01\x00\x00 not a whole font")))
+	for _, name := range []string{"kf8.azw3", "kf8.mobi"} {
+		if b, err := os.ReadFile(filepath.Join("..", "testdata", name)); err == nil {
+			fu.Add(b)
+		}
+	}
 	fu.Add(buildCHM(&testing.T{}, map[string][]byte{
 		"/#SYSTEM":       {0x03, 0x00, 0x00, 0x00},
 		"/Pages/one.htm": []byte(`<html><body><p>One.</p></body></html>`),
@@ -3183,6 +3189,171 @@ func TestKF8SkippedFragment(t *testing.T) {
 	if _, o, ok := k.locate(2, 0); !ok || o != at+8 {
 		t.Errorf("fragment 2 is at %d, %v, want %d", o, ok, at+8)
 	}
+}
+
+// TestKF8Files reads an AZW3 and a hybrid MOBI that kindling wrote.
+func TestKF8Files(t *testing.T) {
+	mini, err := os.ReadFile(filepath.Join("..", "testdata", "mini.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"kf8.azw3", "kf8.mobi"} {
+		t.Run(name, func(t *testing.T) {
+			d, err := Open(filepath.Join("..", "testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			var spine []string
+			for _, it := range d.Spine() {
+				spine = append(spine, it.Path)
+			}
+			if !slices.Equal(spine, []string{"part00000.html", "part00001.html"}) {
+				t.Fatalf("spine = %v", spine)
+			}
+			types := map[string]string{}
+			for _, it := range d.Manifest() {
+				types[it.Path] = it.Type
+			}
+			if types["flow00001.css"] != "text/css" || types["00001"] != "image/png" || types["00002"] != "font/ttf" {
+				t.Fatalf("manifest = %v", types)
+			}
+			if f, _ := d.Read("00002"); !bytes.Equal(f, mini) {
+				t.Errorf("font is %d bytes, want mini.ttf", len(f))
+			}
+
+			at := func(path, frag string) string {
+				b, _ := d.Read(path)
+				i := strings.Index(string(b), `<a id="`+frag+`"></a>`)
+				if i < 0 {
+					return ""
+				}
+				return string(b[i+len(`<a id="`+frag+`"></a>`):])
+			}
+			want := []struct{ title, path, next string }{
+				{"Chapter One", "part00000.html", "\n<h1"},
+				{"Later in One", "part00000.html", `<p id="later"`},
+				{"Chapter Two", "part00001.html", "\n<h1"},
+				{"The End", "part00001.html", `<p id="end"`},
+			}
+			var flat []Outline
+			for _, o := range d.Outline() {
+				flat = append(flat, o)
+				flat = append(flat, o.Children...)
+			}
+			if len(d.Outline()) != 2 || len(flat) != len(want) {
+				t.Fatalf("outline = %+v", d.Outline())
+			}
+			for i, w := range want {
+				o := flat[i]
+				if o.Title != w.title || o.Path != w.path || !strings.HasPrefix(at(o.Path, o.Fragment), w.next) {
+					t.Errorf("entry %d = %+v, want %s in %s before %s", i, o, w.title, w.path, w.next)
+				}
+			}
+
+			one, _ := d.Read("part00000.html")
+			two, _ := d.Read("part00001.html")
+			if !strings.Contains(string(one), `href="part00001.html#`+flat[3].Fragment+`"`) ||
+				!strings.Contains(string(two), `href="part00000.html#`+flat[1].Fragment+`"`) {
+				t.Errorf("links do not reach the anchors:\n%s\n%s", one, two)
+			}
+
+			text, _ := d.Text()
+			if strings.Contains(text, "font-family") || !strings.Contains(text, "set in the embedded font") {
+				t.Errorf("text = %q", text)
+			}
+			if _, err := d.Layout(nil); err != nil {
+				t.Fatal(err)
+			}
+			if d.embeddedFont("00002") == nil {
+				t.Error("the embedded font was not loaded")
+			}
+		})
+	}
+}
+
+// TestKindleCorpus checks every Kindle book under azw in CONFORMANCE_DIR.
+func TestKindleCorpus(t *testing.T) {
+	var names []string
+	for _, root := range strings.Split(os.Getenv("CONFORMANCE_DIR"), ":") {
+		if root == "" {
+			continue
+		}
+		filepath.WalkDir(filepath.Join(root, "azw"), func(p string, e os.DirEntry, err error) error {
+			if err == nil && !e.IsDir() && (strings.HasSuffix(p, ".azw3") || strings.HasSuffix(p, ".mobi")) {
+				names = append(names, p)
+			}
+			return nil
+		})
+	}
+	if len(names) == 0 {
+		t.Skip("no corpus")
+	}
+	ours := regexp.MustCompile(`(?:src|href)="((?:[0-9]{5}|flow[0-9]{5}\.(?:css|svg)|part[0-9]{5}\.html)(?:#[^"]*)?)"|url\(([0-9]{5})\)`)
+	for _, name := range names {
+		d, err := Open(name)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		for _, it := range d.Manifest() {
+			b, err := d.Read(it.Path)
+			if err != nil {
+				t.Errorf("%s: %s: %v", name, it.Path, err)
+				continue
+			}
+			switch {
+			case strings.HasPrefix(it.Type, "font/"):
+				if _, err := font.Parse(b); err != nil {
+					t.Errorf("%s: %s: %v", name, it.Path, err)
+				}
+			case it.Type == "text/html" || it.Type == "text/css":
+				if bytes.Contains(b, []byte("kindle:pos:")) || bytes.Contains(b, []byte("kindle:flow:")) {
+					t.Errorf("%s: %s keeps a kindle: reference", name, it.Path)
+				}
+				for _, m := range ours.FindAllSubmatch(b, -1) {
+					ref, frag := splitFragment(string(m[1]) + string(m[2]))
+					target := Resolve(it.Path, ref)
+					if _, err := d.Read(target); err != nil {
+						if d.typeOf(target) == "" && !strings.HasPrefix(ref, "0") {
+							t.Errorf("%s: %s names %s", name, it.Path, ref)
+						}
+						continue
+					}
+					if frag != "" && !hasID(d, target, frag) {
+						t.Errorf("%s: %s links to a missing %s#%s", name, it.Path, ref, frag)
+					}
+				}
+			}
+		}
+		var check func(o []Outline)
+		check = func(o []Outline) {
+			for _, e := range o {
+				if _, err := d.Read(e.Path); err != nil || (e.Fragment != "" && !hasID(d, e.Path, e.Fragment)) {
+					t.Errorf("%s: contents entry %q points at %s#%s", name, e.Title, e.Path, e.Fragment)
+				}
+				check(e.Children)
+			}
+		}
+		check(d.Outline())
+		d.Close()
+	}
+}
+
+// hasID reports whether the parsed part at path has an element with the id.
+func hasID(d *Document, path, id string) bool {
+	n, err := d.ParsePart(path)
+	if err != nil {
+		return false
+	}
+	found := false
+	Walk(n, func(n *Node) bool {
+		if Attr(n, "id") == id {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // varint writes a number the way an index entry carries one.
