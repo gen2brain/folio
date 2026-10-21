@@ -12,21 +12,14 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// Document is an open PDF file.
-//
-// A Document may be rendered from several goroutines at once, a Page each.
-// Configuration - SetLayers, SetUsage, GlyphCacheBytes, ImageCacheBytes and
-// ContentCacheOps - happens before they start, and Close after the last ends.
+// Document is an open PDF file, safe to render from several goroutines at once.
 type Document struct {
 	f *syntax.File
 
 	// errs collects everything that went wrong while reading or interpreting.
-	// A damaged file still renders what could be read, so this is a log
-	// rather than a failure. Err reads it.
 	errs []error
 
-	// mu guards the caches a render fills; errMu guards errs, which every
-	// layer appends to and which is never read on a hot path.
+	// mu guards the caches a render fills; errMu guards errs.
 	mu    sync.Mutex
 	errMu sync.Mutex
 
@@ -45,20 +38,17 @@ type Document struct {
 	imageTail  *imageEntry
 	imageBytes int
 
-	// contents holds the parsed form of a content stream run before; a nil
-	// entry is a stream seen once.
+	// contents holds the parsed form of a content stream run before.
 	contents   map[*syntax.Stream]*content
 	contentOps int
 
-	// GlyphCacheBytes bounds the rendered glyph masks the document keeps,
-	// ImageCacheBytes the decoded images and ContentCacheOps the operands of
-	// parsed content streams. Zero is the default, negative is no cache at all.
+	// GlyphCacheBytes, ImageCacheBytes and ContentCacheOps bound the document's
+	// caches; zero is the default, negative is no cache.
 	GlyphCacheBytes int
 	ImageCacheBytes int
 	ContentCacheOps int
 }
 
-// glyphCache returns the document's cache of rendered glyph masks.
 func (d *Document) glyphCache() *raster.GlyphCache {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -71,7 +61,7 @@ func (d *Document) glyphCache() *raster.GlyphCache {
 // Open reads the named file.
 func Open(name string) (*Document, error) { return OpenPassword(name, "") }
 
-// OpenPassword reads the named file, which is encrypted with password.
+// OpenPassword reads the named file, decrypting with password.
 func OpenPassword(name, password string) (*Document, error) {
 	f, err := syntax.OpenPassword(name, password)
 	if err != nil {
@@ -94,9 +84,7 @@ func NewReaderPassword(r io.ReaderAt, size int64, password string) (*Document, e
 	return newDocument(f), nil
 }
 
-// NewStream reads a document from a stream that cannot be seeked, which means
-// reading all of it into memory first. A caller with an untrusted source
-// bounds it with io.LimitReader.
+// NewStream reads a document from a stream that cannot be seeked, all of it into memory.
 func NewStream(r io.Reader) (*Document, error) { return NewStreamPassword(r, "") }
 
 // NewStreamPassword is NewStream for an encrypted document.
@@ -133,8 +121,7 @@ func newDocument(f *syntax.File) *Document {
 	return d
 }
 
-// Close releases the document and everything it has cached. It must not be
-// called while a page is still rendering.
+// Close releases the document and everything it has cached.
 func (d *Document) Close() error {
 	if d.f != nil {
 		d.f.Close()
@@ -151,8 +138,7 @@ func (d *Document) Close() error {
 	return nil
 }
 
-// File returns the object layer underneath, for callers that want to read the
-// document structure directly.
+// File returns the object layer underneath.
 func (d *Document) File() *syntax.File { return d.f }
 
 // NumPages returns the number of pages.
@@ -171,13 +157,8 @@ func (d *Document) Page(i int) (*Page, error) {
 	return &Page{doc: d, dict: dict, num: i}, nil
 }
 
-// outputIntent returns the color space of the document's output intent, the
-// space a PDF/A file says its device colors are meant for.
 func (d *Document) outputIntent() *ColorSpace { return d.intent }
 
-// readOutputIntent finds the color space of the document's output intent, the
-// space a PDF/A file says its device colors are meant for. It is read once, at
-// open, so that a render never has to write to the document to find it.
 func (d *Document) readOutputIntent() {
 	for _, oi := range d.f.GetArray(d.f.Catalog()["OutputIntents"]) {
 		dict := d.f.GetDict(oi)
@@ -206,7 +187,6 @@ func (d *Document) errorf(format string, a ...any) {
 	d.fail(fmt.Errorf(format, a...))
 }
 
-// fail records one error a damaged file caused.
 func (d *Document) fail(err error) {
 	d.errMu.Lock()
 	defer d.errMu.Unlock()
@@ -215,8 +195,7 @@ func (d *Document) fail(err error) {
 	}
 }
 
-// Err returns what has gone wrong so far, which a damaged file logs rather
-// than fails on. It is safe to call while pages are rendering.
+// Err returns the errors recorded so far.
 func (d *Document) Err() []error {
 	d.errMu.Lock()
 	defer d.errMu.Unlock()
@@ -229,8 +208,7 @@ func (d *Document) errCount() int {
 	return len(d.errs)
 }
 
-// errAfter returns the first error logged since the log was n long, which is
-// how Options.Strict turns a recorded error into a returned one.
+// errAfter returns the first error logged since the log was n long.
 func (d *Document) errAfter(n int) error {
 	d.errMu.Lock()
 	defer d.errMu.Unlock()
@@ -242,12 +220,10 @@ func (d *Document) errAfter(n int) error {
 
 const maxErrors = 256
 
-// fallbackFont is used when a content stream shows text with no usable font,
-// so that the text still lands in the right places.
+// fallbackFont is used when a content stream shows text with no usable font.
 func (d *Document) fallbackFont() *Font { return d.fbFont }
 
-// readOptionalContent applies the document's default optional content
-// configuration, which says which groups start off.
+// readOptionalContent applies the document's default optional content configuration.
 func (d *Document) readOptionalContent() {
 	d.layers, d.ocOff = nil, nil
 	props := d.f.GetDict(d.f.Catalog()["OCProperties"])
@@ -287,8 +263,7 @@ func (d *Document) readOptionalContent() {
 	}
 }
 
-// applyUsage runs the usage application dictionaries of a configuration, how
-// a group says it is for the screen but not paper. ISO 32000-1 8.11.4.4.
+// applyUsage runs the usage application dictionaries of a configuration, ISO 32000-1 8.11.4.4.
 func (d *Document) applyUsage(cfg Dict) {
 	event := Name("View")
 	switch d.usage {
@@ -332,8 +307,7 @@ func (d *Document) layerName(obj Object) string {
 	return ""
 }
 
-// Layer is one optional content group: a part of a document that can be drawn
-// or left out, with the name the file gives it.
+// Layer is one optional content group and the name the file gives it.
 type Layer struct {
 	Name string
 	On   bool
@@ -341,15 +315,12 @@ type Layer struct {
 }
 
 // Layers returns the document's optional content groups and whether each is
-// on, in the order the catalog lists them. It returns nothing for a document
-// that has no optional content.
+// on, in the order the catalog lists them.
 func (d *Document) Layers() []Layer {
 	return append([]Layer(nil), d.layers...)
 }
 
-// SetLayers turns optional content groups on and off. Only the On field of
-// each layer is read, and only layers this document declared are used, so the
-// slice Layers returned can be edited and passed back.
+// SetLayers turns optional content groups on and off by the On field of each layer.
 func (d *Document) SetLayers(layers []Layer) {
 	known := make(map[Ref]bool, len(d.layers))
 	for i := range d.layers {
@@ -373,9 +344,7 @@ func (d *Document) SetLayers(layers []Layer) {
 	}
 }
 
-// Usage is what a document is being rendered for. Optional content groups and
-// annotations may be meant for the screen, for paper, or for neither; ISO
-// 32000-1 calls these the three events of a usage application dictionary.
+// Usage names the event a document is rendered for, ISO 32000-1 8.11.4.4.
 type Usage int
 
 // The three events.
@@ -386,23 +355,19 @@ const (
 )
 
 // SetSystemFonts chooses whether a font the file does not embed may be
-// substituted with one the machine has. It is on by default and has to be set
-// before the first page is rendered.
+// substituted with one the machine has.
 func (d *Document) SetSystemFonts(on bool) { d.noSystemFonts = !on }
 
 // Usage returns what the document is being rendered for.
 func (d *Document) Usage() Usage { return d.usage }
 
-// SetUsage chooses what the document is rendered for, which decides both which
-// optional content groups are on and which annotations are drawn. It undoes
-// SetLayers. The default is UsageView.
+// SetUsage chooses what the document is rendered for, UsageView by default.
 func (d *Document) SetUsage(u Usage) {
 	d.usage = u
 	d.readOptionalContent()
 }
 
-// optionalContentVisible reports whether content governed by an /OC entry is
-// drawn. An unreadable or unknown group is visible.
+// optionalContentVisible reports whether content governed by an /OC entry is drawn.
 func (d *Document) optionalContentVisible(obj Object) bool {
 	if obj == nil || len(d.ocOff) == 0 {
 		return true
@@ -470,7 +435,7 @@ type Outline struct {
 	// Page is the page the entry leads to, -1 otherwise, and Point where on it.
 	Page  int
 	Point raster.Point
-	// URI is where an entry leading out of the document points.
+	// URI is the target of an entry leading out of the document.
 	URI string
 	// Open is whether the file asks for the entry to start expanded.
 	Open bool
@@ -528,7 +493,7 @@ func (d *Document) outlineList(first Object, depth int, seen map[Ref]bool) []Out
 	return out
 }
 
-// Metadata is what the document says about itself, ISO 32000-1 14.3.3.
+// Metadata is the document information, ISO 32000-1 14.3.3.
 type Metadata struct {
 	Title    string
 	Author   string
@@ -693,7 +658,7 @@ var romanDigits = []struct {
 	{10, "X"}, {9, "IX"}, {5, "V"}, {4, "IV"}, {1, "I"},
 }
 
-// maxRoman is where a roman numeral stops being one.
+// maxRoman bounds a roman numeral.
 const maxRoman = 4000
 
 func roman(n int) string {
@@ -714,6 +679,9 @@ func roman(n int) string {
 func letters(n int) string {
 	if n <= 0 {
 		return ""
+	}
+	if n >= maxRoman {
+		return strconv.Itoa(n)
 	}
 	c := byte('A' + (n-1)%26)
 	return strings.Repeat(string(c), (n-1)/26+1)

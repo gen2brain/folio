@@ -31,30 +31,22 @@ const (
 // Font is a font program.
 type Font struct {
 	Kind Kind
-	// Name is what the program calls itself, which is not the name the PDF
-	// font dictionary uses.
+	// Name is the name the program gives itself.
 	Name string
-	// Family is the family the program belongs to, which is the name a
-	// stylesheet asks for a font by.
+	// Family is the family the program belongs to.
 	Family string
-	// Weight is the usWeightClass of the program, 400 when it declares none,
-	// and Italic whether it is slanted.
+	// Weight is the usWeightClass, 400 by default, and Italic whether it is slanted.
 	Weight int
 	Italic bool
-	// UnitsPerEm is the glyph space of a TrueType font; a CFF or Type1 font
-	// carries a matrix instead.
+	// UnitsPerEm is the glyph space of a TrueType font.
 	UnitsPerEm int
 	// Matrix maps glyph space to text space, where one unit is the font size.
 	Matrix raster.Matrix
-	// Ascent and Descent are how far the em box reaches above and below the
-	// baseline, in text space, and default when the program declares neither.
+	// Ascent and Descent are the em box extents above and below the baseline, in text space.
 	Ascent, Descent float32
-	// XHeight is how tall a lower case x is, and SubOffset and SuperOffset
-	// how far the program puts a subscript below the baseline and a
-	// superscript above it, all in text space. Each is zero when the program
-	// says nothing, which is every program that is not an SFNT.
+	// XHeight, SubOffset and SuperOffset are SFNT metrics in text space, zero when absent.
 	XHeight, SubOffset, SuperOffset float32
-	// CID is true for a CFF font keyed by CID rather than by name.
+	// CID is true for a CID keyed CFF font.
 	CID bool
 
 	sfnt   *sfnt
@@ -62,8 +54,7 @@ type Font struct {
 	type1  *type1Font
 	glyphs int
 
-	// gsub, gpos and gdef are the OpenType layout tables, and plans the
-	// lookups each script has resolved to.
+	// gsub, gpos and gdef are the OpenType layout tables, plans the lookups per script.
 	gsub, gpos *otLayout
 	gdef       *gdef
 	kern       []byte
@@ -72,16 +63,13 @@ type Font struct {
 
 	advances []int16
 
-	// mu guards the two caches a Font fills as it is used. The program
-	// itself is read-only once parsed, so a document rendered from several
-	// goroutines shares one Font and locks only these.
+	// mu guards the two caches a Font fills as it is used.
 	mu    sync.RWMutex
 	names map[string]int
 	cache map[int]*raster.Path
 }
 
 // alias returns the same program under another name, with caches of its own.
-// A Font holds a lock, so it cannot be copied whole.
 func (f *Font) alias(name string) *Font {
 	return &Font{
 		Kind:       f.Kind,
@@ -143,11 +131,8 @@ func (f *Font) emBox(bbox []float32, scale float32) {
 // NumGlyphs returns how many glyphs the program has.
 func (f *Font) NumGlyphs() int { return f.glyphs }
 
-// GlyphPath returns the outline of a glyph in glyph space. The path is owned
-// by the font and must not be modified.
-//
-// A CID keyed CFF is addressed by CID rather than by glyph index, the
-// convention FreeType uses; the charset maps it to the glyph inside.
+// GlyphPath returns the outline of a glyph in glyph space, owned by the font.
+// A CID keyed CFF is addressed by CID.
 func (f *Font) GlyphPath(gid int) *raster.Path {
 	if gid < 0 {
 		return nil
@@ -166,7 +151,8 @@ func (f *Font) GlyphPath(gid int) *raster.Path {
 	}
 	switch f.Kind {
 	case KindTrueType:
-		p = f.glyfPath(gid, 0)
+		budget := maxComponents
+		p = f.glyfPath(gid, 0, &budget)
 	case KindCFF:
 		p = f.cff.path(gid)
 	case KindType1:
@@ -267,8 +253,7 @@ func (f *Font) gidForRune(r rune) int {
 	return -1
 }
 
-// sameShape is what a character is drawn as when the face has no glyph of its
-// own for it, which Unicode says is the same mark.
+// sameShape maps a character to the one Unicode says is the same mark.
 var sameShape = map[rune]rune{
 	'\u00a0': ' ',
 	'\u00ad': '-',
@@ -276,9 +261,7 @@ var sameShape = map[rune]rune{
 	'\u202f': ' ',
 }
 
-// MacGlyphName is the name a glyph has at index i of the standard Macintosh
-// ordering, which is the order a TrueType font that has not rearranged its
-// glyphs is in and what a version 1 post table means.
+// MacGlyphName is the name of the glyph at index i of the standard Macintosh ordering.
 func MacGlyphName(i int) string {
 	if i < 0 || i >= len(macGlyphNames) {
 		return ""
@@ -286,8 +269,7 @@ func MacGlyphName(i int) string {
 	return macGlyphNames[i]
 }
 
-// HasGlyphNames reports whether the program names its glyphs, which decides
-// whether an encoding can be resolved through them.
+// HasGlyphNames reports whether the program names its glyphs.
 func (f *Font) HasGlyphNames() bool {
 	switch f.Kind {
 	case KindType1:
@@ -299,8 +281,7 @@ func (f *Font) HasGlyphNames() bool {
 	}
 }
 
-// BuiltinEncoding returns the code to glyph name table the program carries,
-// or nil. Type1 fonts always have one and CFF fonts usually do.
+// BuiltinEncoding returns the code to glyph name table the program carries, or nil.
 func (f *Font) BuiltinEncoding() *[256]string {
 	switch f.Kind {
 	case KindType1:
@@ -311,24 +292,18 @@ func (f *Font) BuiltinEncoding() *[256]string {
 	return nil
 }
 
-// GIDForSymbolCode looks a byte code up in a (3,0) symbol character map,
-// which addresses the private use area with and without the F0 prefix.
+// GIDForSymbolCode looks a byte code up in a (3,0) symbol character map.
 func (f *Font) GIDForSymbolCode(code uint32) int { return f.sfnt.lookupSymbol(code) }
 
 // GIDForMacCode looks a byte code up in a (1,0) Mac Roman character map.
 func (f *Font) GIDForMacCode(code uint32) int { return f.sfnt.lookupMacRoman(code) }
 
-// HasCmap reports whether the program carries a character map at all. One
-// that does not is addressed by glyph index.
+// HasCmap reports whether the program carries a character map.
 func (f *Font) HasCmap() bool {
 	return f.sfnt != nil && len(f.sfnt.cmapTables) > 0
 }
 
-// runeToName is the Adobe Glyph List read backwards, for finding a glyph by
-// Unicode value in a font that only names its glyphs. Several names reach the
-// same character, so the shortest wins and ties go to the first alphabetically:
-// picking whichever the map happened to yield made a page render differently
-// from one process to the next.
+// runeToName is the Adobe Glyph List read backwards.
 var runeToName = func() map[rune]string {
 	m := make(map[rune]string, len(glyphList))
 	for name, s := range glyphList {

@@ -9,17 +9,17 @@ import (
 const (
 	pptxSheet    = "slides.css"
 	pptxMaxSlide = 1 << 12
-	// pptxPoint is how many hundredths of a point one CSS pixel is.
+	// pptxPoint is the hundredths of a point in one CSS pixel.
 	pptxPoint = 75
 )
 
-// pptxFrame is where a shape sits on the slide and how big it is.
+// pptxFrame is the position and size of a shape on the slide.
 type pptxFrame struct {
 	x, y, w, h float64
 	ok         bool
 }
 
-// pptxPlace is what a layout or a master says about one kind of placeholder.
+// pptxPlace is the layout or master properties of one kind of placeholder.
 type pptxPlace struct {
 	frame pptxFrame
 	size  float64
@@ -32,8 +32,7 @@ type pptx struct {
 	// slides are the parts the presentation lists, in order.
 	slides []string
 	w, h   float64
-	// place is the geometry a placeholder inherits, by the layout part it
-	// belongs to and the kind and index it carries.
+	// place is the inherited placeholder geometry, by layout part and kind.
 	place map[string]map[string]pptxPlace
 	media map[string]string
 	pages map[string][]byte
@@ -126,7 +125,7 @@ func (c *pptx) metadata() Metadata {
 	return m
 }
 
-// titleOf is what the slide calls itself, and its number otherwise.
+// titleOf is the title of a slide, or its number.
 func (c *pptx) titleOf(part string, i int) string {
 	root, err := c.o.part(part)
 	if err == nil {
@@ -157,6 +156,7 @@ func (c *pptx) slide(part string) []byte {
 		}
 	}
 	b.WriteString("</div></body></html>")
+	c.o.spent += b.Len()
 	return []byte(b.String())
 }
 
@@ -172,6 +172,9 @@ func (c *pptx) shapes(b *strings.Builder, tree *xnode, part string, depth int) {
 		return
 	}
 	for _, sp := range tree.kids {
+		if c.o.full(b.Len()) {
+			return
+		}
 		switch sp.name {
 		case "sp":
 			c.shape(b, sp, part)
@@ -228,8 +231,7 @@ func (c *pptx) pic(b *strings.Builder, sp *xnode, part string) {
 		px(f.x), px(f.y), px(f.w), px(f.h), esc(path), px(f.w), px(f.h))
 }
 
-// graphic writes the table a graphic frame may hold, which is the one part of
-// DrawingML a page of text has any use for.
+// graphic writes the table a graphic frame may hold.
 func (c *pptx) graphic(b *strings.Builder, sp *xnode, part string) {
 	f := frameOf(sp)
 	tbl := findChild(sp, "tbl", 0)
@@ -348,8 +350,7 @@ func runSpan(r *xnode) string {
 	return `<span style="` + strings.Join(style, ";") + `">` + esc(t.text) + "</span>"
 }
 
-// placeholder is the kind and the index a shape stands in for, which is how
-// the layout beneath it is looked up.
+// placeholder is the kind and the index of the placeholder a shape fills.
 func placeholder(sp *xnode) (string, string) {
 	nv := sp.child("nvSpPr")
 	if nv == nil {
@@ -370,8 +371,6 @@ func placeholder(sp *xnode) (string, string) {
 	return kind, ph.at("idx")
 }
 
-// inherited is what the layout and the master under a slide say about a
-// placeholder, which is where most of a real slide's geometry lives.
 func (c *pptx) inherited(part, kind, idx string) pptxPlace {
 	var out pptxPlace
 	if kind == "" {
@@ -420,7 +419,7 @@ func (c *pptx) parentOf(part string) string {
 	return ""
 }
 
-// layout is what one layout or master says about each placeholder on it.
+// layout reads the placeholders of one layout or master.
 func (c *pptx) layout(part string) map[string]pptxPlace {
 	if v, ok := c.place[part]; ok {
 		return v
@@ -465,8 +464,7 @@ func defaultRun(body *xnode) (size float64, align string, bold bool) {
 	return size, align, bold
 }
 
-// frameOf is the rectangle a shape declares, and nothing when it declares
-// none and takes the one its placeholder has.
+// frameOf is the rectangle a shape declares, zero when it declares none.
 func frameOf(sp *xnode) pptxFrame {
 	x := findChild(sp, "xfrm", 0)
 	if x == nil {
@@ -506,7 +504,7 @@ func findChild(n *xnode, name string, depth int) *xnode {
 	return nil
 }
 
-// shapeText is everything one shape says, which the outline reads.
+// shapeText is all the text of one shape.
 func shapeText(sp *xnode) string {
 	body := sp.child("txBody")
 	if body == nil {

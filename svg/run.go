@@ -8,17 +8,11 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// state is what an element inherits from the one around it. SVG properties
-// inherit, so this is copied down the tree and never back up.
 type state struct {
 	fill, stroke paint
-	// fillServer and strokeServer are the paint that named a gradient, kept
-	// so that the shape it paints can be measured before it is resolved.
+	// fillServer and strokeServer name the paint server of fill and stroke.
 	fillServer, strokeServer string
-	// ctxFill and ctxStroke are what context-fill and context-stroke stand
-	// for: the paint of the element that referred to this one, SVG 2 13.2.
-	// ctxCTM and ctxBox are the space that paint is read in, and fillCtx and
-	// strokeCtx which of the two the element took.
+	// ctxFill and ctxStroke are context-fill and context-stroke, SVG 2 13.2.
 	ctxFill, ctxStroke             paint
 	ctxFillServer, ctxStrokeServer string
 	ctxCTM                         raster.Matrix
@@ -34,31 +28,23 @@ type state struct {
 	join                           raster.Join
 	dash                           []float32
 	phase                          float32
-	// hidden is display: none, which drops the element and everything in it,
-	// and invisible visibility: hidden, which a child may turn back on.
+	// hidden is display: none and invisible visibility: hidden.
 	hidden    bool
 	invisible bool
-	// em is the font size a relative length is measured against, and family,
-	// bold, italic and anchor the rest of what a text element is drawn with.
+	// em is the font size a relative length is measured against.
 	em     float32
 	family string
 	bold   bool
 	italic bool
 	anchor string
-	// vertical is writing-mode: the characters run down the page and each one
-	// either stands upright or turns a quarter with the line, UAX #50.
+	// vertical is a vertical writing-mode, UAX #50.
 	vertical bool
-	// rtl is direction, the way the characters of a chunk run when the
-	// bidirectional algorithm has nothing to say; override is unicode-bidi:
-	// bidi-override, which lays them out that way whatever they are.
+	// rtl is direction: rtl and override is unicode-bidi: bidi-override.
 	rtl      bool
 	override bool
-	// shift is how far baseline-shift has moved the baseline of an element's
-	// characters, and chain what a tspan inside it shifts from.
+	// shift is the baseline-shift of the element, chain that of its parent.
 	shift, chain float32
-	// baseline is what dominant-baseline moved the text off, letter and word
-	// what is added after a character and after a space, and preserve
-	// whether the white space is kept as it was written.
+	// baseline is dominant-baseline, letter and word the spacing.
 	baseline     string
 	letter, word float32
 	preserve     bool
@@ -86,7 +72,6 @@ func initialState(w, h float32) state {
 	}
 }
 
-// runner walks the tree and draws it.
 type runner struct {
 	doc  *Document
 	dev  Device
@@ -94,41 +79,33 @@ type runner struct {
 	// depth counts how deep a use has reached, bounding a self-referring file.
 	depth int
 	ops   int
-	// faces are the programs a family has resolved to, which every text
-	// element of a drawing asks for again, and pics the pictures decoded so
-	// far, which a use may draw many times.
+	// faces and pics cache resolved fonts and decoded pictures.
 	faces map[faceKey]*font.Font
 	pics  map[string]gfx.Image
-	// arts are the drawings an image element referred to, which are
-	// documents of their own, and active the elements being drawn through,
-	// which one that names itself must not re-enter.
+	// held is the pixels of the pictures pics keeps.
+	held int
+	// arts are nested drawings and active the elements being drawn through.
 	arts   map[string]*Page
 	active map[*node]bool
-	// fbs are the faces a character the chosen one cannot draw has fallen
-	// back to, which is the same answer for every element that asks.
+	// fbs caches fallback faces.
 	fbs map[fallbackKey]*font.Font
-	// open is the elements being drawn, outermost first, which is what a
-	// descendant selector is matched against.
+	// open is the elements being drawn, outermost first.
 	open []*node
 }
 
-// maxOps bounds the elements one drawing may draw, so that a use that
-// multiplies a group cannot run forever.
+// maxOps bounds the elements one drawing may draw.
 const maxOps = 1 << 20
 
 // Run draws the page onto a device under ctm.
 func (p *Page) Run(dev Device, ctm raster.Matrix) error { return p.run(dev, ctm, 0) }
 
-// run is Run with the nesting a drawing reached to get here, which bounds one
-// that puts itself in an image element.
+// run is Run at a nesting depth.
 func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	if depth >= maxNesting {
 		return nil
 	}
 	r := &runner{doc: p.doc, dev: dev, depth: depth}
 	d := p.doc
-	// The root's viewBox maps the coordinates the file draws in onto the size
-	// it asked to be drawn at.
 	m := ctm
 	if d.box != nil {
 		m = raster.Concat(viewport(d.box, d.align, d.slice, d.width, d.height), ctm)
@@ -137,14 +114,11 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	if d.box != nil {
 		st.vw, st.vh = d.box[2], d.box[3]
 	}
-	// The root carries properties of its own, and every icon written as one
-	// outline puts fill and stroke there for the whole drawing to inherit.
 	r.open = append(r.open, d.root)
 	st = r.style(d.root, st)
 	if st.hidden {
 		return nil
 	}
-	// The root is a viewport, so its filter and opacity apply to what it holds.
 	alpha := float32(1)
 	if v, ok := opacity(r.prop(d.root, "opacity")); ok {
 		alpha = v
@@ -183,7 +157,6 @@ func (r *runner) children(n *node, ctm raster.Matrix, st state) {
 	}
 }
 
-// element draws one element and everything under it.
 func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	if r.ops++; r.ops > maxOps {
 		return
@@ -193,8 +166,6 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	switch n.name {
 	case "defs", "symbol", "clipPath", "mask", "pattern", "marker",
 		"linearGradient", "radialGradient", "title", "desc", "metadata", "style", "script":
-		// A definition is drawn where it is referred to, not where it is
-		// written, and the rest of these are not a picture.
 		return
 	}
 
@@ -213,15 +184,12 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	if r.mask(n, ctm, st) {
 		defer r.dev.PopClip()
 	}
-	// An element that blends with what is under it, or that isolates what is
-	// under it from its children, is a group of its own.
 	b, blend := blendMode(r.cssProp(n, "mix-blend-mode"))
 	iso := strings.TrimSpace(r.cssProp(n, "isolation")) == "isolate"
 	if blend || iso {
 		r.dev.BeginGroup(raster.InfiniteRect, nil, iso, false, b, 1)
 		defer r.dev.EndGroup()
 	}
-	// Opacity applies to what the element draws as a whole, after the filter.
 	alpha := float32(1)
 	if v, ok := opacity(r.prop(n, "opacity")); ok {
 		alpha = v
@@ -241,8 +209,7 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	r.paint(n, ctm, st)
 }
 
-// paint draws the element itself, which is what a filter renders off to one
-// side rather than onto the page.
+// paint draws the element itself, without its filter or opacity.
 func (r *runner) paint(n *node, ctm raster.Matrix, st state) {
 	switch n.name {
 	case "g", "a":
@@ -294,9 +261,7 @@ func switchable(name string) bool {
 	return false
 }
 
-// conditional evaluates the three attributes of SVG 1.1 5.8. An empty value
-// is false for all of them; an extension is one this has none of, and a
-// feature is one it has.
+// conditional evaluates the three conditional attributes of SVG 1.1 5.8.
 func conditional(n *node) bool {
 	if _, ok := n.attr["requiredExtensions"]; ok {
 		return false
@@ -323,11 +288,7 @@ func speaks(v string) bool {
 	return false
 }
 
-// inContext hands the element's own paint down as what context-fill and
-// context-stroke stand for, which is what a use and a marker do for what they
-// draw. A server it names is read in the space of the element that handed it
-// down, not of the shape that takes it, so a rotated shape does not rotate the
-// gradient it was given.
+// inContext hands the element's paint down as context-fill and context-stroke.
 func (r *runner) inContext(n *node, ctm raster.Matrix, st state) state {
 	st.ctxFill, st.ctxFillServer = st.fill, st.fillServer
 	st.ctxStroke, st.ctxStrokeServer = st.stroke, st.strokeServer
@@ -339,8 +300,7 @@ func (r *runner) inContext(n *node, ctm raster.Matrix, st state) state {
 	return st
 }
 
-// paintSpace is where a paint server is read: the shape's own space, or the
-// space the paint came from when it came from context-fill or context-stroke.
+// paintSpace is the box and matrix a paint server is read in.
 func paintSpace(ctx bool, box raster.Rect, ctm raster.Matrix, st state) (raster.Rect, raster.Matrix) {
 	if ctx && !st.ctxBox.IsEmpty() {
 		return st.ctxBox, st.ctxCTM
@@ -362,7 +322,7 @@ func (r *runner) group(n *node, ctm raster.Matrix, st state) {
 	r.children(n, ctm, st)
 }
 
-// nested is an svg element inside another, which is a viewport of its own.
+// nested draws an svg element inside another as a new viewport.
 func (r *runner) nested(n *node, ctm raster.Matrix, st state) {
 	x, _ := r.length(n, "x", st.vw, st)
 	y, _ := r.length(n, "y", st.vh, st)
@@ -391,8 +351,7 @@ func (r *runner) nested(n *node, ctm raster.Matrix, st state) {
 	r.children(n, ctm, st)
 }
 
-// viewportClip cuts what an element draws down to the viewport it establishes,
-// which is what overflow asks for and is hidden by default, SVG 1.1 14.3.3.
+// viewportClip clips to the viewport an element establishes, SVG 1.1 14.3.3.
 func (r *runner) viewportClip(n *node, x, y, w, h float32, ctm raster.Matrix) bool {
 	switch strings.TrimSpace(r.prop(n, "overflow")) {
 	case "visible", "auto":
@@ -404,15 +363,12 @@ func (r *runner) viewportClip(n *node, x, y, w, h float32, ctm raster.Matrix) bo
 	return true
 }
 
-// use draws what an element refers to, in place. A use of a symbol or of an
-// svg takes its width and height from the use.
+// use draws what an element refers to, in place.
 func (r *runner) use(n *node, ctm raster.Matrix, st state) {
 	if r.depth >= maxNesting {
 		return
 	}
 	target := r.doc.byID[fragment(n.attr["href"])]
-	// An element already being drawn is one this is inside of, so drawing it
-	// again would never end.
 	if target == nil || r.active[target] || r.opened(target) {
 		return
 	}
@@ -490,8 +446,6 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	}
 	if (!st.stroke.none || st.strokeServer != "") && st.width > 0 {
 		s := r.strokeOf(st)
-		// The box a gradient in objectBoundingBox units is a fraction of is
-		// the shape's own, which SVG 1.1 7.11 says the stroke is not part of.
 		box, at := paintSpace(st.strokeCtx, p.Bounds(raster.Identity), ctm, st)
 		g, empty := r.server(st.strokeServer, box, st)
 		switch {
@@ -511,8 +465,7 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	}
 }
 
-// marked draws a shape and whatever its markers put at its vertices, which
-// only the shapes that have vertices may carry.
+// marked draws a shape and the markers at its vertices.
 func (r *runner) marked(p *raster.Path, ctm raster.Matrix, st state) {
 	r.shape(p, ctm, st)
 	if p != nil {
@@ -529,8 +482,7 @@ func (r *runner) tiled(server string, p *raster.Path, even bool, box raster.Rect
 	return ok
 }
 
-// faded draws through a transparency group when the paint is not opaque,
-// which is what an opacity on a pattern means: the tiles fade as a whole.
+// faded draws through a transparency group when the paint is not opaque.
 func (r *runner) faded(alpha float32, draw func() bool) bool {
 	if alpha >= 1 {
 		return draw()
@@ -563,9 +515,7 @@ func (r *runner) strokeOf(st state) *raster.Stroke {
 	}
 }
 
-// prop reads a property. A style attribute wins over what a sheet declares,
-// which wins over an attribute of its own: CSS 2.1 6.4.4 gives a presentation
-// attribute no specificity at all.
+// prop reads a property: style attribute, then stylesheet, then attribute.
 func (r *runner) prop(n *node, name string) string {
 	if v, ok := styleProp(n.attr["style"], name); ok {
 		return v
@@ -577,7 +527,6 @@ func (r *runner) prop(n *node, name string) string {
 }
 
 // cssProp reads a property only a style attribute or a stylesheet may set.
-// SVG 2 gives mix-blend-mode and isolation no presentation attribute.
 func (r *runner) cssProp(n *node, name string) string {
 	if v, ok := styleProp(n.attr["style"], name); ok {
 		return v
@@ -608,8 +557,7 @@ func styleProp(style, name string) (string, bool) {
 	return "", false
 }
 
-// style is the state an element draws with: what it inherited, with whatever
-// it says for itself on top.
+// style applies an element's own properties over the inherited state.
 func (r *runner) style(n *node, st state) state {
 	if strings.TrimSpace(r.prop(n, "display")) == "none" {
 		st.hidden = true
@@ -621,8 +569,6 @@ func (r *runner) style(n *node, st state) state {
 	case "visible":
 		st.invisible = false
 	}
-	// color is read first: currentColor in any other property means this one,
-	// and an inherited one follows the color of wherever it is used.
 	if c, ok := parseColor(r.prop(n, "color"), st.color); ok {
 		st.color = c
 	}
@@ -672,8 +618,6 @@ func (r *runner) style(n *node, st state) state {
 		st.join = raster.JoinBevel
 	}
 	st.dash, st.phase = r.dashes(n, st)
-	// The shorthand is read before the properties it stands for, so that one
-	// written as well as it wins.
 	if size, family, ok := fontShorthand(r.prop(n, "font")); ok {
 		if v, ok := namedSize(size); ok {
 			st.em = v
@@ -737,10 +681,6 @@ func (r *runner) style(n *node, st state) state {
 	if v := strings.TrimSpace(r.prop(n, "alignment-baseline")); v != "" {
 		st.baseline = v
 	}
-	// baseline-shift moves the characters the element holds itself. One
-	// tspan inside another shifts from the baseline the outer one moved to;
-	// a text element starts a baseline rather than shifting from one, so
-	// what it says reaches its own characters and no tspan of its.
 	shift := baselineShift(strings.TrimSpace(r.prop(n, "baseline-shift")), st.em)
 	switch n.name {
 	case "tspan", "textPath", "tref", "altGlyph":
@@ -773,11 +713,7 @@ func (r *runner) style(n *node, st state) state {
 	return st
 }
 
-// paintOf reads a fill or a stroke. A value that names a server keeps what it
-// said to fall back to, and falls back to nothing when it said nothing:
-// SVG 1.1 11.3 draws neither when the reference resolves to no server. A
-// value written but not understood is ignored, so the paint stays what was
-// inherited, which is what CSS does with any property it cannot read.
+// paintOf reads a fill or a stroke, SVG 1.1 11.3.
 func (st state) paintOf(v string, was paint, wasServer string, wasCtx bool) (paint, string, bool) {
 	switch strings.TrimSpace(v) {
 	case "":
@@ -789,8 +725,6 @@ func (st state) paintOf(v string, was paint, wasServer string, wasCtx bool) (pai
 	}
 	p, ok := parsePaint(v, st.color)
 	if id := serverID(v); id != "" {
-		// A reference with a fallback that is not a paint is not a paint
-		// either, however good the reference is.
 		if !ok && fallbackOf(v) != "" {
 			return was, wasServer, wasCtx
 		}
@@ -805,10 +739,6 @@ func (st state) paintOf(v string, was paint, wasServer string, wasCtx bool) (pai
 	return p, "", false
 }
 
-// baselineShift is how far down the page baseline-shift moves a character.
-// A raised baseline is a smaller y, so a positive shift comes back negative.
-// The two words are answered from the em rather than the font: the face a
-// character lands in is not known this early.
 func baselineShift(v string, em float32) float32 {
 	switch v {
 	case "", "baseline":
@@ -824,17 +754,13 @@ func baselineShift(v string, em float32) float32 {
 	return 0
 }
 
-// subShift and superShift are what a program that says nothing puts a
-// subscript and a superscript at.
+// subShift and superShift are the default sub and super shifts, in ems.
 const (
 	subShift   = 0.2
 	superShift = 0.4
 )
 
-// fontShorthand splits the font property into the size and the family, which
-// are the two of the six it carries that a drawing is laid out by. The size
-// is the last word before the family and may be written with a line height
-// after a slash, CSS Fonts 3 3.7.
+// fontShorthand splits the font property into the size and the family, CSS Fonts 3 3.7.
 func fontShorthand(v string) (size, family string, ok bool) {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -856,8 +782,7 @@ func fontShorthand(v string) (size, family string, ok bool) {
 	return "", "", false
 }
 
-// namedSize is one of the seven absolute sizes CSS Fonts 3 names, on the
-// scale a medium of sixteen pixels sets.
+// namedSize is one of the seven absolute sizes of CSS Fonts 3, medium 16px.
 func namedSize(v string) (float32, bool) {
 	switch strings.TrimSpace(v) {
 	case "xx-small":
@@ -932,8 +857,6 @@ func isGroup(name string) bool {
 	return false
 }
 
-// dashes reads stroke-dasharray and stroke-dashoffset. A pattern that is
-// negative anywhere, or that adds up to nothing, is not a pattern.
 func (r *runner) dashes(n *node, st state) ([]float32, float32) {
 	s := strings.TrimSpace(r.prop(n, "stroke-dasharray"))
 	if s == "" {
@@ -972,14 +895,12 @@ func (r *runner) length(n *node, name string, ref float32, st state) (float32, b
 	return length(r.prop(n, name), ref, st.em)
 }
 
-// diagonal is what a percentage length with no axis of its own is measured
-// against, SVG 1.1 7.10.
+// diagonal is the reference for a percentage length with no axis, SVG 1.1 7.10.
 func diagonal(w, h float32) float32 {
 	return float32(sqrt64(float64(w)*float64(w)+float64(h)*float64(h)) / sqrt2)
 }
 
-// fragment is the part of a reference after the hash, which is the only form
-// of reference this follows.
+// fragment is the part of a reference after the hash.
 func fragment(s string) string {
 	if i := strings.LastIndexByte(s, '#'); i >= 0 {
 		return s[i+1:]

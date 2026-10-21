@@ -51,8 +51,7 @@ func (b *buffer) applySub(l *otLookup, mask uint32, depth int) {
 	}
 }
 
-// subAt tries one subtable at one place and returns how far the buffer moves
-// on, or zero when nothing matched.
+// subAt applies one subtable at one place and returns the advance, zero on no match.
 func (b *buffer) subAt(t *otLayout, l *otLookup, off, at, depth int) int {
 	d := t.data
 	if off+2 > len(d) {
@@ -64,7 +63,6 @@ func (b *buffer) subAt(t *otLayout, l *otLookup, off, at, depth int) int {
 	case gsubMultiple:
 		return b.multipleSub(d, off, at)
 	case gsubAlternate:
-		// With nothing asked for, the first alternate is the one.
 		return b.alternateSub(d, off, at)
 	case gsubLigature:
 		return b.ligatureSub(d, l, off, at)
@@ -129,14 +127,13 @@ func (b *buffer) multipleSub(d []byte, off, at int) int {
 	if seq+2+2*n > len(d) {
 		return 0
 	}
-	// A sequence of nothing deletes the glyph, which is how a font drops one
-	// it has drawn as part of another.
 	if n == 0 {
 		b.items = append(b.items[:at], b.items[at+1:]...)
 		return 0
 	}
-	// The first glyph replaces the one matched and the rest are inserted
-	// after it, all of them in the same cluster.
+	if len(b.items)+n-1 > b.maxLen {
+		return 0
+	}
 	it := b.items[at]
 	grow := make([]item, n)
 	for k := range n {
@@ -186,7 +183,6 @@ func (b *buffer) ligatureSub(d []byte, l *otLookup, off, at int) int {
 		if comps == 0 || lig+4+2*(comps-1) > len(d) {
 			continue
 		}
-		// The components after the first match through whatever the lookup skips.
 		idx := []int{at}
 		p := at
 		ok := true
@@ -207,8 +203,7 @@ func (b *buffer) ligatureSub(d []byte, l *otLookup, off, at int) int {
 	return 0
 }
 
-// ligate replaces the glyphs of a ligature with the one glyph, keeping the
-// marks that sat between them and telling each which component it belongs to.
+// ligate replaces the glyphs of a ligature with one glyph, keeping the marks between them.
 func (b *buffer) ligate(gid int, idx []int) {
 	b.ligID++
 	id := b.ligID
@@ -230,7 +225,6 @@ func (b *buffer) ligate(gid int, idx []int) {
 			comp++
 			continue
 		}
-		// A mark between two components belongs to the one before it.
 		it := b.items[k]
 		it.ligID = id
 		it.ligComp = comp
@@ -239,8 +233,6 @@ func (b *buffer) ligate(gid int, idx []int) {
 	b.items = append(out, b.items[last+1:]...)
 }
 
-// contextSub matches a run of glyphs and runs other lookups inside it, which
-// is what the context and the chaining context lookups do.
 func (b *buffer) contextSub(d []byte, l *otLookup, off, at, depth int, chain bool) int {
 	var recs []subRecord
 	var n int
@@ -253,7 +245,6 @@ func (b *buffer) contextSub(d []byte, l *otLookup, off, at, depth int, chain boo
 	if !ok {
 		return 0
 	}
-	// The records name a place in the matched run and a lookup to run there.
 	idx := []int{at}
 	p := at
 	for len(idx) < n {
@@ -282,15 +273,13 @@ func (b *buffer) contextSub(d []byte, l *otLookup, off, at, depth int, chain boo
 			}
 		}
 	}
-	// A nested lookup may have made the run shorter or longer.
 	if grew := len(b.items) - before; grew != 0 {
 		n += grew
 	}
 	return max(n, 1)
 }
 
-// subRecord is one entry of a context's list: which glyph of the match to run
-// a lookup at, and which lookup.
+// subRecord is one entry of a context's list: a glyph of the match and a lookup.
 type subRecord struct{ at, lookup uint16 }
 
 func readRecords(d []byte, off, n int) []subRecord {

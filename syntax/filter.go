@@ -10,10 +10,7 @@ import (
 	"sync"
 )
 
-// byteFilters are the filters that produce bytes. Anything else produces
-// pixels and is left alone: the image decoder needs the encoded data, its
-// dictionary and its color space together, and a caller may have registered a
-// decoder for a filter this package has never heard of.
+// byteFilters are the filters whose output is bytes, not pixels.
 var byteFilters = map[Name]bool{
 	"FlateDecode": true, "Fl": true,
 	"LZWDecode": true, "LZW": true,
@@ -70,18 +67,18 @@ func (s *Stream) decode() ([]byte, Name, Dict, error) {
 	return s.dec, s.imgFilter, s.imgParms, nil
 }
 
-// DecodeImageData applies the byte filters dict names to data and returns what
-// is left: the bytes, the image filter that produces pixels rather than bytes,
-// and its parameters. It is how an inline image, whose data lies in the
-// content stream rather than in a stream object, reaches the same decoders.
+// DecodeImageData applies the byte filters dict names to data and returns the
+// bytes, the remaining image filter and its parameters.
 func (f *File) DecodeImageData(dict Dict, data []byte) ([]byte, Name, Dict, error) {
 	return f.decodeImageData(dict, data, Ref{})
 }
 
-// decodeImageData is DecodeImageData for a stream that knows which object it
-// is, so that a filter reaching for another stream cannot reach for this one.
+// decodeImageData is DecodeImageData for a stream that knows its own object.
 func (f *File) decodeImageData(dict Dict, data []byte, self Ref) ([]byte, Name, Dict, error) {
 	filters := f.names(dict, "Filter", "F")
+	if len(filters) > maxFilters {
+		return nil, "", nil, fmt.Errorf("%w: %d filters", ErrInvalid, len(filters))
+	}
 	parms := f.parmsList(dict, len(filters))
 
 	for i, name := range filters {
@@ -114,8 +111,7 @@ func (f *File) names(dict Dict, keys ...Name) []Name {
 	return f.GetNames(f.Lookup(dict, keys...))
 }
 
-// parmsList lines /DecodeParms up with /Filter, whichever of the several legal
-// shapes it was written in.
+// parmsList lines /DecodeParms up with /Filter.
 func (f *File) parmsList(dict Dict, n int) []Dict {
 	out := make([]Dict, n)
 	if f == nil {
@@ -157,7 +153,7 @@ func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte,
 	case "ASCIIHexDecode", "AHx":
 		return asciiHexDecode(data), nil
 	case "RunLengthDecode", "RL":
-		return runLengthDecode(data), nil
+		return runLengthDecode(data, maxDecoded), nil
 	case "JBIG2Decode":
 		return jbig2Decode(f, data, parms, self)
 	case "CCITTFaxDecode", "CCF":
@@ -170,8 +166,7 @@ func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte,
 	return nil, fmt.Errorf("%w: filter /%s", ErrUnsupported, name)
 }
 
-// flateDecode inflates a stream, tolerating a corrupt header and trailing
-// garbage, and keeping a partial result.
+// flateDecode inflates a stream, tolerating a corrupt header and trailing garbage.
 func flateDecode(data []byte) ([]byte, error) {
 	for i := 0; i < len(data) && i < 32 && isSpace[data[i]]; i++ {
 		data = data[1:]
@@ -196,8 +191,7 @@ func flateDecode(data []byte) ([]byte, error) {
 	return nil, err
 }
 
-// inflaters keeps the decompressors, which carry a 32 KB window each and are
-// the largest thing a stream allocates.
+// inflaters pools the flate decompressors.
 var inflaters [2]sync.Pool
 
 func inflate(data []byte, header bool) ([]byte, error) {
@@ -246,8 +240,13 @@ func inflate(data []byte, header bool) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// maxDecoded bounds what one stream may inflate to. It fits in an int on 32
-// bit targets, and a gigabyte is far past any legitimate stream.
+// maxCCITTBytes bounds a CCITT image, 2^28 pixels of one bit.
+const maxCCITTBytes = 1 << 25
+
+// maxFilters bounds the filters one stream may name.
+const maxFilters = 16
+
+// maxDecoded bounds what one stream may inflate to.
 const maxDecoded = 1 << 30
 
 // applyPredictor undoes the TIFF or PNG predictor a filter's parameters name.
@@ -273,13 +272,16 @@ func applyPredictor(f *File, data []byte, parms Dict) []byte {
 		return data
 	}
 
-	bpp := (colors*bpc + 7) / 8 // bytes per pixel, rounded up
+	bpp := (colors*bpc + 7) / 8
 	rowLen := (colors*bpc*columns + 7) / 8
 	if pred == 2 {
 		return tiffPredictor(data, colors, bpc, columns, rowLen)
 	}
 
 	rows := len(data) / (rowLen + 1)
+	if rows == 0 {
+		return data[:0]
+	}
 	out := make([]byte, 0, rows*rowLen)
 	prev := make([]byte, rowLen)
 	for r := 0; r < rows; r++ {
@@ -447,9 +449,9 @@ func asciiHexDecode(data []byte) []byte {
 	return out
 }
 
-func runLengthDecode(data []byte) []byte {
-	out := make([]byte, 0, len(data)*2)
-	for i := 0; i < len(data); {
+func runLengthDecode(data []byte, limit int) []byte {
+	out := make([]byte, 0, min(len(data)*2, limit))
+	for i := 0; i < len(data) && len(out) < limit; {
 		n := int(data[i])
 		i++
 		switch {
@@ -460,13 +462,13 @@ func runLengthDecode(data []byte) []byte {
 			if end > len(data) {
 				end = len(data)
 			}
-			out = append(out, data[i:end]...)
+			out = append(out, data[i:min(end, i+limit-len(out))]...)
 			i = end
 		default:
 			if i >= len(data) {
 				return out
 			}
-			for j := 0; j < 257-n; j++ {
+			for j := 0; j < 257-n && len(out) < limit; j++ {
 				out = append(out, data[i])
 			}
 			i++

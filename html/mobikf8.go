@@ -43,18 +43,19 @@ func kf8Sections(recs [][]byte, at int) [][2]int {
 		return nil
 	}
 	out := make([][2]int, 0, n)
+	prev := 0
 	for i := 0; i < n; i++ {
 		start := int(binary.BigEndian.Uint32(rec[off+8*i:]))
 		end := int(binary.BigEndian.Uint32(rec[off+8*i+4:]))
-		if start > end || end > maxBookBytes {
+		if start < prev || start > end || end > maxBookBytes {
 			break
 		}
+		prev = end
 		out = append(out, [2]int{start, end})
 	}
 	return out
 }
 
-// kf8Flows cuts the text into its sections.
 func kf8Flows(secs [][2]int, text []byte) [][]byte {
 	var flows [][]byte
 	for _, s := range secs {
@@ -95,7 +96,7 @@ func kf8Files(recs [][]byte, m mobi, flow []byte) *kf8Book {
 		if total += int(length); total > len(flow) {
 			break
 		}
-		file := slices.Clone(flow[start:at])
+		head, tail := []byte(nil), flow[start:at]
 		for c := 0; c < int(count) && j < len(frags); c++ {
 			f := &frags[j]
 			j++
@@ -105,12 +106,19 @@ func kf8Files(recs [][]byte, m mobi, flow []byte) *kf8Book {
 				continue
 			}
 			total += int(n)
-			p := min(max(ins-int(start), 0), len(file))
-			file = slices.Insert(file, p, flow[at:at+int(n)]...)
+			p := min(max(ins-int(start), 0), len(head)+len(tail))
+			frag := flow[at : at+int(n)]
+			if p >= len(head) {
+				k := p - len(head)
+				head = append(append(head, tail[:k]...), frag...)
+				tail = tail[k:]
+			} else {
+				head = slices.Insert(head, p, frag...)
+			}
 			at += int(n)
 			k.frags[j-1] = kf8Frag{at: ins, file: len(k.files)}
 		}
-		k.files = append(k.files, file)
+		k.files = append(k.files, append(head, tail...))
 		k.starts = append(k.starts, int(start))
 	}
 	if len(k.files) == 0 {
@@ -154,7 +162,6 @@ type kf8Ref struct {
 	n, off     int
 }
 
-// kf8Refs finds the kindle: references in b.
 func kf8Refs(b []byte) []kf8Ref {
 	var out []kf8Ref
 	for i := 0; ; {

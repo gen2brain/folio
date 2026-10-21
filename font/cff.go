@@ -22,8 +22,7 @@ type cffFont struct {
 	defaultWidth float32
 	nominalWidth float32
 
-	// A CID keyed font has one private dictionary per font dict, and may
-	// have one font matrix per font dict as well.
+	// A CID keyed font has a private dictionary and a matrix per font dict.
 	isCID    bool
 	fdSelect []uint8
 	fdPriv   []privateDict
@@ -39,7 +38,6 @@ type privateDict struct {
 	nominalWidth float32
 }
 
-// parseCFF reads a CFF program.
 func parseCFF(data []byte) (*Font, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("%w: CFF is %d bytes", ErrInvalid, len(data))
@@ -119,8 +117,7 @@ func parseCFF(data []byte) (*Font, error) {
 	return f, nil
 }
 
-// useFDMatrix moves the font dict matrices into the font's own, which is what
-// FreeType does and therefore what a PDF font dictionary is written against.
+// useFDMatrix moves the font dict matrices into the font's own.
 func (c *cffFont) useFDMatrix() {
 	if len(c.fdMatrix) == 0 {
 		return
@@ -141,9 +138,7 @@ func (c *cffFont) useFDMatrix() {
 	}
 }
 
-// matrixFor returns the transform from the outline of a glyph to the space
-// the font's own matrix expects, which is the identity unless the font dicts
-// disagree about their matrices.
+// matrixFor returns the transform from a glyph outline to the font matrix space.
 func (c *cffFont) matrixFor(gid int) (raster.Matrix, bool) {
 	if len(c.fdMatrix) == 0 || gid < 0 || gid >= len(c.fdSelect) {
 		return raster.Identity, false
@@ -204,7 +199,7 @@ func readIndex(b []byte, at int) ([][]byte, int, error) {
 	return out, last, nil
 }
 
-// key12 is how a two byte operator is keyed in a parsed dictionary.
+// key12 keys a two byte operator in a parsed dictionary.
 func key12(op int) int { return 1200 + op }
 
 // parseDict reads a CFF DICT into operator to operand lists.
@@ -333,7 +328,7 @@ func (c *cffFont) readCharset(off int) {
 			c.charset[i] = uint16(i)
 		}
 		return
-	case 1, 2: // Expert sets, which no real font uses
+	case 1, 2: // Expert sets
 		for i := range c.charset {
 			c.charset[i] = uint16(i)
 		}
@@ -434,11 +429,17 @@ func (c *cffFont) readCIDPrivates(top map[int][]float64, topMatrix bool) {
 	if fdaOff > 0 && fdaOff < len(c.data) {
 		fds, _, err := readIndex(c.data, fdaOff)
 		if err == nil {
+			privs := map[[2]int]privateDict{}
 			for _, fd := range fds {
 				d := parseDict(fd)
 				var pd privateDict
 				if p := d[18]; len(p) == 2 {
-					pd = c.readPrivate(int(p[1]), int(p[0]))
+					at := [2]int{int(p[1]), int(p[0])}
+					var ok bool
+					if pd, ok = privs[at]; !ok {
+						pd = c.readPrivate(at[0], at[1])
+						privs[at] = pd
+					}
 				}
 				c.fdPriv = append(c.fdPriv, pd)
 
@@ -487,7 +488,6 @@ func (c *cffFont) readCIDPrivates(top map[int][]float64, topMatrix bool) {
 	}
 }
 
-// sidName resolves a string identifier.
 func (c *cffFont) sidName(sid int) string {
 	if sid < len(cffStandardStrings) {
 		return cffStandardStrings[sid]
@@ -505,8 +505,6 @@ func (c *cffFont) glyphName(gid int) string {
 	return c.sidName(int(c.charset[gid]))
 }
 
-// gidForCID finds the glyph a CID names, which in a CID keyed font is the
-// charset read backwards.
 func (c *cffFont) gidForCID(cid int) int {
 	for gid, v := range c.charset {
 		if int(v) == cid {

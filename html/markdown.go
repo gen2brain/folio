@@ -10,9 +10,7 @@ import (
 // mdMaxDepth bounds how deep a tree the writer walks.
 const mdMaxDepth = 256
 
-// Markdown returns the document as Markdown: its headings, lists, tables,
-// links, pictures and emphasis. A construct Markdown has no syntax for is
-// written as the HTML it already is.
+// Markdown returns the document as Markdown, with inline HTML for what Markdown cannot express.
 func (d *Document) Markdown() (string, error) {
 	var b strings.Builder
 	var first error
@@ -240,6 +238,9 @@ func mdLoose(n *Node) bool {
 	return false
 }
 
+// mdMaxCells bounds the cells a pipe table pads out to.
+const mdMaxCells = 1 << 20
+
 // table writes a pipe table, and the HTML itself for one Markdown cannot hold.
 func (w *md) table(n *Node, depth int) {
 	rows := mdRows(n, depth)
@@ -252,6 +253,10 @@ func (w *md) table(n *Node, depth int) {
 		cols = max(cols, len(r))
 	}
 	if cols == 0 {
+		return
+	}
+	if int64(len(rows))*int64(cols) > mdMaxCells {
+		w.block(strings.TrimSpace(renderNode(n)))
 		return
 	}
 	var b strings.Builder
@@ -332,7 +337,7 @@ func spans(n *Node) bool {
 	return false
 }
 
-// mdCell is what one cell says on the single line a pipe table gives it.
+// mdCell is the text of one cell on a single line.
 func mdCell(n *Node, depth int) (string, bool) {
 	var parts []string
 	w := &md{}
@@ -437,10 +442,16 @@ func (w *md) code(b *strings.Builder, n *Node, depth int) {
 	if strings.TrimSpace(s) == "" {
 		return
 	}
-	fence := "`"
-	for strings.Contains(s, fence) {
-		fence += "`"
+	run, longest := 0, 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
 	}
+	fence := strings.Repeat("`", longest+1)
 	pad := ""
 	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
 		pad = " "
@@ -448,8 +459,7 @@ func (w *md) code(b *strings.Builder, n *Node, depth int) {
 	b.WriteString(fence + pad + s + pad + fence)
 }
 
-// mdEscape puts a backslash in front of what Markdown would otherwise read
-// as syntax. An underscore inside a word is left alone.
+// mdEscape backslash-escapes Markdown syntax characters.
 func mdEscape(s string) string {
 	if !strings.ContainsAny(s, "\\`*_[]<") {
 		return s
@@ -474,8 +484,7 @@ func wordRune(r rune) bool {
 	return r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r > 0x7f
 }
 
-// mdLead escapes a character at the head of a paragraph that would otherwise
-// begin a heading, a list, a quotation or a rule.
+// mdLead escapes a paragraph start that would read as a block marker.
 func mdLead(s string) string {
 	if s == "" {
 		return s
@@ -518,8 +527,7 @@ func trimBlank(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-// mdSpace collapses the white space of a run, keeping the two spaces before
-// a newline and whatever a code span holds.
+// mdSpace collapses the white space of a run outside code spans.
 func mdSpace(s string) string {
 	var b strings.Builder
 	space, brk := false, false
@@ -557,7 +565,7 @@ func mdSpace(s string) string {
 	return b.String()
 }
 
-// mdCodeEnd is where the code span beginning at i ends.
+// mdCodeEnd returns the end of the code span beginning at i.
 func mdCodeEnd(s string, i int) int {
 	n := 0
 	for i+n < len(s) && s[i+n] == '`' {

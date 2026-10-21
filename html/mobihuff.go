@@ -12,8 +12,7 @@ const (
 	maxDepth    = 20
 )
 
-// huffcdic is the dictionary a HUFF/CDIC book is coded with: the code tables
-// of the HUFF record and the phrases of the CDIC records after it.
+// huffcdic is the HUFF code tables and the CDIC phrases of a HUFF/CDIC book.
 type huffcdic struct {
 	table1  [256]uint32
 	minCode [codeTable]uint32
@@ -46,8 +45,7 @@ func readHuffcdic(recs [][]byte, huff, n int) *huffcdic {
 	return h
 }
 
-// readHUFF reads the 256 entries that answer the top byte of a code and the
-// 32 pairs bounding the codes of each length.
+// readHUFF reads the 256 top-byte entries and the 32 per-length code bounds.
 func (h *huffcdic) readHUFF(rec []byte) bool {
 	if len(rec) < huffMinSize || string(rec[:4]) != "HUFF" {
 		return false
@@ -73,8 +71,7 @@ func (h *huffcdic) readHUFF(rec []byte) bool {
 	return true
 }
 
-// readCDIC reads one record of phrases: where each sits, then the phrases.
-// Every record declares the same total and the same index width.
+// readCDIC reads one record of phrase offsets and phrases.
 func (h *huffcdic) readCDIC(rec []byte) bool {
 	if len(rec) < cdicHeader || string(rec[:4]) != "CDIC" {
 		return false
@@ -117,9 +114,8 @@ func (h *huffcdic) readCDIC(rec []byte) bool {
 	return true
 }
 
-// unpack decompresses one record onto out. A code names a phrase, and a
-// phrase not marked as text is more codes.
-func (h *huffcdic) unpack(out, in []byte, depth int) []byte {
+// unpack decompresses one record onto out.
+func (h *huffcdic) unpack(out, in []byte, depth, limit int, steps *int) []byte {
 	if depth > maxDepth {
 		return out
 	}
@@ -128,6 +124,9 @@ func (h *huffcdic) unpack(out, in []byte, depth int) []byte {
 	buf := fill64(in, pos)
 	pos += 4
 	for {
+		if *steps--; *steps < 0 || len(out) >= limit {
+			return out
+		}
 		if count <= 0 {
 			count += 32
 			buf = fill64(in, pos)
@@ -146,7 +145,6 @@ func (h *huffcdic) unpack(out, in []byte, depth int) []byte {
 			}
 			max = h.maxCode[n]
 		}
-		// A code of no length would consume no bits and never end.
 		if n == 0 || n > 32 {
 			return out
 		}
@@ -176,15 +174,14 @@ func (h *huffcdic) unpack(out, in []byte, depth int) []byte {
 		}
 		phrase := sym[at+2 : at+2+int(size)]
 		if text {
-			out = append(out, phrase...)
+			out = append(out, phrase[:min(len(phrase), limit-len(out))]...)
 			continue
 		}
-		out = h.unpack(out, phrase, depth+1)
+		out = h.unpack(out, phrase, depth+1, limit, steps)
 	}
 }
 
-// fill64 reads eight bytes big-endian, padding past the end with zeroes. The
-// reader steps four at a time, so each read overlaps the one before.
+// fill64 reads eight bytes big-endian, zero-padded past the end.
 func fill64(b []byte, at int) uint64 {
 	var v uint64
 	for i := 0; i < 8; i++ {

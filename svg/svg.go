@@ -23,25 +23,23 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// Errors returned by this package. A file that is not SVG at all, or whose
-// XML does not parse, is ErrInvalid; one this cannot draw is ErrUnsupported.
+// Errors returned by this package.
 var (
 	ErrInvalid     = errors.New("svg: invalid")
 	ErrUnsupported = errors.New("svg: unsupported")
 )
 
-// Device is the seam a page draws through, which is gfx.Device.
+// Device is the seam a page draws through.
 type Device = gfx.Device
 
-// node is one element of the tree, with its attributes and its children. A
-// run of character data is a child with no name, which is what keeps the text
-// either side of a tspan in order.
+// node is one element of the tree; character data is a child with no name.
 type node struct {
 	name  string
 	attr  map[string]string
 	kids  []*node
 	up    *node
 	chars string
+	buf   []byte
 }
 
 // svgNS is the namespace an element has to be in to be part of the drawing.
@@ -54,38 +52,27 @@ func isXlink(space string) bool {
 // Document is one SVG file.
 type Document struct {
 	root *node
-	// byID is every element that carries one, for use and the paint servers.
 	byID map[string]*node
-	// width and height are the size the file asks to be drawn at, in CSS
-	// pixels, and box the coordinates it draws in.
+	// width and height are the drawn size in CSS pixels.
 	width, height float32
 	box           []float32
 	align         string
 	slice         bool
-	// rules are what the style elements declare, in the order a match takes
-	// them: least specific first, and faces what the @font-face blocks
-	// among them bring with them.
-	rules []rule
-	faces []faceRule
-	// fonts are the programs those faces have been read into, which every
-	// element that names one asks for again.
+	// rules are the style element rules, least specific first.
+	rules  []rule
+	faces  []faceRule
 	fontMu sync.Mutex
 	fonts  map[string]*font.Font
-	// pw and ph are the box a container places the drawing in, which a
-	// percentage size on the root element measures against. They are the
-	// default page when the caller does not say.
+	// pw and ph are the box a container places the drawing in.
 	pw, ph float32
-	// open resolves an address the drawing names. It is nil for one read out
-	// of memory with no loader, and nothing is then looked up at all.
+	// open resolves an address the drawing names, or is nil.
 	open func(name string) ([]byte, error)
 }
 
-// maxNesting bounds how deep a use may reach, which a file that refers to
-// itself would otherwise follow forever.
+// maxNesting bounds how deep a use may reach.
 const maxNesting = 32
 
-// The size a drawing is when it does not say, and the font size a relative
-// length starts out measured against.
+// The default drawing size and font size.
 const (
 	defWidth    = 612
 	defHeight   = 792
@@ -104,7 +91,6 @@ func (d *Document) Metadata() Metadata {
 	return Metadata{Title: d.rootText("title"), Description: d.rootText("desc")}
 }
 
-// title is what the drawing calls itself.
 func (d *Document) title() string { return d.rootText("title") }
 
 // rootText is the text of the named child of the root element.
@@ -138,20 +124,15 @@ func Open(name string) (*Document, error) {
 	return LoadWith(b, &LoadOptions{Open: dirLoader(filepath.Dir(name))})
 }
 
-// LoadOptions are what a caller says about a drawing before it is read. A nil
-// pointer, and a zero field, is the default.
+// LoadOptions configure how a drawing is read; nil is the default.
 type LoadOptions struct {
-	// Open resolves an address the drawing names, relative to the drawing
-	// itself, which is how one inside a container reaches a picture beside
-	// it. A nil Open resolves nothing but a data URL.
+	// Open resolves an address relative to the drawing; nil resolves only data URLs.
 	Open func(name string) ([]byte, error)
-	// Width and Height are the box the drawing is placed in, which is what a
-	// percentage size on the root element measures against.
+	// Width and Height are the box the drawing is placed in.
 	Width, Height float32
 }
 
-// dirLoader reads a file beside the drawing. An address that leaves the
-// directory is not followed, and nothing is fetched over a network.
+// dirLoader reads a file beside the drawing, never outside its directory.
 func dirLoader(dir string) func(string) ([]byte, error) {
 	return func(name string) ([]byte, error) {
 		if filepath.IsAbs(name) || strings.Contains(name, "..") {
@@ -172,9 +153,7 @@ func NewReader(r io.ReaderAt, size int64) (*Document, error) {
 	return NewStream(io.NewSectionReader(r, 0, size))
 }
 
-// NewStream reads a drawing from a stream that cannot be seeked, which means
-// reading all of it into memory first. A caller with an untrusted source
-// bounds it with io.LimitReader.
+// NewStream reads a drawing from a stream, all of it into memory.
 func NewStream(r io.Reader) (*Document, error) { return NewStreamWith(r, nil) }
 
 // NewStreamWith is NewStream with the options LoadWith takes.
@@ -186,8 +165,7 @@ func NewStreamWith(r io.Reader, o *LoadOptions) (*Document, error) {
 	return LoadWith(b, o)
 }
 
-// LoadWith reads an SVG drawing out of memory, resolving what it names
-// through a loader and sizing it against the box a container gives it.
+// LoadWith reads an SVG drawing out of memory with options.
 func LoadWith(b []byte, o *LoadOptions) (*Document, error) {
 	root, sheets, err := parseXML(b)
 	if err != nil {
@@ -235,9 +213,6 @@ func (d *Document) index(n *node, depth int) {
 	}
 }
 
-// readSize works out how big the drawing is. A file that gives neither a
-// width nor a height is the size of its viewBox, and one that gives either is
-// measured against a page.
 func (d *Document) readSize() {
 	if d.pw <= 0 {
 		d.pw = defWidth
@@ -252,14 +227,10 @@ func (d *Document) readSize() {
 	d.align, d.slice = aspect(d.root.attr["preserveAspectRatio"])
 
 	wa, ha := d.root.attr["width"], d.root.attr["height"]
-	// A file that says neither is the size of its box, and one that says
-	// either is measured against a page. There is no right answer here and
-	// no two readers agree: this is MuPDF's, which is the oracle.
 	if wa == "" && ha == "" && d.box != nil {
 		d.width, d.height = d.box[2], d.box[3]
 	} else {
 		d.width, d.height = d.pw, d.ph
-		// A size that is not positive is no size at all.
 		if v, ok := length(wa, d.pw, defFontSize); ok && v > 0 {
 			d.width = v
 		}
@@ -275,8 +246,7 @@ func (d *Document) readSize() {
 	}
 }
 
-// parseXML reads the tree, keeping only elements in no namespace or in the
-// SVG one: a file may carry metadata from any other.
+// parseXML reads the tree, keeping only elements in no namespace or the SVG one.
 func parseXML(b []byte) (*node, []string, error) {
 	b = expandEntities(b)
 	dec := xml.NewDecoder(strings.NewReader(string(b)))
@@ -288,6 +258,12 @@ func parseXML(b []byte) (*node, []string, error) {
 	skip := 0
 	var root *node
 	var sheets []string
+	var texts []*node
+	defer func() {
+		for _, n := range texts {
+			n.chars, n.buf = string(n.buf), nil
+		}
+	}()
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -301,8 +277,6 @@ func parseXML(b []byte) (*node, []string, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			// An element in another vocabulary is not a drawing, and neither
-			// is anything inside it.
 			if skip > 0 {
 				skip++
 				continue
@@ -315,9 +289,6 @@ func parseXML(b []byte) (*node, []string, error) {
 				return nil, nil, fmt.Errorf("%w: elements nested too deeply", ErrInvalid)
 			}
 			n := &node{name: t.Name.Local, attr: make(map[string]string, len(t.Attr))}
-			// An attribute keeps its local name. The only namespace that
-			// matters is xlink, whose href means the same as href and gives
-			// way to one written without a prefix.
 			for _, a := range t.Attr {
 				if a.Name.Local == "href" && a.Name.Space != "" {
 					continue
@@ -352,20 +323,18 @@ func parseXML(b []byte) (*node, []string, error) {
 			if skip > 0 {
 				continue
 			}
-			// Character data is a child of its own so that the text either
-			// side of a tspan keeps its place in the order.
 			if len(stack) == 0 {
 				continue
 			}
 			p := stack[len(stack)-1]
 			if n := len(p.kids); n > 0 && p.kids[n-1].name == "" {
-				p.kids[n-1].chars += string(t)
+				p.kids[n-1].buf = append(p.kids[n-1].buf, t...)
 				continue
 			}
-			p.kids = append(p.kids, &node{chars: string(t)})
+			k := &node{buf: append([]byte(nil), t...)}
+			texts = append(texts, k)
+			p.kids = append(p.kids, k)
 		case xml.ProcInst:
-			// An SVG may hold its CSS in a file beside it, which it names
-			// with an xml-stylesheet instruction rather than an element.
 			if t.Target == "xml-stylesheet" {
 				if href := pseudoAttr(string(t.Inst), "href"); href != "" {
 					sheets = append(sheets, href)
@@ -376,8 +345,7 @@ func parseXML(b []byte) (*node, []string, error) {
 	return root, sheets, nil
 }
 
-// pseudoAttr reads one of the name="value" pairs a processing instruction
-// carries, which are not attributes and are not parsed as any.
+// pseudoAttr reads a name="value" pseudo-attribute of a processing instruction.
 func pseudoAttr(s, name string) string {
 	for {
 		i := strings.Index(s, name)
@@ -403,14 +371,12 @@ func pseudoAttr(s, name string) string {
 // Page is the drawing.
 type Page struct{ doc *Document }
 
-// Bounds is how big the drawing is, in CSS pixels, which is what a viewer
-// draws it at when it is not told otherwise.
+// Bounds returns the size of the drawing in CSS pixels.
 func (p *Page) Bounds() raster.Rect {
 	return raster.Rect{X1: p.doc.width, Y1: p.doc.height}
 }
 
-// Matrix is the transform that puts the drawing on a device at a resolution,
-// where 96 is the pixel an SVG length is written in.
+// Matrix is the transform that puts the drawing on a device at a resolution.
 func (p *Page) Matrix(dpi float64) raster.Matrix {
 	s := float32(dpi / 96)
 	return raster.Scale(s, s)

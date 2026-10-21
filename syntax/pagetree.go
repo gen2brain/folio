@@ -90,8 +90,7 @@ func (f *File) walkPages(ref Object, node Dict, path map[Ref]bool, out *[]Ref, d
 	}
 }
 
-// inherit fills in attributes a leaf did not get from the walk, which happens
-// when the page was reached by repair rather than through the tree.
+// inherit fills in the inheritable attributes a leaf did not get from the walk.
 func (f *File) inherit(page Dict, ref Ref) {
 	for _, k := range inheritable {
 		if _, ok := page[k]; ok {
@@ -160,46 +159,56 @@ func (f *File) PageIndex(r Ref) int {
 // NameTreeLookup finds a key in a name tree, ISO 32000-1 7.9.6, and returns
 // nil for one that is not there.
 func (f *File) NameTreeLookup(root Object, key string) Object {
-	for depth := 0; depth < maxNameDepth; depth++ {
-		node := f.GetDict(root)
-		if node == nil {
-			return nil
+	return f.nameTreeLookup(root, key, 0, map[Ref]bool{})
+}
+
+func (f *File) nameTreeLookup(root Object, key string, depth int, seen map[Ref]bool) Object {
+	if depth > maxNameDepth || !visit(root, seen) {
+		return nil
+	}
+	node := f.GetDict(root)
+	if node == nil {
+		return nil
+	}
+	if names := f.GetArray(node["Names"]); names != nil {
+		return searchNames(f, names, key)
+	}
+	for _, kid := range f.GetArray(node["Kids"]) {
+		k := f.GetDict(kid)
+		if k == nil {
+			continue
 		}
-		if names := f.GetArray(node["Names"]); names != nil {
-			return searchNames(f, names, key)
-		}
-		kids := f.GetArray(node["Kids"])
-		next := Object(nil)
-		for _, kid := range kids {
-			k := f.GetDict(kid)
-			if k == nil {
-				continue
+		lim := f.GetArray(k["Limits"])
+		if len(lim) != 2 {
+			if v := f.nameTreeLookup(kid, key, depth+1, seen); v != nil {
+				return v
 			}
-			lim := f.GetArray(k["Limits"])
-			if len(lim) != 2 {
-				if v := f.NameTreeLookup(kid, key); v != nil {
-					return v
-				}
-				continue
-			}
-			if key >= string(f.GetBytes(lim[0])) && key <= string(f.GetBytes(lim[1])) {
-				next = kid
-				break
-			}
+			continue
 		}
-		if next == nil {
-			return nil
+		if key >= string(f.GetBytes(lim[0])) && key <= string(f.GetBytes(lim[1])) {
+			return f.nameTreeLookup(kid, key, depth+1, seen)
 		}
-		root = next
 	}
 	return nil
+}
+
+// visit reports whether a tree node is new to seen, and records it.
+func visit(node Object, seen map[Ref]bool) bool {
+	r, ok := node.(Ref)
+	if !ok {
+		return true
+	}
+	if seen[r] {
+		return false
+	}
+	seen[r] = true
+	return true
 }
 
 // maxNameDepth bounds a name tree that points at itself.
 const maxNameDepth = 32
 
-// searchNames finds a key in a leaf's alternating array, which the
-// specification requires sorted and files often are not.
+// searchNames finds a key in a leaf's alternating array, sorted or not.
 func searchNames(f *File, names Array, key string) Object {
 	lo, hi := 0, len(names)/2
 	for lo < hi {
@@ -224,12 +233,15 @@ func searchNames(f *File, names Array, key string) Object {
 // NumberTreeEach calls fn for every entry of a number tree in order, ISO
 // 32000-1 7.9.7, and stops when fn returns false.
 func (f *File) NumberTreeEach(root Object, fn func(int64, Object) bool) {
-	f.numberTree(root, fn, 0)
+	f.numberTree(root, fn, 0, map[Ref]bool{})
 }
 
-func (f *File) numberTree(root Object, fn func(int64, Object) bool, depth int) bool {
+func (f *File) numberTree(root Object, fn func(int64, Object) bool, depth int, seen map[Ref]bool) bool {
 	if depth > maxNameDepth {
 		return false
+	}
+	if !visit(root, seen) {
+		return true
 	}
 	node := f.GetDict(root)
 	if node == nil {
@@ -244,7 +256,7 @@ func (f *File) numberTree(root Object, fn func(int64, Object) bool, depth int) b
 		return true
 	}
 	for _, kid := range f.GetArray(node["Kids"]) {
-		if !f.numberTree(kid, fn, depth+1) {
+		if !f.numberTree(kid, fn, depth+1, seen) {
 			return false
 		}
 	}

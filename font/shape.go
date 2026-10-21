@@ -17,7 +17,6 @@ const (
 	joinTransparent
 )
 
-// joinTypeOf is the joining type of a code point.
 func joinTypeOf(r rune) joinType {
 	lo, hi := 0, len(joinTable)-1
 	for lo < hi {
@@ -42,8 +41,7 @@ const (
 
 var formFeature = [...]string{"", "isol", "fina", "medi", "init"}
 
-// modifiedClass permutes the fixed position classes into the order the fonts
-// of those scripts are built for.
+// modifiedClass permutes the fixed position classes into the order the fonts expect.
 var modifiedClass = func() (t [256]uint8) {
 	for i := range t {
 		t[i] = uint8(i)
@@ -74,9 +72,7 @@ func markOf(r rune) (int, bool) {
 	return int(modifiedClass[v&0xff]), v&0x100 != 0
 }
 
-// Glyph is one glyph of a shaped run: the glyph, the character it came from,
-// how far the pen moves after it and how far it is drawn from the pen. The
-// last four are in font units.
+// Glyph is one glyph of a shaped run, with its cluster, and its advance and offset in font units.
 type Glyph struct {
 	GID                int
 	Cluster            int
@@ -92,12 +88,10 @@ type item struct {
 	mask uint32
 	// ligID and ligComp say which ligature a glyph came from and which part.
 	ligID, ligComp int
-	// syl is which syllable of an Indic run the glyph is in, counting from
-	// one, pos where in it, and ligated says the font made it out of several.
-	syl     int
-	pos     uint8
-	ligated bool
-	// The position GPOS works out.
+	// syl is the Indic syllable from one, pos the place in it, ligated a ligature.
+	syl                    int
+	pos                    uint8
+	ligated                bool
 	xoff, yoff, xadv, yadv int
 	// attach chains a mark onto what it sits on, as an offset in the buffer.
 	attach     int
@@ -118,18 +112,21 @@ type buffer struct {
 	out   []item
 	// ligID hands out the marker that ties a ligature to its components.
 	ligID int
-	// rtl is a run that is laid out right to left, which is reversed once
-	// the glyphs are known.
-	rtl bool
+	rtl   bool
+	// maxLen bounds how many glyphs substitution may grow the run to.
+	maxLen int
 }
 
-// Shape turns a run of text into the glyphs that draw it, through the
-// OpenType layout tables the font carries. The run is one script and one
-// direction, and the glyphs come back in the order they are drawn.
+// maxLenFactor and maxLenMin bound the glyphs a run may grow to, as HarfBuzz does.
+const (
+	maxLenFactor = 64
+	maxLenMin    = 16384
+)
+
+// Shape turns a run of one script and one direction into the glyphs that draw it,
+// in drawing order.
 func (f *Font) Shape(text []rune, rtl bool) []Glyph {
-	b := &buffer{f: f, rtl: rtl}
-	// A mark belongs to the character it follows, so the two are one cluster
-	// and stay one however the glyphs are reordered.
+	b := &buffer{f: f, rtl: rtl, maxLen: max(len(text)*maxLenFactor, maxLenMin)}
 	cluster := 0
 	var runes []rune
 	var clusters []int
@@ -161,7 +158,6 @@ func (f *Font) Shape(text []rune, rtl bool) []Glyph {
 		p.substitute(b)
 	}
 	b.positions()
-	// A font with no kerning of its own in GPOS falls back to the old table.
 	if len(f.kern) > 0 && (p == nil || !p.kerns) {
 		b.kern()
 	}
@@ -213,8 +209,7 @@ func (f *Font) gidOf(r rune) int {
 	return 0
 }
 
-// pieces is the characters a font draws for one: the character itself when it
-// has a glyph for it, and what it decomposes to when it has not.
+// pieces returns the characters a font draws for one, decomposed when it has no glyph.
 func (f *Font) pieces(r rune, depth int) []rune {
 	if depth > 4 || f.GIDForRune(r) > 0 {
 		return []rune{r}
@@ -274,8 +269,7 @@ func otScript(text []rune) string {
 	return "latn"
 }
 
-// joining works out the form each cursive letter takes from what it can join
-// to either side, and marks the glyph with the feature that picks it.
+// joining marks each cursive letter with the feature that picks its form.
 func (b *buffer) joining(text []rune) {
 	kinds := make([]joinType, len(text))
 	for i, r := range text {
@@ -298,8 +292,6 @@ func (b *buffer) joining(text []rune) {
 		return joinNone
 	}
 	for i, k := range kinds {
-		// What stands either side decides the form: a letter joins back to
-		// one that reaches forward, and on to one that reaches back.
 		back := false
 		switch prev(i) {
 		case joinDual, joinLeft, joinCausing:
@@ -342,8 +334,7 @@ func (b *buffer) joining(text []rune) {
 	}
 }
 
-// stage is one step of the plan: the lookups of a group of features, in the
-// order the font lists them, and what the shaper does once they have run.
+// stage is one step of the plan: the lookups of a group of features.
 type stage struct {
 	lookups []planned
 	pause   func(*buffer)
@@ -356,16 +347,14 @@ type planned struct {
 	digest digest
 }
 
-// shapePlan is the lookups a font runs for a script, worked out once. kerns
-// says GPOS kerns of its own, so the old table is not read.
+// shapePlan is the lookups a font runs for a script, and whether GPOS kerns.
 type shapePlan struct {
 	gsub  []stage
 	gpos  []stage
 	kerns bool
 }
 
-// The order the features are applied in. Each group is a step of its own: a
-// substitution one group makes is what the next group sees.
+// The order the features are applied in, one stage per group.
 var gsubStages = [][]string{
 	{"ccmp", "locl"},
 	{"isol"}, {"fina"}, {"medi"}, {"init"},
@@ -374,9 +363,7 @@ var gsubStages = [][]string{
 	{"liga", "clig", "mset"},
 }
 
-// The Indic scripts run a list of their own: the features that pick the form
-// of each part of a syllable, the reordering that puts the parts where the
-// font has made them fit, then the ones that join the parts together.
+// The features of the Indic scripts, with the syllable reordering between them.
 var indicStages = func() [][]string {
 	out := [][]string{{"ccmp", "locl"}}
 	for _, f := range indicFormFeatures {
@@ -389,8 +376,7 @@ var indicStages = func() [][]string {
 	return append(out, []string{"calt", "clig", "liga"})
 }()
 
-// indicPause names the step that reorders a syllable once the font has said
-// what each part of it looks like. It is not a feature.
+// indicPause names the stage that reorders a syllable.
 const indicPause = "\x00reorder"
 
 var gposStages = [][]string{
@@ -401,9 +387,7 @@ var gposStages = [][]string{
 	{"mkmk"},
 }
 
-// featureMask is which glyphs a feature may touch: the four cursive forms
-// only the letters that take them, the Indic form features only the parts of
-// a syllable that ask for them, and everything else the whole run.
+// featureMask returns the mask of the glyphs a feature may touch.
 func featureMask(name string) uint32 {
 	for i, f := range formFeature {
 		if f == name {
@@ -451,8 +435,7 @@ func (f *Font) plan(script string, rtl bool) *shapePlan {
 	return p
 }
 
-// buildStages collects the lookups of each group of features, sorted by the
-// order the font lists them, which is the order they apply in.
+// buildStages collects the lookups of each group of features, in the font's order.
 func buildStages(t *otLayout, script string, groups [][]string, gsub bool) []stage {
 	if t == nil {
 		return nil
@@ -493,17 +476,13 @@ func buildStages(t *otLayout, script string, groups [][]string, gsub bool) []sta
 	return out
 }
 
-// advanceUnits is how far the pen moves after a glyph, in font units.
+// advanceUnits returns the advance of a glyph, in font units.
 func (f *Font) advanceUnits(gid int) int { return int(f.Advance(gid)) }
 
-// Shaped reports a font that carries the tables shaping reads. One that does
-// not is drawn from its character map alone.
+// Shaped reports a font that carries the tables shaping reads.
 func (f *Font) Shaped() bool { return f.gsub != nil || f.gpos != nil }
 
-// NeedsShaping reports text a font has to lay out itself: anything with a
-// combining mark in it, and the scripts whose letters join, reorder or carry
-// their vowels above and below. Everything else, Han and Kana among it, is
-// one glyph a character and takes the shorter path.
+// NeedsShaping reports text a font has to lay out itself.
 func NeedsShaping(s string) bool {
 	for _, r := range s {
 		if r < 0x0300 {
@@ -529,8 +508,7 @@ func NeedsShaping(s string) bool {
 	return false
 }
 
-// DebugLayout reports what the layout tables of a font hold, for a
-// comparison against another shaper.
+// DebugLayout reports what the layout tables of a font hold.
 func (f *Font) DebugLayout() string {
 	out := ""
 	for _, t := range []struct {

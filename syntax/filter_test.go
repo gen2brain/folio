@@ -40,8 +40,40 @@ func TestASCII85Decode(t *testing.T) {
 
 func TestRunLengthDecode(t *testing.T) {
 	in := []byte{1, 'a', 'b', 252, 'x', 128, 'i', 'g', 'n'}
-	if got, want := string(runLengthDecode(in)), "abxxxxx"; got != want {
+	if got, want := string(runLengthDecode(in, maxDecoded)), "abxxxxx"; got != want {
 		t.Errorf("runLength = %q, want %q", got, want)
+	}
+	if got := runLengthDecode([]byte{129, 'x', 129, 'y', 3, 'a', 'b', 'c', 'd'}, 200); len(got) != 200 {
+		t.Errorf("runLength under a limit of 200 gave %d bytes", len(got))
+	}
+}
+
+// TestFilterBounds checks the decoders whose output a few bytes can multiply.
+func TestFilterBounds(t *testing.T) {
+	f := &File{}
+	chain := Array{Name("RL"), Name("RL"), Name("RL")}
+	if out, _, _, _ := f.DecodeImageData(Dict{"Filter": chain}, []byte{0x81, 0x81}); len(out) != 1<<19 {
+		t.Errorf("three RunLength stages gave %d bytes, want %d", len(out), 1<<19)
+	}
+	long := Array{}
+	for range maxFilters + 1 {
+		long = append(long, Name("AHx"))
+	}
+	if _, _, _, err := f.DecodeImageData(Dict{"Filter": long}, []byte("41>")); err == nil {
+		t.Error("a chain of 17 filters was decoded")
+	}
+
+	for _, rows := range []int64{1 << 40, 1 << 62} {
+		parms := Dict{"K": Integer(-1), "Columns": Integer(1 << 20), "Rows": Integer(rows)}
+		out, _ := ccittFaxDecode(f, nil, parms)
+		if len(out) > maxCCITTBytes {
+			t.Errorf("CCITT of %d rows padded to %d bytes", rows, len(out))
+		}
+	}
+
+	parms := Dict{"Predictor": Integer(12), "Colors": Integer(32), "BitsPerComponent": Integer(16), "Columns": Integer(1 << 24)}
+	if got := applyPredictor(f, []byte{0, 1, 2}, parms); len(got) != 0 {
+		t.Errorf("a predictor row longer than the data gave %d bytes", len(got))
 	}
 }
 
@@ -107,10 +139,7 @@ func TestTIFFPredictor(t *testing.T) {
 	}
 }
 
-// TestCCITTGroup4 decodes what an independent encoder produced for a known
-// bitmap: 32 by 8, twelve columns of one color and a band of twenty four on
-// one row. Which color a run is depends on the convention the encoder wrote
-// it in, so the test is on the runs, and on BlackIs1 flipping them.
+// TestCCITTGroup4 checks the runs of a known Group 4 bitmap and BlackIs1.
 func TestCCITTGroup4(t *testing.T) {
 	data := []byte{0x24, 0x06, 0x8f, 0x2a, 0x05, 0x24, 0x06, 0x8f, 0xc0, 0x04, 0x00, 0x40}
 	parms := Dict{"K": Integer(-1), "Columns": Integer(32), "Rows": Integer(8)}

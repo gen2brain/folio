@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"image"
 	"image/color"
 	pngenc "image/png"
@@ -15,8 +16,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// testFont is a glyph source with nothing behind it: the text device needs a
-// name and an em box and never asks for an outline.
+// testFont is a glyph source with no outlines.
 type testFont struct{}
 
 func (testFont) FontName() string                 { return "Test" }
@@ -25,8 +25,7 @@ func (testFont) EmBox() (ascent, descent float32) { return 0.8, -0.2 }
 func (testFont) RunGlyph(Device, int, raster.Matrix, *ColorSpace, []float32, float32, int) {
 }
 
-// runText builds one span of upright text at size 10, placing each rune at
-// the x it is given.
+// runText builds one span of upright size 10 text with each rune at its x.
 func runText(runes []rune, xs []float32, y float32) *Text {
 	sp := TextSpan{Font: testFont{}, Trm: raster.Matrix{A: 10, D: 10}}
 	for i, r := range runes {
@@ -63,8 +62,6 @@ func allLines(st *TextPage) []string {
 }
 
 func TestTextRuns(t *testing.T) {
-	// Each glyph advances five points, so the runs below are a word, a word
-	// break of two points, and a gap of forty that is a line of its own.
 	cases := []struct {
 		name  string
 		runes []rune
@@ -96,8 +93,6 @@ func TestTextRuns(t *testing.T) {
 func TestTextQuad(t *testing.T) {
 	st := collect(t, runText([]rune("a"), []float32{0}, 0))
 	c := st.Blocks[0].Lines[0].Chars[0]
-	// The em box of a size ten font over an advance of five points, in a
-	// space where y counts up.
 	want := Quad{
 		UL: raster.Point{X: 0, Y: 8}, UR: raster.Point{X: 5, Y: 8},
 		LL: raster.Point{X: 0, Y: -2}, LR: raster.Point{X: 5, Y: -2},
@@ -114,7 +109,6 @@ func TestTextQuad(t *testing.T) {
 }
 
 func TestTextParagraphs(t *testing.T) {
-	// Two lines a step apart are one paragraph; one far below is another.
 	st := &TextPage{}
 	d := NewTextDevice(st, nil)
 	for _, y := range []float32{0, -12, -200} {
@@ -186,15 +180,11 @@ func iccGammaTag(g float64) []byte {
 }
 
 func TestICCProfile(t *testing.T) {
-	// sRGB's own primaries, adapted to D50 as a profile stores them, so that
-	// the matrix contributes nothing and the curve is what is under test.
 	primaries := map[string][]byte{
 		"rXYZ": iccXYZTag(0.4360, 0.2225, 0.0139),
 		"gXYZ": iccXYZTag(0.3851, 0.7169, 0.0971),
 		"bXYZ": iccXYZTag(0.1431, 0.0606, 0.7141),
 	}
-	// A gamma of 1.8 is what Apple's Generic RGB profile carries, and the one
-	// file of the corpus that needs a profile read at all is written in it.
 	generic := map[string][]byte{}
 	for k, v := range primaries {
 		generic[k] = v
@@ -209,9 +199,6 @@ func TestICCProfile(t *testing.T) {
 	if p.Components() != 3 {
 		t.Fatalf("Components = %d, want 3", p.Components())
 	}
-	// Half gray through a gamma of 1.8 is lighter than half gray through
-	// sRGB's curve: linear 0.5^1.8 encoded again is 0.567, which is the 145
-	// to 146 out of 255 that MuPDF, poppler, cairo and Ghostscript all show.
 	r, g, b := p.ToRGB([]float32{0.5, 0.5, 0.5})
 	want := linearToSRGB(pow32(0.5, 1.8))
 	for _, v := range []float32{r, g, b} {
@@ -220,8 +207,6 @@ func TestICCProfile(t *testing.T) {
 		}
 	}
 
-	// An sRGB profile says nothing the pipeline does not already do, and is
-	// dropped so that a page stays byte for byte what it was.
 	srgb := map[string][]byte{}
 	for k, v := range primaries {
 		srgb[k] = v
@@ -239,8 +224,6 @@ func TestICCProfile(t *testing.T) {
 		t.Error("an sRGB profile should be left to the pipeline")
 	}
 
-	// A gray profile is one curve, and a profile shaped in a way this cannot
-	// read is not guessed at.
 	gray := ParseICC(buildICC(t, "GRAY", map[string][]byte{"kTRC": iccGammaTag(2.2)}))
 	if gray == nil || gray.Components() != 1 {
 		t.Fatal("a gray profile was not read")
@@ -307,6 +290,28 @@ func TestRegisterPictureDecoder(t *testing.T) {
 	defer RegisterPictureDecoder("huge", "\x89PNG\r\n\x1a\n", nil)
 	if _, err := DecodePicture(png.Bytes()); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("a decoder returning an unbounded image gave %v, want ErrUnsupported", err)
+	}
+
+	big := bytes.Clone(png.Bytes())
+	binary.BigEndian.PutUint32(big[16:], 60000)
+	binary.BigEndian.PutUint32(big[20:], 60000)
+	binary.BigEndian.PutUint32(big[29:], crc32.ChecksumIEEE(big[12:29]))
+	called = 0
+	RegisterPictureDecoder("huge", "\x89PNG\r\n\x1a\n", func(b []byte) (image.Image, error) {
+		called++
+		return image.NewRGBA(image.Rect(0, 0, 1, 1)), nil
+	})
+	if _, err := DecodePicture(big); !errors.Is(err, ErrUnsupported) || called != 0 {
+		t.Errorf("a 60000x60000 header gave %v after %d decodes, want ErrUnsupported before any", err, called)
+	}
+	huge := bytes.Clone(big)
+	binary.BigEndian.PutUint32(huge[16:], 0xffffffff)
+	binary.BigEndian.PutUint32(huge[20:], 0xffffffff)
+	if err := checkHeader(huge, 1<<26); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a header of 2^32-1 square gave %v", err)
+	}
+	if _, ok, err := DecodeRegistered(big, 1<<20); !ok || !errors.Is(err, ErrUnsupported) || called != 0 {
+		t.Errorf("DecodeRegistered of a 60000x60000 header gave %v, %v after %d decodes", ok, err, called)
 	}
 }
 
@@ -395,15 +400,13 @@ func TestPictureCache(t *testing.T) {
 	}
 }
 
-// fakeBounds is an image that claims more pixels than a picture may allocate
-// without holding any.
+// fakeBounds is an image that claims more pixels than a picture may allocate.
 type fakeBounds struct{}
 
 func (fakeBounds) ColorModel() color.Model { return color.RGBAModel }
 func (fakeBounds) Bounds() image.Rectangle { return image.Rect(0, 0, 1<<15, 1<<15) }
 func (fakeBounds) At(x, y int) color.Color { return color.RGBA{} }
 
-// stubImage is an image of a size.
 type stubImage struct{ w, h int }
 
 func (s stubImage) Size() (int, int)                                { return s.w, s.h }
@@ -412,8 +415,7 @@ func (s stubImage) Stencil() bool                                   { return fal
 func (s stubImage) Smooth() bool                                    { return false }
 func (s stubImage) Pixels(*ColorSpace, int) (*raster.Pixmap, error) { return nil, nil }
 
-// TestNaturalDPI covers the resolution a page is rendered at and when it is
-// cropped to the picture on it.
+// TestNaturalDPI covers the natural render resolution and the crop to a picture.
 func TestNaturalDPI(t *testing.T) {
 	page := raster.Rect{X1: 600, Y1: 900}
 	block := func(w, h int, x0, y0, x1, y1 float32) TextBlock {
@@ -454,7 +456,6 @@ func TestNaturalDPI(t *testing.T) {
 		t.Errorf("no text page gave %v %v, want %v false", dpi, crop, DefaultDPI)
 	}
 
-	// A book crops at a lower share.
 	land := &TextPage{Bounds: page, Blocks: []TextBlock{block(1400, 1000, 0, 0, 600, 428)}}
 	if _, _, crop := NaturalDPI(land, page, BookCropArea, -1); !crop {
 		t.Error("a landscape picture on a book page was not cropped to")

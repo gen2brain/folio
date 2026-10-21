@@ -127,8 +127,7 @@ func parseWOFF2(data []byte) (*Font, error) {
 	return parseSFNT(out)
 }
 
-// woff2SFNT rebuilds the sfnt a web font holds. The whole font is one brotli
-// stream, and the outlines and the horizontal metrics have a form of their own.
+// woff2SFNT rebuilds the sfnt a web font holds.
 func woff2SFNT(data []byte) ([]byte, error) {
 	if len(data) < 48 {
 		return nil, fmt.Errorf("%w: %d bytes of WOFF2", ErrInvalid, len(data))
@@ -180,8 +179,6 @@ func woff2SFNT(data []byte) ([]byte, error) {
 	return woff2Font(src, tables, flavor)
 }
 
-// woff2Directory reads the table directory, in which a tag may be a number
-// and a length is packed.
 func woff2Directory(r *woff2Buf, n int) ([]*woff2Table, error) {
 	tables := make([]*woff2Table, n)
 	off := 0
@@ -341,8 +338,7 @@ type woff2Point struct {
 	onCurve bool
 }
 
-// woff2Glyf rebuilds the glyph outlines and the index that points at them
-// from the seven sub-streams they are taken apart into.
+// woff2Glyf rebuilds the glyph outlines and their index from seven sub-streams.
 func woff2Glyf(src []byte) (glyf, loca []byte, numGlyphs int, xMins []int16, err error) {
 	fail := func(f string, a ...any) ([]byte, []byte, int, []int16, error) {
 		return nil, nil, 0, nil, fmt.Errorf("%w: "+f, append([]any{ErrInvalid}, a...)...)
@@ -385,7 +381,7 @@ func woff2Glyf(src []byte) (glyf, loca []byte, numGlyphs int, xMins []int16, err
 
 	xMins = make([]int16, numGlyphs)
 	offsets := make([]int, numGlyphs+1)
-	glyf = make([]byte, 0, 4*len(src))
+	glyf = make([]byte, 0, min(4*len(src), maxWOFF2Bytes))
 	var pts []woff2Point
 	for i := range numGlyphs {
 		haveBox := bitmap[i>>3]&(0x80>>(i&7)) != 0
@@ -519,8 +515,7 @@ func woff2Composite(r *woff2Buf) (int, bool) {
 	return n, instructions
 }
 
-// woff2Triplets decodes the points of a simple glyph, each stored as a flag
-// and one to four bytes of delta.
+// woff2Triplets decodes the flag and delta triplets of a simple glyph.
 func woff2Triplets(r *woff2Buf, flags []byte, out []woff2Point) ([]woff2Point, error) {
 	x, y := 0, 0
 	for _, flag := range flags {
@@ -645,8 +640,6 @@ func woff2Points(dst []byte, pts []woff2Point, overlap bool) []byte {
 	return append(dst, ys...)
 }
 
-// woff2Hmtx rebuilds the horizontal metrics, whose left side bearings are
-// the left edge of the glyph outline when they were left out.
 func woff2Hmtx(src []byte, numGlyphs, numHMetrics int, xMins []int16) ([]byte, error) {
 	r := &woff2Buf{b: src}
 	flags := r.u8()

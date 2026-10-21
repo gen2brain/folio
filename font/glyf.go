@@ -26,7 +26,11 @@ const (
 	ySameOrPos
 )
 
-const maxComponentDepth = 8
+// maxComponentDepth and maxComponents bound the nesting and size of a composite glyph.
+const (
+	maxComponentDepth = 8
+	maxComponents     = 256
+)
 
 // glyfSlice returns the outline data of one glyph.
 func (s *sfnt) glyfSlice(gid int) []byte {
@@ -49,9 +53,8 @@ func (s *sfnt) glyfSlice(gid int) []byte {
 	return glyf[start:end]
 }
 
-// glyfPath builds the outline of a TrueType glyph.
-func (f *Font) glyfPath(gid, depth int) *raster.Path {
-	if depth > maxComponentDepth {
+func (f *Font) glyfPath(gid, depth int, budget *int) *raster.Path {
+	if depth > maxComponentDepth || *budget <= 0 {
 		return nil
 	}
 	b := f.sfnt.glyfSlice(gid)
@@ -59,12 +62,11 @@ func (f *Font) glyfPath(gid, depth int) *raster.Path {
 		return &raster.Path{}
 	}
 	if n := be16s(b, 0); n < 0 {
-		return f.compositeGlyph(b[10:], depth)
+		return f.compositeGlyph(b[10:], depth, budget)
 	}
 	return simpleGlyph(b)
 }
 
-// simpleGlyph reads a contour glyph.
 func simpleGlyph(b []byte) *raster.Path {
 	n := be16(b, 0)
 	if n <= 0 || 10+2*n+2 > len(b) {
@@ -152,10 +154,6 @@ func simpleGlyph(b []byte) *raster.Path {
 	return p
 }
 
-// emitContour converts one quadratic contour. Where it starts matters: a
-// contour whose first point is a control point begins at the last point when
-// that one is on the curve, and at the midpoint of the two otherwise, which
-// is what FreeType does and therefore what every outline is compared against.
 func emitContour(p *raster.Path, flags []byte, xs, ys []int) {
 	n := len(flags)
 	if n == 0 {
@@ -215,8 +213,7 @@ func quadTo(p *raster.Path, cx, cy, x, y float32) {
 		x, y)
 }
 
-// compositeGlyph assembles a glyph out of others.
-func (f *Font) compositeGlyph(b []byte, depth int) *raster.Path {
+func (f *Font) compositeGlyph(b []byte, depth int, budget *int) *raster.Path {
 	out := &raster.Path{}
 	at := 0
 	for at+4 <= len(b) {
@@ -253,7 +250,10 @@ func (f *Font) compositeGlyph(b []byte, depth int) *raster.Path {
 		}
 		m.E, m.F = dx, dy
 
-		if sub := f.glyfPath(gid, depth+1); sub != nil && !sub.IsEmpty() {
+		if *budget--; *budget < 0 {
+			break
+		}
+		if sub := f.glyfPath(gid, depth+1, budget); sub != nil && !sub.IsEmpty() {
 			out.Append(sub.Transform(m))
 		}
 		if flags&moreComponents == 0 {

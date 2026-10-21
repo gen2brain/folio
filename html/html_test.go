@@ -228,7 +228,6 @@ func TestEPUBNoSpine(t *testing.T) {
 		"EPUB/text/one.xhtml":    "<html/>",
 		"EPUB/text/two.xhtml":    "<html/>",
 	})
-	// The navigation document is a chapter by media type, so three.
 	if got := len(d.Spine()); got != 3 {
 		t.Fatalf("spine has %d parts, want the chapters of the manifest", got)
 	}
@@ -445,7 +444,6 @@ func TestMOBI(t *testing.T) {
 	if err != nil || string(b) != "<html><body><p>Hello</p></body></html>" {
 		t.Fatalf("text = %q, %v", b, err)
 	}
-	// The picture is a part named by the number the HTML refers to it by.
 	if len(d.Manifest()) != 2 || d.Manifest()[1].Path != "00001" {
 		t.Fatalf("manifest = %+v", d.Manifest())
 	}
@@ -515,7 +513,6 @@ func TestDocumentText(t *testing.T) {
 	if !strings.Contains(got, "One") || !strings.Contains(got, "Two") {
 		t.Fatalf("text = %q", got)
 	}
-	// The cover is a picture in the spine and has no text in it.
 	if strings.Contains(got, "PNG") {
 		t.Fatalf("a picture in the spine reached the text: %q", got)
 	}
@@ -928,7 +925,6 @@ func TestCSSShorthands(t *testing.T) {
 		t.Errorf("family = %q", s.FontFamily)
 	}
 
-	// The slash may sit against either side or neither.
 	for _, sh := range []string{"20px/2 serif", "20px / 2 serif", "20px /2 serif", "20px/ 2 serif"} {
 		s = styleOf(t, `#i { font: `+sh+` }`, `<p id="i">t</p>`, "i")
 		if s.FontSize != 20 || s.LineHeight != (Length{Value: 2, Unit: UnitScale}) ||
@@ -1606,7 +1602,6 @@ func TestCSSBorders(t *testing.T) {
 		t.Errorf("border colour = %v, want the text colour", s.BorderTop.Color)
 	}
 
-	// A style of none takes the edge away whatever the width says.
 	s = styleOf(t, `#i { border: 4px solid red; border-top-style: none }`, `<p id="i">t</p>`, "i")
 	if s.BorderTop.Thickness() != 0 || s.BorderLeft.Thickness() != 4 {
 		t.Errorf("thickness = %v %v", s.BorderTop.Thickness(), s.BorderLeft.Thickness())
@@ -1805,7 +1800,6 @@ func TestLayoutFloat(t *testing.T) {
 		t.Errorf("the last line starts at %v, want it past the float", below.frags[0].x)
 	}
 
-	// clear moves a box below every float, whatever room is left beside it.
 	d2, _ := styledPage(t, `body, p { margin: 0 } .f { float: left; width: 50px; height: 200px }`,
 		`<div class="f"></div><p class="c" style="clear: both">after</p>`,
 		&LayoutOptions{Width: 400, Height: 900, Margin: 0})
@@ -1973,7 +1967,6 @@ func TestLayoutTable(t *testing.T) {
 	if w := at(1, 0); w == nil || w.cols != 2 {
 		t.Fatalf("the spanning cell = %+v", w)
 	}
-	// The cell after the one that spans two columns starts in the third.
 	if c := at(1, 2); c == nil {
 		t.Fatalf("no cell in the third column of the second row")
 	}
@@ -2411,7 +2404,6 @@ func TestLayoutFallbackFace(t *testing.T) {
 		t.Errorf("the fallback changed the size: %+v against %+v", f, base)
 	}
 
-	// The run is split where the face has to change, and the text survives.
 	d, p := styledPage(t, `body, p { margin: 0 }`, "<p>one 日本 two</p>",
 		&LayoutOptions{Width: 400, Height: 400, Margin: 0})
 	defer d.Close()
@@ -2520,7 +2512,6 @@ func TestLayoutEmbeddedFont(t *testing.T) {
 	if prog.Family != "Old Standard TT" {
 		t.Errorf("loaded %q", prog.Family)
 	}
-	// The same file is read once however many parts name it.
 	if again := set.pick([]string{"OldStandard"}, false, false); again != prog {
 		t.Error("the font was read twice")
 	}
@@ -2702,7 +2693,6 @@ func TestLayoutInlineBlock(t *testing.T) {
 	if k.x != frags[1].x {
 		t.Errorf("the box is at %v and its fragment at %v", k.x, frags[1].x)
 	}
-	// It is as wide as the two characters it holds, not as wide as the page.
 	if k.w <= 0 || k.w > 100 {
 		t.Errorf("the box came out %v wide, want it to shrink to what it holds", k.w)
 	}
@@ -2766,7 +2756,6 @@ func TestSVGInSpine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// It is fitted to the page: the whole height, half the width, centred.
 	if r, _, _, _ := img.At(100, 190).RGBA(); r>>8 < 200 {
 		t.Errorf("the middle of the drawing is %v, want it red", img.At(100, 190))
 	}
@@ -2774,7 +2763,6 @@ func TestSVGInSpine(t *testing.T) {
 		t.Errorf("beside the drawing is %v, want the page", img.At(10, 100))
 	}
 
-	// A chapter that names a drawing draws it at the size the file asks for.
 	p, err = d.Page(1)
 	if err != nil {
 		t.Fatal(err)
@@ -2837,11 +2825,29 @@ func TestMOBIHuffcdic(t *testing.T) {
 	if h == nil {
 		t.Fatal("the dictionary did not read")
 	}
-	if got := string(h.unpack(nil, []byte{0}, 0)); got != "hello" {
+	steps := maxRecordCodes
+	if got := string(h.unpack(nil, []byte{0}, 0, maxRecordText, &steps)); got != "hello" {
 		t.Fatalf("unpacked %q, want hello", got)
 	}
-	if got := string(h.unpack(nil, []byte{0, 0}, 0)); got != "hellohello" {
+	steps = maxRecordCodes
+	if got := string(h.unpack(nil, []byte{0, 0}, 0, maxRecordText, &steps)); got != "hellohello" {
 		t.Fatalf("unpacked %q, want it twice", got)
+	}
+	steps = maxRecordCodes
+	if got := string(h.unpack(nil, []byte{0, 0}, 0, 7, &steps)); got != "hellohe" {
+		t.Fatalf("unpacked %q under a limit of 7", got)
+	}
+
+	self := append(cdic[:16+2:16+2], 0, 0)
+	be16(self[16+2:], 32)
+	self = append(self, make([]byte, 32)...)
+	h = readHuffcdic([][]byte{nil, huff, self}, 1, 2)
+	if h == nil {
+		t.Fatal("the dictionary did not read")
+	}
+	steps = maxRecordCodes
+	if got := h.unpack(nil, make([]byte, 64), 0, maxRecordText, &steps); len(got) != 0 || steps >= 0 {
+		t.Fatalf("a phrase made of itself gave %d bytes with %d steps left", len(got), steps)
 	}
 }
 
@@ -3048,7 +3054,6 @@ func buildKF8(t testing.TB, font []byte) []byte {
 		label[s] = len(cncx)
 		cncx = append(append(cncx, byte(0x80|len(s))), s...)
 	}
-	// Level by level, as KF8 stores them: A1 is A's child but comes after B.
 	ncx := buildIndex([]indxTag{{id: ncxLabel, values: 1, mask: 1}, {id: ncxLevel, values: 1, mask: 2},
 		{id: kf8Range, values: 2, mask: 4}, {id: ncxParent, values: 1, mask: 8}}, []kf8Row{
 		{"0", [][]int{{label["A"]}, {0}, {0, 0}, nil}},
@@ -3150,7 +3155,6 @@ func TestKF8(t *testing.T) {
 		t.Error(err)
 	}
 
-	// A1 is A's child although the index lists B between them.
 	o := d.Outline()
 	if len(o) != 2 || o[0].Title != "A" || o[1].Title != "B" || len(o[0].Children) != 1 || o[0].Children[0].Title != "A1" {
 		t.Fatalf("outline = %+v", o)
@@ -3205,8 +3209,7 @@ func TestPagePixelLimit(t *testing.T) {
 	}
 }
 
-// TestKF8SkippedFragment checks that a fragment is found by its place in the
-// FRAG index when one before it is broken.
+// TestKF8SkippedFragment checks fragment lookup past a broken FRAG entry.
 func TestKF8SkippedFragment(t *testing.T) {
 	skel := `<html><body></body></html>`
 	flow := []byte(skel + "<p>a</p>" + "<p>b</p>")
@@ -3639,7 +3642,6 @@ func TestLZXRaw(t *testing.T) {
 		t.Errorf("decoded %q, want abc", out)
 	}
 
-	// The same stream cannot be read twice without a reset, and can with one.
 	if err := d.frame(in, out); err == nil {
 		t.Error("a second frame read the header again")
 	}
@@ -3753,7 +3755,6 @@ func TestDOCX(t *testing.T) {
 	if b := p.Bounds(); b.X1-b.X0 != 612 || b.Y1-b.Y0 != 792 {
 		t.Errorf("the page is %v, want the letter the section asks for", b)
 	}
-	// What the caller asks for wins over what the document says.
 	if _, err := d.Layout(&LayoutOptions{Width: 400, Height: 600}); err != nil {
 		t.Fatal(err)
 	}
@@ -3844,6 +3845,51 @@ func TestPPTX(t *testing.T) {
 const xlsxNS = `xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
 	`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`
 
+// TestOfficeBounds checks office documents a small file makes very large.
+func TestOfficeBounds(t *testing.T) {
+	rels := `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+		`<Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`
+	var rows strings.Builder
+	for i := 1; i <= 20000; i++ {
+		fmt.Fprintf(&rows, `<row r="%d"><c r="EZZ%d"><v>1</v></c></row>`, i, i)
+	}
+	raw := buildOffice(t, map[string]string{
+		"xl/workbook.xml":            `<workbook ` + xlsxNS + `><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": rels,
+		"xl/worksheets/sheet1.xml": `<worksheet ` + xlsxNS + `><sheetData>` + rows.String() + `</sheetData>` +
+			`<mergeCells><mergeCell ref="A1:B99999999999"/><mergeCell ref="A1:D1048576"/></mergeCells></worksheet>`,
+		"xl/styles.xml": `<styleSheet ` + xlsxNS + `><numFmts><numFmt numFmtId="200" formatCode="0.` +
+			strings.Repeat("0", 1<<16) + `"/></numFmts></styleSheet>`,
+	})
+	d, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := d.Read(d.Spine()[0].Path)
+	if len(b) > maxPartBytes+1<<16 {
+		t.Errorf("a sheet of padding came to %d bytes", len(b))
+	}
+	d.Close()
+
+	note := `<w:p><w:r><w:t>` + strings.Repeat("n", 1<<16) + `</w:t></w:r></w:p>`
+	refs := strings.Repeat(`<w:r><w:footnoteReference w:id="2"/></w:r>`, 4096)
+	pieces := strings.Repeat(`x<!---->`, 1<<20)
+	raw = buildOffice(t, map[string]string{
+		"word/document.xml": `<w:document ` + docxNS + `><w:body><w:p>` + refs + `</w:p>` +
+			`<w:p><w:r><w:t>` + pieces + `</w:t></w:r></w:p></w:body></w:document>`,
+		"word/footnotes.xml": `<w:footnotes ` + docxNS + `><w:footnote w:id="2">` + note + `</w:footnote></w:footnotes>`,
+	})
+	d, err = Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	b, _ = d.Read(d.Spine()[0].Path)
+	if len(b) > maxPartBytes+1<<20 {
+		t.Errorf("a note referenced 4096 times came to %d bytes", len(b))
+	}
+}
+
 // TestXLSX covers shared strings, number formats, merges and one page per sheet.
 func TestXLSX(t *testing.T) {
 	sheet := `<worksheet ` + xlsxNS + `><cols><col min="1" max="2" width="20"/></cols>` +
@@ -3913,7 +3959,6 @@ func TestXLSX(t *testing.T) {
 			t.Errorf("the sheet has no %q", want)
 		}
 	}
-	// A cell the sheet skips leaves an empty one behind it.
 	if n := bytes.Count(one, []byte("<td></td>")); n == 0 {
 		t.Error("the gap in row two was not filled")
 	}
@@ -3982,7 +4027,6 @@ func TestFB2(t *testing.T) {
 	for _, want := range []string{
 		`<p><img src="cover.png"/></p>`,
 		"<h1>A Sample Book</h1>", "<h2>Chapter One</h2>",
-		// The text beside the elements keeps the order it was written in.
 		"<p>Text with <em>emphasis</em> and a ",
 		`<a href="#n1" class="note">note</a>.</p>`,
 		`<p class="empty">`, `<p class="subtitle">A subtitle</p>`,
@@ -4012,7 +4056,6 @@ func TestFB2(t *testing.T) {
 	if pic, err := d.Read("cover.png"); err != nil || len(pic) == 0 {
 		t.Errorf("the picture came back as %d bytes, %v", len(pic), err)
 	}
-	// The cover is not a picture, which the layout records and carries past.
 	if n, _ := d.Layout(nil); n == 0 {
 		t.Fatal("the book laid out to nothing")
 	}
@@ -4058,6 +4101,29 @@ func TestFB2Encoding(t *testing.T) {
 	}
 }
 
+// TestMarkdownBounds checks the Markdown of a book a small file makes huge.
+func TestMarkdownBounds(t *testing.T) {
+	var table strings.Builder
+	table.WriteString("<table><tr>" + strings.Repeat("<td>c</td>", 2000) + "</tr>")
+	table.WriteString(strings.Repeat("<tr><td>r</td></tr>", 2000) + "</table>")
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       strings.Replace(onePart, `<itemref idref="one"/>`, strings.Repeat(`<itemref idref="one"/>`, 3), 1),
+		"EPUB/text/one.xhtml": "<html><body><p><code>" + strings.Repeat("`", 1<<20) + "x</code></p>" +
+			table.String() + "</body></html>",
+	})
+	if n := len(d.Spine()); n != 1 {
+		t.Errorf("a chapter listed three times is %d parts", n)
+	}
+	md, err := d.Markdown()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(md) > 8<<20 {
+		t.Errorf("the Markdown came to %d bytes", len(md))
+	}
+}
+
 // TestMarkdown covers the document written as Markdown.
 func TestMarkdown(t *testing.T) {
 	part := `<html><body>` +
@@ -4092,7 +4158,6 @@ line  two</code></pre>` +
 	for _, want := range []string{
 		"# A Title\n",
 		"Some **bold**, *italic*, `a b` and [a link](two.xhtml).",
-		// An underscore inside a word is not emphasis and is left alone.
 		"snake_case",
 		`2 \* 3`, `IEnumerable\<T>`, `1\. not a list`,
 		"> First.\n>\n> Second.",
@@ -4109,7 +4174,6 @@ line  two</code></pre>` +
 			t.Errorf("the markdown has no %q\n%s", want, got)
 		}
 	}
-	// The head of a part says nothing.
 	if strings.Contains(got, "A Book") {
 		t.Error("the title element reached the markdown")
 	}
@@ -4183,7 +4247,6 @@ func TestPageLinks(t *testing.T) {
 			t.Errorf("link %d is off the page: %v", i, l.Rect)
 		}
 	}
-	// The three are side by side on one line, in the order they were written.
 	if !(links[0].Rect.X1 <= links[1].Rect.X0 && links[1].Rect.X1 <= links[2].Rect.X0) {
 		t.Errorf("the links are out of order: %v %v %v",
 			links[0].Rect, links[1].Rect, links[2].Rect)
@@ -4292,7 +4355,7 @@ func TestBidiLayout(t *testing.T) {
 			}
 		}
 	}
-	// Rule L4 draws a bracket that runs right to left as the other one.
+	// UAX #9 rule L4.
 	if got := visualText("(", true); got != ")" {
 		t.Errorf("a bracket is drawn as %q, want %q", got, ")")
 	}
@@ -4443,7 +4506,6 @@ func TestInlineSVG(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The viewBox is half as wide as it is tall, and the drawing keeps that.
 	b := img.Bounds()
 	minX, minY, maxX, maxY := b.Max.X, b.Max.Y, -1, -1
 	for y := b.Min.Y; y < b.Max.Y; y++ {

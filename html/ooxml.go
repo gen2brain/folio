@@ -12,27 +12,28 @@ import (
 const (
 	// relNS is the namespace a part names another part through.
 	relNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-	// emuPerPixel is how many English metric units one CSS pixel is.
+	// emuPerPixel is the English metric units in one CSS pixel.
 	emuPerPixel = 9525
-	// twipsPerPixel is how many twentieths of a point one CSS pixel is.
+	// twipsPerPixel is the twentieths of a point in one CSS pixel.
 	twipsPerPixel = 15
 	ooxmlMaxNodes = 1 << 21
 	ooxmlMaxDepth = 256
+	// ooxmlMaxOutput bounds the HTML a whole document is turned into.
+	ooxmlMaxOutput = 1 << 28
 )
 
-// xnode is one element of an OOXML part. The parts are small enough to hold
-// whole and irregular enough that a token walk reads worse than a tree does.
+// xnode is one element of an OOXML part.
 type xnode struct {
 	name string
 	attr []xml.Attr
 	kids []*xnode
 	text string
+	buf  []byte
 }
 
 func parseXML(b []byte) (*xnode, error) { return parseTree(b, false) }
 
-// parseMixed keeps the character data as children in the order it was
-// written, which a document with text beside its elements needs.
+// parseMixed parses a part keeping character data as children in order.
 func parseMixed(b []byte) (*xnode, error) { return parseTree(b, true) }
 
 func parseTree(b []byte, mixed bool) (*xnode, error) {
@@ -42,6 +43,7 @@ func parseTree(b []byte, mixed bool) (*xnode, error) {
 	root := &xnode{}
 	stack := []*xnode{root}
 	nodes := 0
+	var texts []*xnode
 	for {
 		t, err := d.Token()
 		if err == io.EOF {
@@ -65,11 +67,17 @@ func parseTree(b []byte, mixed bool) (*xnode, error) {
 			}
 		case xml.CharData:
 			top := stack[len(stack)-1]
-			top.text += string(e)
+			if top.buf == nil {
+				texts = append(texts, top)
+			}
+			top.buf = append(top.buf, e...)
 			if mixed && len(e) > 0 {
 				top.kids = append(top.kids, &xnode{text: string(e)})
 			}
 		}
+	}
+	for _, n := range texts {
+		n.text, n.buf = string(n.buf), nil
 	}
 	for _, k := range root.kids {
 		if k.name != "" {
@@ -79,8 +87,7 @@ func parseTree(b []byte, mixed bool) (*xnode, error) {
 	return nil, fmt.Errorf("%w: the part has no root element", ErrInvalid)
 }
 
-// at is the value of an attribute of any namespace but the relationship one,
-// which rel reads instead.
+// at is the value of an attribute outside the relationship namespace.
 func (n *xnode) at(name string) string {
 	if n == nil {
 		return ""
@@ -105,8 +112,7 @@ func (n *xnode) rel(name string) string {
 	return ""
 }
 
-// val is the w:val of a child element, and "" when there is no such child. An
-// element written for its presence alone answers "on".
+// val is the w:val of a child element, "on" for one with no w:val.
 func (n *xnode) val(name string) (string, bool) {
 	c := n.child(name)
 	if c == nil {
@@ -143,7 +149,7 @@ func (n *xnode) all(name string) []*xnode {
 	return out
 }
 
-// on reports a toggle, which is set unless it says otherwise.
+// on reports whether a toggle is set.
 func (n *xnode) on(name string) bool {
 	v, ok := n.val(name)
 	if !ok {
@@ -169,7 +175,13 @@ func (n *xnode) num(name string) (float64, bool) {
 type ooxml struct {
 	files map[string]*zip.File
 	rels  map[string]map[string]string
+	ext   map[string]map[string]string
+	// spent is the HTML the parts written so far came to.
+	spent int
 }
+
+// full reports whether n bytes reach the part or the document limit.
+func (o *ooxml) full(n int) bool { return n >= maxPartBytes || o.spent+n >= ooxmlMaxOutput }
 
 func (o *ooxml) has(name string) bool { return o.files[name] != nil }
 
@@ -194,44 +206,44 @@ func (o *ooxml) part(name string) (*xnode, error) {
 	return parseXML(b)
 }
 
-// target is the part a relationship identifier names, read against the
-// directory the part naming it lives in.
+// target is the part a relationship identifier names, relative to part.
 func (o *ooxml) target(part, id string) string {
 	if id == "" {
 		return ""
 	}
-	m, ok := o.rels[part]
-	if !ok {
-		m = map[string]string{}
-		dir, base := splitPart(part)
-		if root, err := o.part(dir + "_rels/" + base + ".rels"); err == nil {
-			for _, r := range root.all("Relationship") {
-				if t := r.at("Target"); t != "" && r.at("TargetMode") != "External" {
-					m[r.at("Id")] = joinPart(dir, t)
-				}
-			}
-		}
-		if o.rels == nil {
-			o.rels = map[string]map[string]string{}
-		}
-		o.rels[part] = m
-	}
-	return m[id]
+	o.loadRels(part)
+	return o.rels[part][id]
 }
 
 // external is the address a relationship points outside the archive at.
 func (o *ooxml) external(part, id string) string {
-	dir, base := splitPart(part)
-	root, err := o.part(dir + "_rels/" + base + ".rels")
-	if err != nil {
-		return ""
+	o.loadRels(part)
+	return o.ext[part][id]
+}
+
+// loadRels reads the relationships of a part, once.
+func (o *ooxml) loadRels(part string) {
+	if _, ok := o.rels[part]; ok {
+		return
 	}
-	for _, r := range root.all("Relationship") {
-		if r.at("Id") == id && r.at("TargetMode") == "External" {
-			return r.at("Target")
+	in, ex := map[string]string{}, map[string]string{}
+	dir, base := splitPart(part)
+	if root, err := o.part(dir + "_rels/" + base + ".rels"); err == nil {
+		for _, r := range root.all("Relationship") {
+			t := r.at("Target")
+			switch {
+			case t == "":
+			case r.at("TargetMode") == "External":
+				ex[r.at("Id")] = t
+			default:
+				in[r.at("Id")] = joinPart(dir, t)
+			}
 		}
 	}
-	return ""
+	if o.rels == nil {
+		o.rels, o.ext = map[string]map[string]string{}, map[string]map[string]string{}
+	}
+	o.rels[part], o.ext[part] = in, ex
 }
 
 func pathExt(p string) string {
@@ -293,7 +305,6 @@ func openZip(r io.ReaderAt, size int64) (*Document, error) {
 	case o.has("xl/workbook.xml"):
 		return openXLSX(o)
 	}
-	// A FictionBook is sometimes zipped, one book to an archive.
 	if !o.has("META-INF/container.xml") {
 		for _, f := range z.File {
 			if !strings.EqualFold(pathExt(f.Name), ".fb2") {
@@ -339,8 +350,7 @@ func px(v float64) string {
 
 func round2(v float64) float64 { return float64(int64(v*100+0.5)) / 100 }
 
-// ooxmlColor is a colour an office part writes as six hex digits, and "" for
-// the one that means the reader chooses.
+// ooxmlColor converts a six hex digit colour, "" for auto.
 func ooxmlColor(v string) string {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "#")
 	if len(v) != 6 || strings.EqualFold(v, "auto") {

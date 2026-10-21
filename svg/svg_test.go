@@ -1,22 +1,24 @@
 package svg
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	"image/png"
 	"math"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/gen2brain/folio/raster"
 )
 
-// walker records a path as the commands it is made of, so that a test can say
-// what it expects without depending on how the path stores it.
+// walker records a path as the commands it is made of.
 type walker struct{ out []string }
 
 func (w *walker) MoveTo(x, y float32) { w.out = append(w.out, fm("M", x, y)) }
@@ -54,8 +56,6 @@ func TestPathData(t *testing.T) {
 	}{
 		{"absolute", "M10 20 L30 40 Z", []string{"M 10 20", "L 30 40", "Z"}},
 		{"relative", "m10 20 l20 20 z", []string{"M 10 20", "L 30 40", "Z"}},
-		// A moveto with more than one pair keeps going as a lineto, and a
-		// relative one as a relative lineto.
 		{"implicit lineto", "M10 20 30 40", []string{"M 10 20", "L 30 40"}},
 		{"implicit relative", "m10 20 20 20", []string{"M 10 20", "L 30 40"}},
 		{"horizontal", "M10 20H30V40", []string{"M 10 20", "L 30 20", "L 30 40"}},
@@ -63,10 +63,8 @@ func TestPathData(t *testing.T) {
 		{"exponent", "M1e1 2e1", []string{"M 10 20"}},
 		{"sign as separator", "M10 20L-5-6", []string{"M 10 20", "L -5 -6"}},
 		{"quadratic", "M0 0 Q10 0 10 10", []string{"M 0 0", "C 6.67 0 10 3.33 10 10"}},
-		// A smooth curve with nothing to reflect uses the current point.
 		{"smooth first", "M0 0 S10 0 10 10", []string{"M 0 0", "C 0 0 10 0 10 10"}},
 		{"close then move", "M0 0 L1 0 Z L2 0", []string{"M 0 0", "L 1 0", "Z", "L 2 0"}},
-		// Two subpaths, the second starting where the first closed.
 		{"repeat command", "M0 0 L1 0 L2 0", []string{"M 0 0", "L 1 0", "L 2 0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,14 +82,12 @@ func TestPathData(t *testing.T) {
 	}
 }
 
-// TestPathArc checks the endpoint form of an arc against what it must reach,
-// which is the only thing about it that is not a matter of how it is cut up.
+// TestPathArc checks that an endpoint arc reaches its endpoint.
 func TestPathArc(t *testing.T) {
 	for _, d := range []string{
 		"M0 0 A50 50 0 0 1 100 0",
 		"M0 0 A50 50 0 1 0 100 0",
 		"M0 0 A50 25 30 1 1 100 40",
-		// Radii too small to reach are scaled up until they just do.
 		"M0 0 A1 1 0 0 1 100 0",
 	} {
 		p := pathData(d)
@@ -130,9 +126,7 @@ func TestTransform(t *testing.T) {
 		{"scale(2,3)", 3, 4, [2]float32{6, 12}},
 		{"matrix(1,0,0,1,5,6)", 1, 1, [2]float32{6, 7}},
 		{"rotate(90)", 1, 0, [2]float32{0, 1}},
-		// A rotation about a point leaves that point alone.
 		{"rotate(90,5,5)", 5, 5, [2]float32{5, 5}},
-		// The list applies left to right: the translate happens first.
 		{"translate(10,0) scale(2)", 1, 0, [2]float32{12, 0}},
 		{"scale(2) translate(10,0)", 1, 0, [2]float32{22, 0}},
 	} {
@@ -182,7 +176,6 @@ func TestColor(t *testing.T) {
 		{in: "rgb(255,0,0)", want: [3]float32{1, 0, 0}, ok: true},
 		{in: "rgb(100%,0%,0%)", want: [3]float32{1, 0, 0}, ok: true},
 		{in: "none", none: true, ok: true},
-		// A paint server this cannot draw falls back to the color after it.
 		{in: "url(#g) blue", want: [3]float32{0, 0, 1}, ok: true},
 		{in: "url(#g)", ok: false},
 		{in: "notacolor", ok: false},
@@ -205,8 +198,7 @@ func TestColor(t *testing.T) {
 	}
 }
 
-// TestDocumentSize covers the three answers a file can give about how big it
-// is, which no two readers agree on and this one follows MuPDF for.
+// TestDocumentSize covers the size a drawing reads from its root element.
 func TestDocumentSize(t *testing.T) {
 	for _, tc := range []struct {
 		name, in string
@@ -240,8 +232,7 @@ func (d *Document) Page0() *Page {
 	return p
 }
 
-// FuzzSVG holds the parser to the rule the rest of the module keeps: nothing
-// panics on a file, however damaged, and a drawing that opens also draws.
+// FuzzSVG checks that no file panics and a drawing that opens also draws.
 func FuzzSVG(fu *testing.F) {
 	fu.Add([]byte(`<svg width="20" height="20"><rect width="10" height="10"/></svg>`))
 	fu.Add([]byte(`<svg viewBox="0 0 8 8"><path d="M0 0A4 4 0 1 1 8 8Z" fill="#abc"/></svg>`))
@@ -257,7 +248,6 @@ func FuzzSVG(fu *testing.F) {
 		if err != nil {
 			return
 		}
-		// A drawing the size of a page is the most a fuzz case may ask for.
 		if bb := p.Bounds(); bb.X1 > 4096 || bb.Y1 > 4096 {
 			return
 		}
@@ -265,9 +255,7 @@ func FuzzSVG(fu *testing.F) {
 	})
 }
 
-// TestGradientStops covers the ramp: an offset that steps backwards is pulled
-// up to the one before it rather than sorted into place, and a gradient with
-// no stops of its own takes the ones it was written as a variation of.
+// TestGradientStops covers stop offsets and stops inherited through href.
 func TestGradientStops(t *testing.T) {
 	d, err := Load([]byte(`<svg>
 	  <linearGradient id="base">
@@ -301,7 +289,6 @@ func TestGradientStops(t *testing.T) {
 	if g.stops[0].color != ([3]float32{0, 0, 1}) {
 		t.Errorf("the first stop is %v, want blue", g.stops[0].color)
 	}
-	// Halfway along a blue to red ramp is half of each.
 	if c := g.at(0.5); !near(c[0], 0.5) || !near(c[2], 0.5) {
 		t.Errorf("the middle of the ramp is %v, want half of each end", c)
 	}
@@ -321,8 +308,7 @@ func TestGradientStops(t *testing.T) {
 	}
 }
 
-// TestTextLayout covers where the characters of a text element land: one
-// after another by their advances, and moved as a whole by text-anchor.
+// TestTextLayout covers character advances, positions and text-anchor.
 func TestTextLayout(t *testing.T) {
 	run := func(markup string) []glyph {
 		t.Helper()
@@ -352,8 +338,6 @@ func TestTextLayout(t *testing.T) {
 		}
 	}
 
-	// A list of positions places each character, and a tspan carries on from
-	// where the text left off.
 	g = run(`<svg><text x="0 50 100" y="9" font-size="16">abc</text></svg>`)
 	if len(g) != 3 || g[1].x != 50 || g[2].x != 100 {
 		t.Errorf("a list of x placed them at %v", xs(g))
@@ -366,7 +350,6 @@ func TestTextLayout(t *testing.T) {
 		t.Errorf("the tspan is at %v, want it 20 past %v", g[2].x, g[1].x)
 	}
 
-	// The three anchors put the same run in three places.
 	pos := func(anchor string) float32 {
 		gs := run(`<svg><text x="100" y="9" font-size="16" text-anchor="` + anchor + `">abc</text></svg>`)
 		r := &runner{}
@@ -391,8 +374,7 @@ func xs(g []glyph) []float32 {
 	return out
 }
 
-// TestDecode covers the two functions a caller that wants a picture rather
-// than a document uses, which are what image.RegisterFormat takes.
+// TestDecode covers Decode and DecodeConfig.
 func TestDecode(t *testing.T) {
 	const src = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">` +
 		`<rect width="40" height="20" fill="lime"/></svg>`
@@ -419,8 +401,7 @@ func TestDecode(t *testing.T) {
 	}
 }
 
-// TestTextSpacing covers what a text element may put between its characters
-// and where dominant-baseline moves them.
+// TestTextSpacing covers letter and word spacing, white space and dominant-baseline.
 func TestTextSpacing(t *testing.T) {
 	adv := func(markup string) float32 {
 		t.Helper()
@@ -443,7 +424,6 @@ func TestTextSpacing(t *testing.T) {
 		t.Errorf("letter-spacing added %v, want 5", spaced-plain)
 	}
 
-	// Preserved white space keeps the run of spaces a collapsing one drops.
 	count := func(markup string) int {
 		d, _ := Load([]byte(markup))
 		r := &runner{doc: d}
@@ -458,7 +438,6 @@ func TestTextSpacing(t *testing.T) {
 		t.Errorf("preserved gave %d glyphs, want 5", n)
 	}
 
-	// A middle baseline drops the text by half its x height.
 	base := func(v string) float32 {
 		d, _ := Load([]byte(`<svg><text y="50" font-size="20" dominant-baseline="` + v + `">a</text></svg>`))
 		r := &runner{doc: d}
@@ -476,11 +455,8 @@ func TestTextSpacing(t *testing.T) {
 	}
 }
 
-// TestClipAndImage covers the two things a drawing puts around and inside a
-// shape: what clip-path leaves of it, and a picture carried in the file.
+// TestClipAndImage covers clip-path and an image carried in a data URL.
 func TestClipAndImage(t *testing.T) {
-	// An eight by eight red PNG, so that the test needs nothing on disk and
-	// the middle of it is the color without any of the edge in it.
 	const red = "data:image/png;base64," +
 		"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAMAAADz0U65AAAAIGNIUk0AAHomAACAhAAA+gAA" +
 		"AIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAADUExURf8AABniCTcAAAAHdElNRQfqCBYEEQEd" +
@@ -505,22 +481,18 @@ func TestClipAndImage(t *testing.T) {
 		o := y*img.Stride + x*4
 		return img.Pix[o], img.Pix[o+1], img.Pix[o+2]
 	}
-	// Inside the clip the rect is drawn and outside it is not.
 	if r, g, b := at(2, 5); r > 8 || g > 8 || b > 8 {
 		t.Errorf("inside the clip is %d,%d,%d, want black", r, g, b)
 	}
 	if r, g, b := at(7, 5); r < 248 || g < 248 || b < 248 {
 		t.Errorf("outside the clip is %d,%d,%d, want the page", r, g, b)
 	}
-	// The picture the data URL carried fills its box.
 	if r, g, b := at(15, 5); r < 200 || g > 60 || b > 60 {
 		t.Errorf("the picture is %d,%d,%d, want red", r, g, b)
 	}
 }
 
-// TestStylesheet covers what a style element declares: the selectors an
-// exporter writes, what wins when two of them match, and the order a style
-// attribute, a sheet and a presentation attribute go in.
+// TestStylesheet covers selectors, specificity and cascade order.
 func TestStylesheet(t *testing.T) {
 	d, err := Load([]byte(`<svg>
 	  <style>
@@ -561,14 +533,10 @@ func TestStylesheet(t *testing.T) {
 	}
 	for _, tc := range []struct{ id, want string }{
 		{"plain", "red"},
-		// A class beats a type, and an id beats a class.
 		{"klass", "green"},
 		{"one", "blue"},
-		// A presentation attribute counts for nothing against a sheet, and a
-		// style attribute beats both.
 		{"attr", "green"},
 		{"inline", "yellow"},
-		// A descendant selector matches only inside what it names.
 		{"desc", "purple"},
 		{"outside", "red"},
 	} {
@@ -578,8 +546,7 @@ func TestStylesheet(t *testing.T) {
 	}
 }
 
-// TestPattern covers the third paint server: the tile repeats over the shape,
-// and what is inside it inherits nothing from the shape that referred to it.
+// TestPattern covers tile repetition and pattern content inheritance.
 func TestPattern(t *testing.T) {
 	d, err := Load([]byte(`<svg width="40" height="20">
 	  <pattern id="p" width="10" height="20" patternUnits="userSpaceOnUse">
@@ -600,7 +567,6 @@ func TestPattern(t *testing.T) {
 		o := 10*img.Stride + x*4
 		return img.Pix[o], img.Pix[o+1], img.Pix[o+2]
 	}
-	// The tile repeats every ten across: black, then the page, four times.
 	for _, x := range []int{2, 12, 22, 32} {
 		if r, g, b := at(x); r > 8 || g > 8 || b > 8 {
 			t.Errorf("at %d the tile is %d,%d,%d, want black", x, r, g, b)
@@ -614,8 +580,7 @@ func TestPattern(t *testing.T) {
 	}
 }
 
-// TestMaskAndMarker covers the two things drawn around a shape rather than in
-// it: what a mask lets through, and what a marker puts at a vertex.
+// TestMaskAndMarker covers a mask and markers at the ends of a line.
 func TestMaskAndMarker(t *testing.T) {
 	render := func(markup string) func(x, y int) (uint8, uint8, uint8) {
 		t.Helper()
@@ -635,7 +600,6 @@ func TestMaskAndMarker(t *testing.T) {
 		}
 	}
 
-	// The mask is white over the left half, so only that half is painted.
 	at := render(`<svg width="40" height="20">
 	  <mask id="m"><rect width="20" height="20" fill="white"/></mask>
 	  <rect width="40" height="20" fill="black" mask="url(#m)"/></svg>`)
@@ -646,7 +610,6 @@ func TestMaskAndMarker(t *testing.T) {
 		t.Errorf("outside the mask is %d,%d,%d, want the page", r, g, b)
 	}
 
-	// A marker is drawn at each end of the line and nowhere else.
 	at = render(`<svg width="60" height="20">
 	  <marker id="k" markerWidth="4" markerHeight="4" refX="2" refY="2" markerUnits="userSpaceOnUse">
 	    <rect width="4" height="4" fill="black"/>
@@ -663,8 +626,6 @@ func TestMaskAndMarker(t *testing.T) {
 	}
 }
 
-// TestGradientSpread covers what spreadMethod does past the ends of a ramp,
-// which the shader pads and this writes out as the periods the shape reaches.
 // TestHugeDrawing checks that a drawing too large to allocate is refused.
 func TestHugeDrawing(t *testing.T) {
 	for _, size := range []string{"1e30", "1e38", "4294967296", "99999999999999999999"} {
@@ -697,6 +658,7 @@ func TestGradientSingular(t *testing.T) {
 	}
 }
 
+// TestGradientSpread covers spreadMethod past the ends of a ramp.
 func TestGradientSpread(t *testing.T) {
 	build := func(mode string) *gradient {
 		t.Helper()
@@ -716,8 +678,6 @@ func TestGradientSpread(t *testing.T) {
 		return g
 	}
 
-	// Padding leaves one period, and the other two cover the four the shape
-	// reaches across the unit square.
 	if g := build("pad"); g.reps != 0 {
 		t.Errorf("pad wrote %d periods, want the one the ramp is", g.reps)
 	}
@@ -730,7 +690,6 @@ func TestGradientSpread(t *testing.T) {
 			t.Errorf("%s left the axis %v long, want the whole box", mode, g.c1.X-g.c0.X)
 		}
 	}
-	// Repeat starts each period over and reflect turns every other one round.
 	rep, ref := build("repeat"), build("reflect")
 	if !near(rep.ramp(0.3), rep.ramp(0.05)) {
 		t.Errorf("repeat gave %v and %v for the same point of two periods",
@@ -741,8 +700,7 @@ func TestGradientSpread(t *testing.T) {
 	}
 }
 
-// TestRootProperties covers the properties the root element carries, which
-// every icon written as one outline puts there for the drawing to inherit.
+// TestRootProperties covers fill and stroke inherited from the root element.
 func TestRootProperties(t *testing.T) {
 	d, err := Load([]byte(`<svg width="20" height="20" fill="none" stroke="black" stroke-width="2">` +
 		`<rect x="5" y="5" width="10" height="10"/></svg>`))
@@ -756,8 +714,6 @@ func TestRootProperties(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := func(x, y int) uint8 { return img.Pix[y*img.Stride+x*4] }
-	// The rect is stroked and not filled, so its edge is dark and its
-	// middle is the page.
 	if v := at(10, 5); v > 8 {
 		t.Errorf("the edge is %d, want the stroke the root asked for", v)
 	}
@@ -766,8 +722,7 @@ func TestRootProperties(t *testing.T) {
 	}
 }
 
-// TestImageSize covers rendering at a size the caller has room for rather
-// than at the one the drawing asks for, which is what an icon wants.
+// TestImageSize covers rendering at a size the caller asks for.
 func TestImageSize(t *testing.T) {
 	d, err := Load([]byte(`<svg width="40" height="20"><rect width="40" height="20" fill="black"/></svg>`))
 	if err != nil {
@@ -775,7 +730,6 @@ func TestImageSize(t *testing.T) {
 	}
 	defer d.Close()
 	p, _ := d.Page(0)
-	// A square asked of a drawing twice as wide keeps the aspect ratio.
 	img, err := p.ImageSize(80, 80)
 	if err != nil {
 		t.Fatal(err)
@@ -783,7 +737,6 @@ func TestImageSize(t *testing.T) {
 	if b := img.Bounds(); b.Dx() != 80 || b.Dy() != 40 {
 		t.Errorf("the image is %v, want 80x40", b)
 	}
-	// One side alone takes the other from the drawing.
 	img, err = p.ImageSize(0, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -796,8 +749,7 @@ func TestImageSize(t *testing.T) {
 	}
 }
 
-// TestRenderTo covers compositing a drawing onto an image the caller already
-// has, which is what putting an icon on something drawn wants.
+// TestRenderTo covers compositing a drawing onto an existing image.
 func TestRenderTo(t *testing.T) {
 	d, err := Load([]byte(`<svg width="10" height="10"><rect width="10" height="10" fill="black"/></svg>`))
 	if err != nil {
@@ -810,7 +762,6 @@ func TestRenderTo(t *testing.T) {
 	if err := p.RenderTo(dst, raster.Translate(10, 0), &Options{Alpha: true}); err != nil {
 		t.Fatal(err)
 	}
-	// The half it was drawn on is the drawing and the other half is untouched.
 	if r, _, b, _ := dst.At(15, 5).RGBA(); r>>8 > 8 || b>>8 > 8 {
 		t.Errorf("the drawing landed as %v", dst.At(15, 5))
 	}
@@ -819,8 +770,34 @@ func TestRenderTo(t *testing.T) {
 	}
 }
 
-// TestLoadWith covers what a drawing inside a container needs: a loader for
-// the files it names, and a box to measure a percentage size against.
+// TestPictureAliases checks that one picture named three ways is read once.
+func TestPictureAliases(t *testing.T) {
+	var pic bytes.Buffer
+	if err := png.Encode(&pic, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	load := func(name string) ([]byte, error) {
+		reads++
+		return pic.Bytes(), nil
+	}
+	d, err := LoadWith([]byte(`<svg width="30" height="10">`+
+		`<image href="a.png" width="10" height="10"/>`+
+		`<image href="./a.png" x="10" width="10" height="10"/>`+
+		`<image href=".//a.png" x="20" width="10" height="10"/></svg>`), &LoadOptions{Open: load})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := d.Page(0)
+	if _, err := p.ImageDPI(72); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 1 {
+		t.Errorf("a.png was read %d times", reads)
+	}
+}
+
+// TestLoadWith covers a loader for named files and a box for percentage sizes.
 func TestLoadWith(t *testing.T) {
 	files := map[string][]byte{
 		"sheet.css": []byte(`.big { font-size: 40px; } @font-face { font-family: Carried; src: url(face.ttf); }`),
@@ -842,24 +819,18 @@ func TestLoadWith(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A percentage on the root is a percentage of the box it was given, not
-	// of the default page.
 	if b := (&Page{doc: d}).Bounds(); b.X1 != 200 || b.Y1 != 200 {
 		t.Errorf("bounds %v, want 200x200", b)
 	}
 	if opened["sheet.css"] != 1 {
 		t.Errorf("the sheet was read %d times, want 1", opened["sheet.css"])
 	}
-	// The sheet the instruction named is cascaded, and the @font-face in it
-	// is a face the drawing brings rather than a rule.
 	if len(d.rules) != 1 {
 		t.Fatalf("%d rules, want 1", len(d.rules))
 	}
 	if len(d.faces) != 1 || d.faces[0].family != "Carried" {
 		t.Fatalf("faces %+v, want one for Carried", d.faces)
 	}
-	// The face names a file the loader does not have, so it resolves to
-	// nothing rather than failing, and is not read twice.
 	if d.embedded("Carried", false, false) != nil {
 		t.Error("a face read from nothing came back")
 	}
@@ -868,7 +839,6 @@ func TestLoadWith(t *testing.T) {
 		t.Errorf("the face was read %d times, want 1", opened["face.ttf"])
 	}
 
-	// A drawing with no loader looks nothing up at all.
 	plain, err := Load([]byte(markup))
 	if err != nil {
 		t.Fatal(err)
@@ -878,9 +848,7 @@ func TestLoadWith(t *testing.T) {
 	}
 }
 
-// TestTspanPositions covers the per character positions an exporter writes,
-// and the space between two tspans, which belongs to the element that wrote
-// it and must not take the first position the next tspan lists.
+// TestTspanPositions covers per character positions and the space between tspans.
 func TestTspanPositions(t *testing.T) {
 	const markup = `<svg><text font-size="10">
 		<tspan x="0,10,20">abc</tspan>
@@ -894,9 +862,6 @@ func TestTspanPositions(t *testing.T) {
 	c := &textCursor{}
 	r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 
-	// The white space a text element ends with is dropped, and the space
-	// between the two tspans sits where the pen was left rather than taking
-	// the first position the second tspan lists.
 	g := r.laidOut(c)
 	var got []string
 	for _, v := range g {
@@ -905,10 +870,6 @@ func TestTspanPositions(t *testing.T) {
 	if s := strings.Join(got, ""); s != "abc de" {
 		t.Errorf("placed %q, want %q", s, "abc de")
 	}
-	// Every position but the space is one the markup lists. The space is
-	// wherever the pen was left after the c, which is a width the face
-	// decides, so it is checked for being past the c and short of the next
-	// tspan rather than for a number the machine happens to give.
 	for _, c := range []struct {
 		i    int
 		want float32
@@ -922,8 +883,7 @@ func TestTspanPositions(t *testing.T) {
 	}
 }
 
-// TestPageText reads a drawing back as text, which is what a container asks
-// for when the drawing is a page of a book.
+// TestPageText covers reading a drawing back as text.
 func TestPageText(t *testing.T) {
 	d, err := Load([]byte(`<svg width="200" height="60"><text x="10" y="30" font-size="20">Hello</text></svg>`))
 	if err != nil {
@@ -942,9 +902,7 @@ func TestPageText(t *testing.T) {
 	}
 }
 
-// TestFilter covers the pipeline: the region a filter renders into, the
-// primitives that make a picture out of nothing, the two color spaces and the
-// chain one primitive's result reaches the next through.
+// TestFilter covers filter regions, primitives, color spaces and chaining.
 func TestFilter(t *testing.T) {
 	pixels := func(src string) func(x, y int) (uint8, uint8, uint8, uint8) {
 		t.Helper()
@@ -964,8 +922,6 @@ func TestFilter(t *testing.T) {
 		}
 	}
 
-	// A flood fills the whole region, which reaches past the box by a tenth
-	// of it at each edge.
 	at := pixels(`<svg width="40" height="40">` +
 		`<filter id="f"><feFlood flood-color="#00ff00"/></filter>` +
 		`<rect x="10" y="10" width="20" height="20" fill="red" filter="url(#f)"/></svg>`)
@@ -979,7 +935,6 @@ func TestFilter(t *testing.T) {
 		t.Errorf("outside the region is %d,%d,%d, want the page", r, g, b)
 	}
 
-	// A subregion cuts the flood down, and what it leaves is transparent.
 	at = pixels(`<svg width="40" height="40">` +
 		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40">` +
 		`<feFlood flood-color="#00ff00" x="0" y="0" width="20" height="40"/></filter>` +
@@ -991,7 +946,6 @@ func TestFilter(t *testing.T) {
 		t.Errorf("outside the subregion is %d,%d,%d, want the page", r, g, b)
 	}
 
-	// An offset moves the source and leaves nothing behind it.
 	at = pixels(`<svg width="40" height="40">` +
 		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40">` +
 		`<feOffset dx="10" dy="0"/></filter>` +
@@ -1003,8 +957,6 @@ func TestFilter(t *testing.T) {
 		t.Errorf("where it came from is %d, want the page", r)
 	}
 
-	// A color matrix works in linear light unless the drawing says otherwise,
-	// so the same matrix gives two different answers.
 	const half = `<svg width="20" height="20"><filter id="f" %s>` +
 		`<feColorMatrix values="0.5 0 0 0 0  0 0.5 0 0 0  0 0 0.5 0 0  0 0 0 1 0"/></filter>` +
 		`<rect width="20" height="20" fill="white" filter="url(#f)"/></svg>`
@@ -1017,7 +969,6 @@ func TestFilter(t *testing.T) {
 		t.Errorf("half of white in linear light is %d, want well above %d", lin, srgb)
 	}
 
-	// A chain: the flood is blurred, so the middle stays and the edge softens.
 	at = pixels(`<svg width="60" height="60">` +
 		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="60" height="60">` +
 		`<feFlood flood-color="black" x="20" y="20" width="20" height="20" result="a"/>` +
@@ -1036,14 +987,12 @@ func TestFilter(t *testing.T) {
 		t.Errorf("well outside the blur is %d, want the page", out)
 	}
 
-	// A filter that names nothing takes the element off the page.
 	at = pixels(`<svg width="20" height="20">` +
 		`<rect width="20" height="20" fill="red" filter="url(#missing)"/></svg>`)
 	if r, g, b, _ := at(10, 10); r < 248 || g < 248 || b < 248 {
 		t.Errorf("an element with an unresolved filter is %d,%d,%d, want the page", r, g, b)
 	}
 
-	// The shorthand of Filter Effects 1 chains without a filter element.
 	at = pixels(`<svg width="20" height="20">` +
 		`<rect width="20" height="20" fill="#ff0000" filter="grayscale(1)"/></svg>`)
 	r, g, b, _ := at(10, 10)
@@ -1051,7 +1000,6 @@ func TestFilter(t *testing.T) {
 		t.Errorf("grayscale(1) of red is %d,%d,%d, want one grey", r, g, b)
 	}
 
-	// A filter on the root element is applied to everything under it.
 	at = pixels(`<svg width="20" height="20" filter="url(#f)">` +
 		`<filter id="f"><feFlood flood-color="#00ff00"/></filter>` +
 		`<rect width="20" height="20" fill="red"/></svg>`)
@@ -1060,10 +1008,7 @@ func TestFilter(t *testing.T) {
 	}
 }
 
-// TestViewportAndConditions covers what an element that establishes a
-// viewport or chooses between its children does: the clip a nested svg puts
-// on what overflows it, the first child of a switch whose conditions hold,
-// and a font size read once rather than once per pass over the element.
+// TestViewportAndConditions covers nested svg overflow, switch and relative font size.
 func TestViewportAndConditions(t *testing.T) {
 	at := func(src string) func(x, y int) (uint8, uint8, uint8) {
 		t.Helper()
@@ -1083,7 +1028,6 @@ func TestViewportAndConditions(t *testing.T) {
 		}
 	}
 
-	// A nested svg is a viewport, and overflow hides what reaches past it.
 	px := at(`<svg width="40" height="40">` +
 		`<svg x="10" y="10" width="10" height="10">` +
 		`<rect width="40" height="40" fill="black"/></svg></svg>`)
@@ -1094,7 +1038,6 @@ func TestViewportAndConditions(t *testing.T) {
 		t.Errorf("past the nested viewport is %d, want the page", r)
 	}
 
-	// overflow: visible turns the clip off.
 	px = at(`<svg width="40" height="40">` +
 		`<svg x="10" y="10" width="10" height="10" overflow="visible">` +
 		`<rect width="40" height="40" fill="black"/></svg></svg>`)
@@ -1102,7 +1045,6 @@ func TestViewportAndConditions(t *testing.T) {
 		t.Errorf("past a visible viewport is %d, want black", r)
 	}
 
-	// A switch draws the first child it may, and only that one.
 	px = at(`<svg width="40" height="40"><switch>` +
 		`<rect width="40" height="40" fill="#ff0000" requiredExtensions="urn:x"/>` +
 		`<rect width="40" height="40" fill="#00ff00"/>` +
@@ -1111,8 +1053,6 @@ func TestViewportAndConditions(t *testing.T) {
 		t.Errorf("the switch drew %d,%d,%d, want the second child", r, g, b)
 	}
 
-	// A relative font size is a fraction of what the element inherited, and
-	// the element's own style is read once however many passes reach it.
 	d, err := Load([]byte(`<svg width="100" height="40">` +
 		`<g font-size="10"><text id="t" font-size="200%">M</text></g></svg>`))
 	if err != nil {
@@ -1132,12 +1072,8 @@ func TestViewportAndConditions(t *testing.T) {
 	}
 }
 
-// TestTextPath covers a run of characters laid along a path: each one sits
-// where its middle falls, turns with the direction of travel, and one that
-// runs off the end is not drawn.
+// TestTextPath covers characters laid along a path.
 func TestTextPath(t *testing.T) {
-	// A quarter circle from (0,50) up to (50,0), so a character a quarter of
-	// the way along it is turned by about a quarter turn.
 	d, err := Load([]byte(`<svg width="60" height="60" font-size="10">` +
 		`<path id="p" d="M 0 50 L 50 50"/>` +
 		`<path id="q" d="M 50 0 L 50 50"/>` +
@@ -1166,13 +1102,9 @@ func TestTextPath(t *testing.T) {
 	if len(flat) != 2 || len(down) != 2 {
 		t.Fatalf("placed %d and %d glyphs, want two each", len(flat), len(down))
 	}
-	// Along a path that runs to the right, the characters are where ordinary
-	// text would put them and are not turned.
 	if flat[0].y != 50 || flat[0].turn != 0 || flat[1].x <= flat[0].x {
 		t.Errorf("along a horizontal path the glyphs are %v", flat)
 	}
-	// Along one that runs down the page they are turned a quarter and walk
-	// down rather than across.
 	if got := down[0].turn; got < 89 || got > 91 {
 		t.Errorf("down a vertical path the turn is %v, want a quarter", got)
 	}
@@ -1181,9 +1113,7 @@ func TestTextPath(t *testing.T) {
 	}
 }
 
-// TestVerticalText covers a line that runs down the page: a character that
-// stands upright is centered on it and one that does not turns a quarter,
-// and the two advance by different amounts.
+// TestVerticalText covers upright and rotated characters in vertical text.
 func TestVerticalText(t *testing.T) {
 	d, err := Load([]byte(`<svg width="200" height="200" font-size="20">` +
 		`<text x="100" y="30" writing-mode="tb">A日</text></svg>`))
@@ -1209,11 +1139,9 @@ func TestVerticalText(t *testing.T) {
 	if cjk.y <= latin.y {
 		t.Errorf("the second character is at %v, want it below the first", cjk.y)
 	}
-	// An upright character advances by the em however wide it is.
 	if cjk.adv != 20 {
 		t.Errorf("an upright character advances %v, want the em", cjk.adv)
 	}
-	// Both sit about the line the text was placed on rather than beside it.
 	for _, v := range g {
 		if v.x < 100-v.size || v.x > 100+v.size {
 			t.Errorf("%q sits at %v, want it about the line at 100", v.r, v.x)
@@ -1221,11 +1149,7 @@ func TestVerticalText(t *testing.T) {
 	}
 }
 
-// TestBidiText covers the order a text element draws its characters in: a
-// right to left run runs backwards inside a left to right one, direction says
-// which way a chunk runs, unicode-bidi lays a run out the way it names
-// whatever it holds, and a character given a position of its own starts a
-// chunk of its own however it is ordered.
+// TestBidiText covers bidirectional ordering, direction and unicode-bidi.
 func TestBidiText(t *testing.T) {
 	const heb = "\u05e9\u05dc\u05d5\u05dd"
 	drawn := func(markup string) string {
@@ -1248,21 +1172,15 @@ func TestBidiText(t *testing.T) {
 	if got, want := drawn(`<svg><text>ab`+heb+`</text></svg>`), "ab\u05dd\u05d5\u05dc\u05e9"; got != want {
 		t.Errorf("drew %q, want the hebrew backwards", got)
 	}
-	// The paragraph runs right to left, so the number goes after the word it
-	// is written before.
 	if got, want := drawn(`<svg><text direction="rtl">`+heb+` 12</text></svg>`),
 		"12 \u05dd\u05d5\u05dc\u05e9"; got != want {
 		t.Errorf("drew %q, want the run right to left", got)
 	}
-	// An override draws the characters the way the element says whatever they
-	// are, so the latin runs backwards too.
 	if got, want := drawn(`<svg><text direction="rtl" unicode-bidi="bidi-override">abc</text></svg>`),
 		"cba"; got != want {
 		t.Errorf("drew %q, want it overridden", got)
 	}
 
-	// A position of its own makes a character a chunk of its own, in the
-	// order it was written rather than the order it is drawn.
 	d, err := Load([]byte(`<svg><text x="10" y="20 30 40">` + heb + `</text></svg>`))
 	if err != nil {
 		t.Fatal(err)
@@ -1282,8 +1200,7 @@ func TestBidiText(t *testing.T) {
 	}
 }
 
-// TestNewStream covers reading a drawing from a stream and from a reader,
-// which is what a caller holding one inside another container has.
+// TestNewStream covers reading a drawing from a stream and from a reader.
 func TestNewStream(t *testing.T) {
 	const src = `<svg width="40" height="20" xmlns="http://www.w3.org/2000/svg">` +
 		`<rect width="40" height="20" fill="#00ff00"/></svg>`
@@ -1308,8 +1225,7 @@ func TestNewStream(t *testing.T) {
 	}
 }
 
-// TestDrawingLinks covers the anchors a drawing carries: where each one is
-// under the viewBox, and whether it points out of the drawing or inside it.
+// TestDrawingLinks covers the bounds and targets of a drawing's anchors.
 func TestDrawingLinks(t *testing.T) {
 	d, err := Load([]byte(`<svg viewBox="0 0 100 100" width="200" height="200"` +
 		` xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">` +
@@ -1327,22 +1243,18 @@ func TestDrawingLinks(t *testing.T) {
 	if len(links) != 2 {
 		t.Fatalf("%d links, want two: %+v", len(links), links)
 	}
-	// The viewBox doubles the drawing, so the first anchor covers 20 to 60.
 	if l := links[0]; l.URI != "https://example.com" ||
 		!near(l.Rect.X0, 20) || !near(l.Rect.Y0, 20) ||
 		!near(l.Rect.X1, 60) || !near(l.Rect.Y1, 60) {
 		t.Errorf("the outward link is %+v", l)
 	}
-	// The group moves the second one, and it names an element rather than an
-	// address.
 	if l := links[1]; l.URI != "" || l.Fragment != "target" ||
 		!near(l.Rect.X0, 100) || !near(l.Rect.Y0, 80) {
 		t.Errorf("the inward link is %+v", l)
 	}
 }
 
-// TestDrawingHTML covers the drawing's text as HTML, which is what it says
-// where it says it.
+// TestDrawingHTML covers the drawing's text as HTML.
 func TestDrawingHTML(t *testing.T) {
 	d, err := Load([]byte(`<svg width="200" height="100" xmlns="http://www.w3.org/2000/svg">` +
 		`<title>A Drawing</title><text x="10" y="50" font-size="20" fill="#0000ff">Hi &amp; bye</text>` +
@@ -1362,7 +1274,6 @@ func TestDrawingHTML(t *testing.T) {
 			t.Errorf("the HTML has no %q: %s", want, out)
 		}
 	}
-	// The drawing also comes back as itself, resolved.
 	svg, err := p.SVG()
 	if err != nil {
 		t.Fatal(err)
@@ -1372,9 +1283,7 @@ func TestDrawingHTML(t *testing.T) {
 	}
 }
 
-// TestTransformOrigin covers the point a transform turns about: the keywords
-// and the lengths it is written as, and that the box they are a fraction of
-// is the viewport rather than the shape.
+// TestTransformOrigin covers transform-origin keywords and lengths.
 func TestTransformOrigin(t *testing.T) {
 	render := func(origin, turn string) *image.RGBA {
 		d, err := Load([]byte(`<svg viewBox="0 0 200 200" width="200" height="200">` +
@@ -1413,8 +1322,6 @@ func TestTransformOrigin(t *testing.T) {
 		}
 	}
 
-	// A value that cannot be read is ignored, so the transform turns about
-	// the origin of the viewport and the shape leaves it.
 	img := render("top 3em bottom left", "rotate(45)")
 	o := 100*img.Stride + 100*4
 	if img.Pix[o] < 248 {
@@ -1422,9 +1329,7 @@ func TestTransformOrigin(t *testing.T) {
 	}
 }
 
-// TestContextPaint covers what context-fill and context-stroke stand for:
-// the paint of the element that referred to the one drawing them, and none
-// where nothing referred to it.
+// TestContextPaint covers context-fill and context-stroke.
 func TestContextPaint(t *testing.T) {
 	d, err := Load([]byte(`<svg width="30" height="30">` +
 		`<path id="p" fill="context-stroke" d="M 0 0 h 30 v 30 h -30 Z"/>` +
@@ -1444,8 +1349,6 @@ func TestContextPaint(t *testing.T) {
 		t.Errorf("context-stroke drew %d,%d,%d, want the use's stroke", r, g, b)
 	}
 
-	// With nothing referring to it the paint is none, so the shape is not
-	// drawn at all.
 	d2, err := Load([]byte(`<svg width="30" height="30">` +
 		`<path fill="context-fill" d="M 0 0 h 30 v 30 h -30 Z"/></svg>`))
 	if err != nil {
@@ -1462,10 +1365,35 @@ func TestContextPaint(t *testing.T) {
 	}
 }
 
-// TestDocumentRules covers three things a reader has to get right before it
-// draws anything: an element of another vocabulary is not part of the
-// drawing, an entity the document declares for itself is expanded, and a
-// position may be written as a length rather than a number.
+// TestTextPieces checks text split into a million pieces by comments.
+func TestTextPieces(t *testing.T) {
+	src := []byte(`<svg><text>` + strings.Repeat(`x<!---->`, 1<<20) + `</text></svg>`)
+	done := make(chan error, 1)
+	go func() {
+		_, err := Load(src)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a text of a million pieces did not parse")
+	}
+}
+
+// TestEntityBomb checks an entity referenced far more often than it is long.
+func TestEntityBomb(t *testing.T) {
+	value := strings.Repeat("v", 1<<16)
+	refs := strings.Repeat("&a;", 1<<12)
+	big := []byte(`<!DOCTYPE svg [<!ENTITY a "` + value + `">]><svg><text>` + refs + `</text></svg>`)
+	if got := expandEntities(big); len(got) > maxExpanded {
+		t.Errorf("4096 references to a 64 KB entity expanded to %d bytes", len(got))
+	}
+}
+
+// TestDocumentRules covers foreign namespaces, internal entities and length positions.
 func TestDocumentRules(t *testing.T) {
 	d, err := Load([]byte(`<!DOCTYPE svg [<!ENTITY Green "<rect id='r' width='10' height='10' fill='#00ff00'/>">]>` +
 		`<svg width="20" height="20" xmlns="http://www.w3.org/2000/svg"` +
@@ -1496,16 +1424,12 @@ func TestDocumentRules(t *testing.T) {
 		t.Errorf("an element of another vocabulary drew %d,%d,%d", r, g, b)
 	}
 
-	// A position is a length, so a percentage is of the viewport.
 	if v := lengths("10% 20", 200, 16); len(v) != 2 || v[0] != 20 || v[1] != 20 {
 		t.Errorf("lengths read %v, want a percentage of the viewport and a number", v)
 	}
 }
 
-// TestBaselineShift covers where a shifted baseline reaches: one tspan inside
-// another shifts from the baseline the outer one moved to, and a text element
-// starts a baseline rather than shifting from one, so what it declares does
-// not reach a tspan of its.
+// TestBaselineShift covers baseline-shift on text and nested tspans.
 func TestBaselineShift(t *testing.T) {
 	d, err := Load([]byte(`<svg width="200" height="60" font-size="10">` +
 		`<text x="10" y="40"><tspan baseline-shift="20%"><tspan baseline-shift="20%">a</tspan></tspan></text>` +
@@ -1527,8 +1451,6 @@ func TestBaselineShift(t *testing.T) {
 		}
 		ys = append(ys, g[0].y)
 	}
-	// Two nested shifts of a fifth of the em raise the character by two of
-	// them; the one on the text reaches its own character and not its tspan.
 	if ys[0] != 40-4 {
 		t.Errorf("two nested shifts put the character at %v, want 36", ys[0])
 	}
@@ -1540,9 +1462,7 @@ func TestBaselineShift(t *testing.T) {
 	}
 }
 
-// TestFilterUnderRotation holds the coordinate system a filter runs in: the
-// user's own, not the device's. A quarter turn between the element and the
-// page sends an offset along x down the page instead of across it.
+// TestFilterUnderRotation checks that a filter runs in user space, not device space.
 func TestFilterUnderRotation(t *testing.T) {
 	d, err := Load([]byte(`<svg width="50" height="50">` +
 		`<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="50" height="50">` +

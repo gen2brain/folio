@@ -1,9 +1,6 @@
 package syntax
 
-// CCITT Group 3 and Group 4 fax decoding, ITU-T T.4 and T.6, ported from
-// pdf.js, which ported it from XPDF. The output is packed one bit rows in the
-// convention /BlackIs1 describes: a zero bit is black unless it says
-// otherwise, which is what an image or a stencil mask expects.
+// CCITT Group 3 and Group 4 fax decoding, ITU-T T.4 and T.6, ported from pdf.js.
 
 const (
 	ccittEOF     = -1
@@ -69,9 +66,9 @@ func ccittFaxDecode(f *File, data []byte, parms Dict) ([]byte, error) {
 	c.start()
 
 	rowBytes := (c.columns + 7) / 8
-	limit := maxDecoded
-	if c.rows > 0 {
-		limit = min(limit, c.rows*rowBytes)
+	limit := maxCCITTBytes
+	if c.rows > 0 && c.rows <= maxCCITTBytes/rowBytes {
+		limit = c.rows * rowBytes
 	}
 	out := make([]byte, 0, min(limit, 1<<20))
 	for len(out) < limit {
@@ -82,7 +79,7 @@ func ccittFaxDecode(f *File, data []byte, parms Dict) ([]byte, error) {
 		out = append(out, byte(v))
 	}
 	if c.rows > 0 {
-		for len(out) < c.rows*rowBytes {
+		for len(out) < limit {
 			out = append(out, 0xff)
 		}
 	}
@@ -296,8 +293,7 @@ func (c *ccitt) decode1D(columns uint32) {
 	}
 }
 
-// ref reads the reference line, which a stream that codes more changing
-// elements than a row can hold will index past its two sentinels.
+// ref reads the reference line, tolerating an index past its two sentinels.
 func (c *ccitt) ref(i int) uint32 {
 	if i < 0 || i >= len(c.refLine) {
 		return uint32(c.columns)
@@ -408,7 +404,7 @@ func (c *ccitt) decode2D(columns uint32) {
 	}
 }
 
-// vertOffset is how far a vertical code moves from the reference line.
+// vertOffset returns the offset a vertical code moves from the reference line.
 func vertOffset(code int) int {
 	switch code {
 	case twoDimVertR1, twoDimVertL1:
@@ -597,14 +593,12 @@ func (c *ccitt) eatBits(n int) {
 	}
 }
 
-// group4 decodes MMR coded rows, which is the coding CCITTFaxDecode with a
-// negative /K uses and which JBIG2 embeds.
+// group4 decodes MMR coded rows, CCITTFaxDecode with a negative /K.
 type group4 struct {
 	c ccitt
 }
 
-// newGroup4 returns a decoder of columns wide rows that pulls bytes from read,
-// which returns -1 at the end of the data.
+// newGroup4 returns a decoder of columns wide rows that pulls bytes from read.
 func newGroup4(read func() int, columns, rows int, endOfBlock bool) *group4 {
 	g := &group4{c: ccitt{
 		read:     read,
@@ -618,6 +612,5 @@ func newGroup4(read func() int, columns, rows int, endOfBlock bool) *group4 {
 	return g
 }
 
-// next returns the next eight pixels, most significant bit leftmost and a set
-// bit black, or -1 at the end of the data.
+// next returns the next eight pixels, a set bit black, or -1 at the end.
 func (g *group4) next() int { return g.c.readNextChar() }

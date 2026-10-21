@@ -1,7 +1,6 @@
 package font
 
-// GDEF says what a glyph is, GSUB replaces glyphs and GPOS moves them. The
-// three name a script, a feature and a lookup the same way, which is here.
+import "sync"
 
 // otLayout is a parsed GSUB or GPOS table.
 type otLayout struct {
@@ -9,6 +8,9 @@ type otLayout struct {
 	script int
 	feat   int
 	look   int
+
+	mu      sync.Mutex
+	lookups map[int]*otLookup
 }
 
 // otLookup is one lookup: what it does, what it skips, and where it lives.
@@ -38,7 +40,6 @@ const (
 	classComponent = 4
 )
 
-// readLayout reads the header of GSUB or GPOS.
 func readLayout(b []byte) *otLayout {
 	if len(b) < 10 {
 		return nil
@@ -56,10 +57,8 @@ func readLayout(b []byte) *otLayout {
 	return t
 }
 
-// numLookups is how many lookups the table holds.
 func (t *otLayout) numLookups() int { return be16(t.data, t.look) }
 
-// lookup reads one lookup of the list.
 func (t *otLayout) lookup(i int) *otLookup {
 	if i < 0 || i >= t.numLookups() {
 		return nil
@@ -68,11 +67,26 @@ func (t *otLayout) lookup(i int) *otLookup {
 	if off <= t.look || off+6 > len(t.data) {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if l, ok := t.lookups[off]; ok {
+		return l
+	}
+	if t.lookups == nil {
+		t.lookups = map[int]*otLookup{}
+	}
+	l := t.readLookup(off)
+	t.lookups[off] = l
+	return l
+}
+
+func (t *otLayout) readLookup(off int) *otLookup {
 	l := &otLookup{kind: be16(t.data, off), flag: be16(t.data, off+2)}
 	n := be16(t.data, off+4)
 	if off+6+2*n > len(t.data) {
 		return nil
 	}
+	l.subs = make([]int, 0, n)
 	for k := range n {
 		l.subs = append(l.subs, off+be16(t.data, off+6+2*k))
 	}
@@ -82,7 +96,7 @@ func (t *otLayout) lookup(i int) *otLookup {
 	return l
 }
 
-// scriptOffset is where a script's table sits, by tag and then by default.
+// scriptOffset returns the offset of a script's table, by tag and then by default.
 func (t *otLayout) scriptOffset(want string) int {
 	b, at := t.data, t.script
 	n := be16(b, at)
@@ -138,19 +152,29 @@ func (t *otLayout) featureLookups(lang int, want string) []int {
 		return nil
 	}
 	var out []int
+	tables, have := map[int]bool{}, map[int]bool{}
 	for i := range n {
 		fi := be16(b, lang+6+2*i)
-		if tag(b, t.featureTagAt(fi)) != want {
+		at := t.featureTagAt(fi)
+		if tag(b, at) != want {
 			continue
 		}
-		out = append(out, t.lookupsOfFeature(fi)...)
+		if off := be16(b, at+4); tables[off] {
+			continue
+		} else {
+			tables[off] = true
+		}
+		for _, l := range t.lookupsOfFeature(fi) {
+			if !have[l] {
+				have[l] = true
+				out = append(out, l)
+			}
+		}
 	}
-	// A required feature is named on its own and carries no tag of its own
-	// in the list, so it is not looked for here.
 	return out
 }
 
-// featureTagAt is where the tag of one feature of the list sits.
+// featureTagAt returns the offset of the tag of one feature of the list.
 func (t *otLayout) featureTagAt(i int) int {
 	b := t.data
 	if i < 0 || i >= be16(b, t.feat) {
@@ -181,7 +205,7 @@ func (t *otLayout) lookupsOfFeature(i int) []int {
 	return out
 }
 
-// coverageIndex is where a glyph sits in a coverage table, -1 for none.
+// coverageIndex returns the index of a glyph in a coverage table, -1 for none.
 func coverageIndex(b []byte, off, gid int) int {
 	if off <= 0 || off+4 > len(b) {
 		return -1
@@ -222,7 +246,7 @@ func coverageIndex(b []byte, off, gid int) int {
 	return -1
 }
 
-// coverageCount is how many glyphs a coverage table holds.
+// coverageCount returns the number of glyphs a coverage table holds.
 func coverageCount(b []byte, off int) int {
 	if off <= 0 || off+4 > len(b) {
 		return 0
@@ -275,7 +299,6 @@ func classOf(b []byte, off, gid int) int {
 	return 0
 }
 
-// gdef is what GDEF says about the glyphs of a font.
 type gdef struct {
 	data       []byte
 	classes    int
@@ -283,7 +306,6 @@ type gdef struct {
 	markSets   int
 }
 
-// readGDEF reads the offsets GDEF holds.
 func readGDEF(b []byte) *gdef {
 	if len(b) < 12 {
 		return nil
@@ -295,8 +317,6 @@ func readGDEF(b []byte) *gdef {
 	return g
 }
 
-// class is what kind of glyph this is: a base, a ligature, a mark or one
-// component of a ligature.
 func (g *gdef) class(gid int) int {
 	if g == nil {
 		return 0
@@ -328,9 +348,7 @@ func (g *gdef) inMarkSet(set, gid int) bool {
 	return coverageIndex(b, at+off, gid) >= 0
 }
 
-// digest is a rough set of the glyphs a lookup covers, two bit masks over
-// different parts of the glyph number. A lookup whose digest shares no bit
-// with the run cannot match anything in it and is not walked at all.
+// digest is a rough set of the glyphs a lookup covers, as two bit masks.
 type digest struct{ lo, hi uint64 }
 
 func (d *digest) add(gid int) {
@@ -415,8 +433,6 @@ func (t *otLayout) digestOf(l *otLookup, gsub bool, depth int) digest {
 			continue
 		case gsub && (l.kind == gsubContext || l.kind == gsubChain),
 			!gsub && (l.kind == gposContext || l.kind == gposChain):
-			// A format three context names its coverages in a list, and the
-			// first of the input ones is what it matches at.
 			if format == 3 {
 				if l.kind == gsubChain || l.kind == gposChain {
 					nb := be16(b, off+2)

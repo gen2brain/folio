@@ -13,11 +13,14 @@ const (
 	xlsxMaxSheet = 1 << 10
 	xlsxMaxCols  = 1 << 12
 	xlsxMaxRows  = 1 << 20
-	// xlsxColWidth is how wide one unit of a column is, in CSS pixels.
+	// The limits on merged cells per sheet and on a number format's length.
+	xlsxMaxMerged = 1 << 20
+	xlsxMaxFormat = 255
+	// xlsxColWidth is the CSS pixels in one unit of column width.
 	xlsxColWidth = 7
 )
 
-// xlsxStyle is what one entry of the cell style table says about a cell.
+// xlsxStyle is one entry of the cell style table.
 type xlsxStyle struct {
 	format string
 	css    string
@@ -30,7 +33,7 @@ type xlsx struct {
 	o      *ooxml
 	shared []string
 	styles []xlsxStyle
-	// epoch is the day a serial number counts from, which may move to 1904.
+	// epoch is the day a serial number counts from.
 	epoch time.Time
 	pages map[string][]byte
 	sheet []byte
@@ -111,8 +114,6 @@ func (c *xlsx) metadata() Metadata {
 	return m
 }
 
-// readShared holds the strings the cells refer to by index, each of which may
-// be written as several runs.
 func (c *xlsx) readShared() {
 	root, err := c.o.part("xl/sharedStrings.xml")
 	if err != nil {
@@ -136,8 +137,7 @@ func siText(si *xnode) string {
 	return b.String()
 }
 
-// readStyles holds what each cell style says: the number format the value is
-// written with, and the type and the fill it is drawn in.
+// readStyles reads each cell style's number format, font and fill.
 func (c *xlsx) readStyles() {
 	root, err := c.o.part("xl/styles.xml")
 	if err != nil {
@@ -146,7 +146,9 @@ func (c *xlsx) readStyles() {
 	codes := map[string]string{}
 	if n := root.child("numFmts"); n != nil {
 		for _, f := range n.all("numFmt") {
-			codes[f.at("numFmtId")] = f.at("formatCode")
+			if code := f.at("formatCode"); len(code) <= xlsxMaxFormat {
+				codes[f.at("numFmtId")] = code
+			}
 		}
 	}
 	var fonts, fills []string
@@ -253,7 +255,6 @@ func argbColor(v string) string {
 	return ooxmlColor(v)
 }
 
-// sheetPart writes one sheet as a table.
 func (c *xlsx) sheetPart(part, name string) []byte {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?>` + "\n" +
@@ -269,6 +270,9 @@ func (c *xlsx) sheetPart(part, name string) []byte {
 	b.WriteString("<table>")
 	c.columns(&b, root)
 	for _, row := range rowsOf(root) {
+		if c.o.full(b.Len()) {
+			break
+		}
 		at, _ := strconv.Atoi(row.at("r"))
 		b.WriteString("<tr>")
 		col := 0
@@ -276,6 +280,9 @@ func (c *xlsx) sheetPart(part, name string) []byte {
 			x, y := cellRef(cell.at("r"))
 			if x < 0 {
 				x, y = col, at
+			}
+			if c.o.full(b.Len()) {
+				break
 			}
 			for ; col < x && col < xlsxMaxCols; col++ {
 				if !merged[[2]int{col, y}] {
@@ -291,6 +298,7 @@ func (c *xlsx) sheetPart(part, name string) []byte {
 		b.WriteString("</tr>")
 	}
 	b.WriteString("</table></body></html>")
+	c.o.spent += b.Len()
 	return []byte(b.String())
 }
 
@@ -306,8 +314,7 @@ func rowsOf(root *xnode) []*xnode {
 	return rows
 }
 
-// columns writes the widths the sheet asks for, which a column repeats over a
-// range rather than giving one at a time.
+// columns writes the column widths the sheet declares.
 func (c *xlsx) columns(b *strings.Builder, root *xnode) {
 	cols := root.child("cols")
 	if cols == nil {
@@ -346,8 +353,11 @@ func xlsxMerges(root *xnode) (map[[2]int]bool, map[[2]int]xlsxSpan) {
 		}
 		x0, y0 := cellRef(from)
 		x1, y1 := cellRef(to)
-		if x0 < 0 || x1 < x0 || y1 < y0 || x1-x0 >= xlsxMaxCols {
+		if x0 < 0 || x1 < x0 || y1 < y0 || x1-x0 >= xlsxMaxCols || y1 > xlsxMaxRows {
 			continue
+		}
+		if int64(len(covered))+int64(x1-x0+1)*int64(y1-y0+1) > xlsxMaxMerged {
+			break
 		}
 		spans[[2]int{x0, y0}] = xlsxSpan{cols: x1 - x0 + 1, rows: y1 - y0 + 1}
 		for y := y0; y <= y1; y++ {
@@ -386,8 +396,7 @@ func (c *xlsx) cell(b *strings.Builder, cell *xnode, span xlsxSpan) {
 	b.WriteString(">" + esc(c.value(cell, style.format)) + "</td>")
 }
 
-// value is what a cell says, which is a shared string, an inline one, a
-// boolean, an error or a number written the way its format asks.
+// value is the text of a cell, a number written in its format.
 func (c *xlsx) value(cell *xnode, format string) string {
 	switch cell.at("t") {
 	case "s":
@@ -433,9 +442,7 @@ func (c *xlsx) value(cell *xnode, format string) string {
 	return c.number(n, format)
 }
 
-// number writes a value the way its format asks: as a date, as a percentage,
-// or with the separators and the decimals the code names. A code this does
-// not read leaves the number as it is.
+// number writes a value in its format code.
 func (c *xlsx) number(n float64, format string) string {
 	format = strings.TrimSpace(format)
 	if i := strings.IndexByte(format, ';'); i >= 0 {
@@ -453,7 +460,6 @@ func (c *xlsx) number(n float64, format string) string {
 	}
 	s := trimFloat(n)
 	if digits >= 0 {
-		// A spreadsheet rounds half away from zero and Go rounds half to even.
 		if p := math.Pow(10, float64(digits)); p > 0 && !math.IsInf(p, 0) {
 			n = math.Round(n*p) / p
 		}
@@ -478,8 +484,7 @@ func trimFloat(n float64) string {
 	return strconv.FormatFloat(n, 'g', -1, 64)
 }
 
-// dateLayout turns a format code into the layout its tokens name, and reports
-// whether the code is a date at all.
+// dateLayout turns a date format code into a time layout.
 func dateLayout(format string) (string, bool) {
 	var b strings.Builder
 	date, quoted := false, false
@@ -553,8 +558,6 @@ func dateLayout(format string) (string, bool) {
 			}
 			date = true
 		case 'm':
-			// m is a month beside a year or a day and a minute beside an
-			// hour or a second, which is the one ambiguity in the grammar.
 			if minuteAt(format, i) {
 				if run >= 2 {
 					b.WriteString("04")
@@ -592,8 +595,7 @@ func dateLayout(format string) (string, bool) {
 	return b.String(), date
 }
 
-// minuteAt reports the m at an offset standing for a minute, which it does
-// when an hour or a second is what it sits beside.
+// minuteAt reports whether the m at an offset stands for a minute.
 func minuteAt(format string, at int) bool {
 	for i := at - 1; i >= 0; i-- {
 		switch lowerByte(format[i]) {
@@ -627,8 +629,7 @@ func lowerByte(c byte) byte {
 	return c
 }
 
-// numberShape is how many decimals a code asks for, whether it is a
-// percentage, and whether it separates thousands.
+// numberShape is the decimals, percentage and grouping a code asks for.
 func numberShape(format string) (digits int, percent, group bool) {
 	digits = -1
 	dot := strings.IndexByte(format, '.')
@@ -665,8 +666,7 @@ func groupThousands(s string) string {
 	return sign + b.String() + rest
 }
 
-// literalPrefix is the text a code puts in front of the number, which is how
-// a currency is written.
+// literalPrefix is the literal text a code puts before the number.
 func literalPrefix(format string) string {
 	var b strings.Builder
 	for i := 0; i < len(format); i++ {
@@ -694,8 +694,7 @@ func literalPrefix(format string) string {
 	return b.String()
 }
 
-// cellRef is the column and the row a reference like AB12 names, counting
-// columns from zero and rows the way the file does.
+// cellRef is the zero-based column and the row a reference like AB12 names.
 func cellRef(ref string) (col, row int) {
 	i := 0
 	for ; i < len(ref); i++ {

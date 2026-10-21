@@ -58,16 +58,12 @@ const (
 	adobHead = 1024
 )
 
-// readObfuscation reads META-INF/encryption.xml, which says which parts are
-// scrambled and how. Nothing else in a book is encrypted this way: it exists
-// for embedded fonts and the key is the book's own identifier.
+// readObfuscation reads which parts META-INF/encryption.xml says are obfuscated.
 func (d *Document) readObfuscation() {
 	b, err := d.Read("META-INF/encryption.xml")
 	if err != nil {
 		return
 	}
-	// An attribute is read off the element that carries it, which no path
-	// expression reaches into.
 	var e struct {
 		Data []struct {
 			Method struct {
@@ -107,8 +103,7 @@ func (d *Document) readObfuscation() {
 	}
 }
 
-// deobfuscate undoes the scrambling of an embedded font: the first bytes of
-// the file are exclusive ored with a key made from the book's identifier.
+// deobfuscate XORs the head of an embedded font with the book's key.
 func (d *Document) deobfuscate(p string, b []byte) []byte {
 	key, ok := d.obfuscated[p]
 	if !ok || len(key) == 0 {
@@ -124,8 +119,7 @@ func (d *Document) deobfuscate(p string, b []byte) []byte {
 	return b
 }
 
-// idpfKey is the SHA-1 of the identifier with every space taken out, which is
-// what the IDPF font mangling algorithm asks for.
+// idpfKey is the SHA-1 of the identifier with whitespace removed.
 func idpfKey(id string) []byte {
 	var b strings.Builder
 	for _, r := range id {
@@ -140,8 +134,7 @@ func idpfKey(id string) []byte {
 	return sum[:]
 }
 
-// adobeKey is the sixteen bytes the hexadecimal digits of a UUID identifier
-// spell, which Adobe's method uses.
+// adobeKey is the sixteen bytes the hex digits of a UUID identifier spell.
 func adobeKey(id string) []byte {
 	if i := strings.LastIndex(id, "urn:uuid:"); i >= 0 {
 		id = id[i+len("urn:uuid:"):]
@@ -268,8 +261,10 @@ func (d *Document) readPackage(root string) error {
 			byID[it.ID] = item
 		}
 	}
+	inSpine := map[string]bool{}
 	for _, ref := range p.Spine.ItemRefs {
-		if item, ok := byID[ref.IDRef]; ok {
+		if item, ok := byID[ref.IDRef]; ok && !inSpine[ref.IDRef] {
+			inSpine[ref.IDRef] = true
 			item.Linear = ref.Linear != "no"
 			d.spine = append(d.spine, item)
 		}

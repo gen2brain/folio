@@ -6,14 +6,14 @@ import (
 	"encoding/base64"
 	"io"
 	"net/url"
+	urlpath "path"
 	"strings"
 
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
 )
 
-// image draws an image element, which is a picture or a drawing of its own
-// fitted into the box the element gives the way preserveAspectRatio asks.
+// image draws an image element fitted into its box by preserveAspectRatio.
 func (r *runner) image(n *node, ctm raster.Matrix, st state) {
 	if st.invisible {
 		return
@@ -35,7 +35,6 @@ func (r *runner) image(n *node, ctm raster.Matrix, st state) {
 	y, _ := r.length(n, "y", st.vh, st)
 	w, wok := r.length(n, "width", st.vw, st)
 	h, hok := r.length(n, "height", st.vh, st)
-	// A picture with no size of its own is drawn at the size it is.
 	if !wok || w <= 0 {
 		w = float32(iw)
 	}
@@ -43,12 +42,9 @@ func (r *runner) image(n *node, ctm raster.Matrix, st state) {
 		h = float32(ih)
 	}
 
-	// preserveAspectRatio says where in the box the picture sits, which is
-	// where its own rectangle lands under the same transform a viewBox uses.
 	al, sl := aspect(n.attr["preserveAspectRatio"])
 	fit := viewport([]float32{0, 0, float32(iw), float32(ih)}, al, sl, w, h).
 		ApplyRect(raster.Rect{X1: float32(iw), Y1: float32(ih)})
-	// A device draws a picture into the unit square the matrix maps.
 	m := raster.Concat(raster.Matrix{
 		A: fit.X1 - fit.X0, D: fit.Y1 - fit.Y0,
 		E: x + fit.X0, F: y + fit.Y0,
@@ -56,7 +52,6 @@ func (r *runner) image(n *node, ctm raster.Matrix, st state) {
 
 	pushed := false
 	if al != "none" && sl {
-		// A picture that covers its box is clipped to it.
 		var box raster.Path
 		box.Rect(x, y, w, h)
 		r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
@@ -68,8 +63,7 @@ func (r *runner) image(n *node, ctm raster.Matrix, st state) {
 	}
 }
 
-// drawn puts a drawing of its own in the box an image element gives it, the
-// way preserveAspectRatio asks.
+// drawn puts a nested drawing in the box an image element gives it.
 func (r *runner) drawn(n *node, art *Page, ctm raster.Matrix, st state) {
 	bb := art.Bounds()
 	iw, ih := bb.X1, bb.Y1
@@ -99,22 +93,26 @@ func (r *runner) drawn(n *node, art *Page, ctm raster.Matrix, st state) {
 	r.dev.PopClip()
 }
 
-// drawing is the sub-drawing an address names, and nil for one that is a
-// picture rather than a drawing.
+// drawing is the sub-drawing an address names, or nil for a raster picture.
 func (r *runner) drawing(href string) *Page {
 	href = strings.TrimSpace(href)
 	if href == "" {
 		return nil
 	}
-	if p, ok := r.arts[href]; ok {
+	key := refKey(href)
+	if p, ok := r.arts[key]; ok {
 		return p
 	}
 	if r.arts == nil {
 		r.arts = map[string]*Page{}
 	}
-	r.arts[href] = nil
-	b := unzip(r.imageBytes(href))
+	r.arts[key] = nil
+	raw := r.imageBytes(href)
+	b := unzip(raw)
 	if !looksSVG(b) {
+		if _, ok := r.pics[key]; !ok && len(raw) > 0 {
+			r.keepPicture(key, raw)
+		}
 		return nil
 	}
 	d, err := LoadWith(b, &LoadOptions{Open: r.doc.open, Width: r.doc.width, Height: r.doc.height})
@@ -127,11 +125,11 @@ func (r *runner) drawing(href string) *Page {
 		r.fail(err)
 		return nil
 	}
-	r.arts[href] = p
+	r.arts[key] = p
 	return p
 }
 
-// looksSVG reports markup rather than one of the raster formats.
+// looksSVG reports whether b is markup and not a raster format.
 func looksSVG(b []byte) bool {
 	head := b
 	if len(head) > 512 {
@@ -160,17 +158,29 @@ func unzip(b []byte) []byte {
 // maxUnzipped bounds what one compressed drawing may expand to.
 const maxUnzipped = 1 << 26
 
-// picture decodes what a reference names: the bytes a data URL carries, or a
-// file beside the drawing. Nothing is fetched over a network.
+// picture decodes what a reference names: a data URL or a file beside the drawing.
 func (r *runner) picture(href string) gfx.Image {
 	href = strings.TrimSpace(href)
 	if href == "" {
 		return nil
 	}
-	if p, ok := r.pics[href]; ok {
+	key := refKey(href)
+	if p, ok := r.pics[key]; ok {
 		return p
 	}
-	b := r.imageBytes(href)
+	return r.keepPicture(key, r.imageBytes(href))
+}
+
+// refKey keys a reference in the caches, a file by its cleaned path.
+func refKey(href string) string {
+	if strings.HasPrefix(href, "data:") {
+		return href
+	}
+	return urlpath.Clean(href)
+}
+
+// keepPicture decodes a picture and caches it under key within maxHeldPixels.
+func (r *runner) keepPicture(key string, b []byte) gfx.Image {
 	var img gfx.Image
 	if len(b) > 0 {
 		if p, err := gfx.DecodePicture(b); err == nil {
@@ -179,12 +189,22 @@ func (r *runner) picture(href string) gfx.Image {
 			r.fail(err)
 		}
 	}
+	if img != nil {
+		w, h := img.Size()
+		if r.held+w*h > maxHeldPixels {
+			return img
+		}
+		r.held += w * h
+	}
 	if r.pics == nil {
 		r.pics = map[string]gfx.Image{}
 	}
-	r.pics[href] = img
+	r.pics[key] = img
 	return img
 }
+
+// maxHeldPixels bounds the pixels of the pictures one drawing keeps decoded.
+const maxHeldPixels = 1 << 27
 
 func (r *runner) imageBytes(href string) []byte {
 	if strings.HasPrefix(href, "data:") {
@@ -206,8 +226,6 @@ func (r *runner) imageBytes(href string) []byte {
 		}
 		return []byte(s)
 	}
-	// A drawing read out of memory with no loader has nowhere to look, and
-	// an address that leaves the drawing is not followed.
 	if r.doc.open == nil || strings.Contains(href, "://") {
 		return nil
 	}

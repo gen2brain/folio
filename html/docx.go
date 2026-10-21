@@ -14,8 +14,7 @@ const (
 
 const docxMaxLists = 1 << 12
 
-// docxStyle is one entry of the style sheet a document carries: what it is
-// based on, and the paragraph and run properties it sets.
+// docxStyle is one style: its base and its paragraph and run properties.
 type docxStyle struct {
 	kind    string
 	base    string
@@ -47,7 +46,7 @@ type docx struct {
 	media map[string]string
 	// notes are the footnotes and endnotes the body refers to, by identifier.
 	notes map[string]*xnode
-	// inNote guards a note that refers to itself.
+	// inNote guards against a self-referencing note.
 	inNote bool
 }
 
@@ -141,7 +140,7 @@ func (c *docx) metadata() Metadata {
 	return m
 }
 
-// pageBox is the page the section asks for, which a caller may take as is.
+// pageBox is the page the section asks for.
 func (c *docx) pageBox(body *xnode) LayoutOptions {
 	var o LayoutOptions
 	sect := body.child("sectPr")
@@ -367,6 +366,9 @@ func (c *docx) block(n *xnode, depth int) {
 		return
 	}
 	for _, k := range n.kids {
+		if c.o.full(c.body.Len()) {
+			return
+		}
 		switch k.name {
 		case "p":
 			c.para(k, depth)
@@ -390,6 +392,9 @@ func (c *docx) table(n *xnode, depth int) {
 	for _, r := range n.all("tr") {
 		c.body.WriteString("<tr>")
 		for _, cell := range r.all("tc") {
+			if c.o.full(c.body.Len()) {
+				break
+			}
 			pr := cell.child("tcPr")
 			c.body.WriteString("<td")
 			if span, ok := pr.val("gridSpan"); ok && span != "1" {
@@ -583,7 +588,6 @@ func headingLevel(name string, outline int) int {
 	return 0
 }
 
-// runs writes the content of one paragraph.
 func (c *docx) runs(n *xnode, depth int) {
 	if depth > ooxmlMaxDepth {
 		return
@@ -619,7 +623,7 @@ func (c *docx) runs(n *xnode, depth int) {
 // note writes what a footnote or an endnote says, where it is referred to.
 func (c *docx) note(kind, id string, depth int) {
 	n := c.notes[kind+id]
-	if n == nil || c.inNote || depth > ooxmlMaxDepth {
+	if n == nil || c.inNote || depth > ooxmlMaxDepth || c.o.full(c.body.Len()) {
 		return
 	}
 	c.inNote = true
@@ -646,8 +650,6 @@ func (c *docx) run(r *xnode) {
 		open += ">"
 		shut = "</span>"
 	}
-	// A run the file marks up is written as the element that means it, so
-	// that what comes back out is a document rather than a colour.
 	for _, e := range c.emphasis(rPr, style) {
 		open += "<" + e + ">"
 		shut = "</" + e + ">" + shut
@@ -692,8 +694,7 @@ func (c *docx) run(r *xnode) {
 	}
 }
 
-// monoStyles are the character styles a generator marks code with, and
-// monoFamilies the faces it sets it in.
+// The character styles and font families that mark a run as code.
 var (
 	monoStyles = map[string]bool{
 		"verbatimchar": true, "sourcecode": true, "code": true, "htmlcode": true,
@@ -778,7 +779,7 @@ func (c *docx) picture(n *xnode, depth int) string {
 	return `<img src="` + esc(path) + `"` + extent(n, 0) + "/>"
 }
 
-// findRel is the picture a drawing holds, which sits some way inside it.
+// findRel is the relationship of the picture nested in a drawing.
 func findRel(n *xnode, depth int) string {
 	if depth > ooxmlMaxDepth {
 		return ""
@@ -797,8 +798,7 @@ func findRel(n *xnode, depth int) string {
 	return ""
 }
 
-// extent is the size a drawing declares, which is written on the anchor
-// around the picture rather than on the picture itself.
+// extent is the size a drawing declares on its anchor.
 func extent(n *xnode, depth int) string {
 	if depth > ooxmlMaxDepth {
 		return ""
@@ -826,7 +826,7 @@ func emu(v string) float64 {
 	return round2(n / emuPerPixel)
 }
 
-// cssClass is the name a style identifier takes, one a selector may carry.
+// cssClass turns a style identifier into a valid class name.
 func cssClass(id string) string {
 	var b strings.Builder
 	b.WriteString("s-")

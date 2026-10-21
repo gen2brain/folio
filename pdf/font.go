@@ -11,9 +11,7 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// Font is a PDF font dictionary: what the interpreter needs to turn a string
-// into positioned glyphs. The font program itself, and therefore the glyph
-// outlines, arrive with the font engine.
+// Font is a PDF font dictionary, read for turning a string into positioned glyphs.
 type Font struct {
 	Name  Name // /BaseFont, or /Name for a Type3 font
 	Dict  Dict
@@ -46,9 +44,7 @@ type Font struct {
 	forceBold bool
 	italic    bool
 
-	// t3mu guards t3direct, which is filled the first time a Type3 glyph is
-	// shown rather than when the font is read, because reading it means
-	// decoding every glyph procedure.
+	// t3mu guards t3direct, filled the first time a Type3 glyph is shown.
 	t3mu     sync.Mutex
 	t3direct map[Name]bool
 
@@ -60,22 +56,15 @@ type Font struct {
 	prog *font.Font
 	// substituted is true when prog stands in for the font the file asked for.
 	substituted bool
-	// viaUnicode is set for a substituted CID keyed font: the CIDs address
-	// the glyph order of the font the file did not embed, so the stand in is
-	// asked for its glyphs through Unicode instead.
+	// viaUnicode asks a substituted CID keyed font for its glyphs through Unicode.
 	viaUnicode bool
 	// gids maps a character code to a glyph in prog, for a simple font.
 	gids [256]int32
-	// cid2gid is the /CIDToGIDMap stream of a CIDFontType2.
+	// toUnicode is the /ToUnicode CMap.
 	toUnicode *CMap
-	// std is set when the stand in is one of the base fourteen, whose
-	// repertoire is Latin-1. A character outside it is looked for in a face the
-	// machine has; a font given a face for its collection keeps it and shows
-	// nothing for what it does not have, which is what the other readers do.
+	// std is set when the stand in is one of the base fourteen.
 	std bool
-	// fbMu guards fbFaces, which holds one wrapper per face a character the
-	// substitute has no glyph for was drawn out of. The pointer has to be the
-	// same one every time, so that a run of them is one span.
+	// fbMu guards fbFaces, one wrapper per fallback face.
 	fbMu    sync.Mutex
 	fbFaces map[*font.Font]*fallbackFont
 
@@ -87,15 +76,11 @@ type Font struct {
 	doc *Document
 }
 
-// font reads a font dictionary.
 func (d *Document) font(obj Object, res Dict) *Font {
 	dict := d.f.GetDict(obj)
 	if dict == nil {
 		return nil
 	}
-	// The whole build runs under the lock because a font is entered into the
-	// cache before it is filled in, and a second goroutine must not be handed
-	// a half read one. Nothing inside re-enters this.
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if ft, ok := d.fonts[dictKey(obj, dict)]; ok {
@@ -141,8 +126,7 @@ func (d *Document) font(obj Object, res Dict) *Font {
 	return ft
 }
 
-// readDescriptor reads the font descriptor of a simple font, or of the
-// descendant of a composite one.
+// readDescriptor reads the font descriptor of a simple font or a descendant font.
 func (ft *Font) readDescriptor(d *Document, dict Dict) {
 	f := d.f
 	desc := f.GetDict(dict["FontDescriptor"])
@@ -200,8 +184,7 @@ func (d *Document) loadProgram(ft *Font, dict Dict) {
 	d.substitute(ft)
 }
 
-// substitute picks a face for a font the file did not embed: one the machine
-// has for a collection the fourteen cannot draw, or one of the fourteen.
+// substitute picks a face for a font the file did not embed.
 func (d *Document) substitute(ft *Font) {
 	name := string(ft.Name)
 	ft.substituted = true
@@ -223,9 +206,7 @@ var cjkSample = map[string]rune{
 	"GB1": '\u4e00', "CNS1": '\u4e00', "Japan1": '\u3042', "Korea1": '\uac00', "KR": '\uac00',
 }
 
-// systemCJK finds a face the machine has for a character collection the base
-// fourteen have no glyphs for. The document's own name comes first: a file
-// naming SimSun and not embedding it means the face, not a substitute.
+// systemCJK finds a face the machine has for a CJK character collection.
 func (d *Document) systemCJK(name, ordering string, bold, italic bool) *font.Font {
 	sample, ok := cjkSample[ordering]
 	if !ok || d.noSystemFonts {
@@ -243,7 +224,6 @@ func (d *Document) systemCJK(name, ordering string, bold, italic bool) *font.Fon
 	return font.Fallback(sample, bold, italic)
 }
 
-// readToUnicode reads the /ToUnicode CMap, which maps codes to text.
 func (d *Document) readToUnicode(ft *Font, dict Dict) {
 	st := d.f.GetStream(dict["ToUnicode"])
 	if st == nil {
@@ -261,8 +241,7 @@ func (d *Document) readToUnicode(ft *Font, dict Dict) {
 }
 
 // mapGlyphs resolves every character code of a simple font to a glyph in the
-// font program. ISO 32000-1 9.6.6 describes the inputs; the order they are
-// tried in is what real files need rather than what the text says.
+// font program, ISO 32000-1 9.6.6.
 func (d *Document) mapGlyphs(ft *Font) {
 	for i := range ft.gids {
 		ft.gids[i] = -1
@@ -309,9 +288,7 @@ func (d *Document) mapGlyphs(ft *Font) {
 	}
 }
 
-// encodingNames builds the code to glyph name table: the encoding the
-// dictionary names, else the one the program carries, else the standard one,
-// with /Differences over the top.
+// encodingNames builds the code to glyph name table.
 func (ft *Font) encodingNames(builtin *[256]string) [256]string {
 	var names [256]string
 	switch {
@@ -332,9 +309,7 @@ func (ft *Font) encodingNames(builtin *[256]string) [256]string {
 	return names
 }
 
-// glyphFor resolves one code. Every lookup it makes answers -1 when it has
-// nothing, so zero is a glyph like any other: a Type1 program has no glyph
-// order and its CharStrings dictionary puts whichever glyph it likes first.
+// glyphFor resolves one code, or -1 for none.
 func (d *Document) glyphFor(ft *Font, code int, name string) int {
 	p := ft.prog
 
@@ -390,11 +365,6 @@ func (d *Document) glyphFor(ft *Font, code int, name string) int {
 			return gid
 		}
 	}
-	// Reading the character code as a glyph index is a guess, and it is only
-	// available to a program that does not name its glyphs: where the encoding
-	// asked for a name and the font has no such glyph, the answer is that it
-	// has no such glyph. A subset font keeps a few dozen glyphs in whatever
-	// order it likes, so the guess lands on an unrelated letter.
 	if code < p.NumGlyphs() && !p.HasCmap() && (name == "" || !p.HasGlyphNames()) {
 		return code
 	}
@@ -439,8 +409,7 @@ func (d *Document) readType3(ft *Font, dict Dict, res Dict) {
 	}
 }
 
-// cp936Fonts are the GBK names of the five Chinese fonts one generator writes
-// as simple fonts and draws two byte codes through.
+// cp936Fonts are the GBK names of five Chinese fonts.
 var cp936Fonts = []Name{
 	"\xCB\xCE\xCC\xE5",        // SimSun
 	"\xBA\xDA\xCC\xE5",        // SimHei
@@ -449,8 +418,7 @@ var cp936Fonts = []Name{
 	"\xC1\xA5\xCA\xE9",        // SimLi
 }
 
-// cp936Disguised reports a simple font that is really a composite one. The
-// test is narrow on purpose.
+// cp936Disguised reports a simple font that is really a composite one.
 func cp936Disguised(f *syntax.File, dict Dict) bool {
 	desc := f.GetDict(dict["FontDescriptor"])
 	if desc == nil || f.GetInt(desc["Flags"], 0) != 4 {
@@ -468,8 +436,7 @@ func cp936Disguised(f *syntax.File, dict Dict) bool {
 	return false
 }
 
-// readCP936 turns such a font into the composite one it is: GBK codes, CIDs
-// of Adobe-GB1, and the collection's Unicode mapping behind them.
+// readCP936 turns such a font into a GBK coded Adobe-GB1 composite font.
 func (d *Document) readCP936(ft *Font) {
 	ft.Type0 = true
 	ft.cmap = d.predefinedCMap("GBK-EUC-H", 0)
@@ -483,8 +450,7 @@ func (d *Document) readCP936(ft *Font) {
 	ft.cidWidth = map[uint32]float64{}
 }
 
-// readEncoding reads /Encoding: the base encoding it names, and the glyph
-// names /Differences assigns.
+// readEncoding reads /Encoding, its base encoding and /Differences.
 func (d *Document) readEncoding(ft *Font, dict Dict) {
 	enc := d.f.Resolve(dict["Encoding"])
 	if n, ok := enc.(Name); ok {
@@ -560,11 +526,11 @@ func (ft *Font) BaseFont() string { return ft.base }
 // Program returns the font program, embedded or substituted, or nil.
 func (ft *Font) Program() *font.Font { return ft.prog }
 
-// FontName is the name the font goes by: /BaseFont, or /Name for a Type3.
+// FontName returns /BaseFont, or /Name for a Type3 font.
 func (ft *Font) FontName() string { return string(ft.Name) }
 
-// EmBox is how far the font's em box reaches above and below the baseline,
-// in text space. The descriptor is preferred over the program.
+// EmBox returns the reach of the font's em box above and below the baseline,
+// in text space.
 func (ft *Font) EmBox() (ascent, descent float32) {
 	if ft.ascent > 0 && ft.descent < 0 {
 		return ft.ascent, ft.descent
@@ -575,14 +541,13 @@ func (ft *Font) EmBox() (ascent, descent float32) {
 	return 0.8, -0.2
 }
 
-// glyphKey names one glyph procedure, which the device holds while it runs.
+// glyphKey names one glyph procedure.
 type glyphKey struct {
 	font *Font
 	code int
 }
 
-// RunGlyph draws one glyph of a Type3 font into dev, by interpreting the
-// content stream the glyph is.
+// RunGlyph draws one glyph of a Type3 font into dev.
 func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32, depth int) {
 	if !ft.Type3 || ft.doc == nil || depth >= maxNesting || code < 0 || code > 255 {
 		return
@@ -596,8 +561,6 @@ func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, 
 	if proc == nil {
 		return
 	}
-	// The device is what outlives this call, so it is what holds the
-	// procedures on the path to here.
 	if g, ok := dev.(gfx.GlyphRunner); ok {
 		if !g.EnterGlyph(glyphKey{ft, code}) {
 			return
@@ -665,11 +628,7 @@ func (ft *Font) Glyph(c Char) int {
 	return -1
 }
 
-// standardOrder is the last thing left for a CID keyed font the file did not
-// embed and gave no way to read: the CIDs index the glyphs of a font that is
-// not here, and a TrueType font that never rearranged its glyphs is in the
-// standard Macintosh order. Only what that order covers can be guessed at, so
-// a character collection stays undrawn rather than drawn wrongly.
+// standardOrder maps a CID through the standard Macintosh glyph order.
 func (ft *Font) standardOrder(c Char) int {
 	name := font.MacGlyphName(int(c.CID))
 	if name == "" || name == ".notdef" || name == ".null" {
@@ -698,10 +657,7 @@ func (ft *Font) Text(c Char) string {
 	return ft.toUnicode.Text(c.Code)
 }
 
-// Rune returns the character a code stands for, for text extraction. Codes
-// that map to nothing, and mappings that land on a control character, become
-// the replacement character, which is what MuPDF shows and what a text
-// extractor can recognize.
+// Rune returns the character a code stands for, or the replacement character.
 func (ft *Font) Rune(c Char) rune {
 	r := rune(0)
 	if s := ft.Text(c); s != "" {
@@ -728,25 +684,20 @@ func (ft *Font) Rune(c Char) rune {
 	return r
 }
 
-// textRune is what a character stands for as far as the file itself says: the
-// ToUnicode map, then the character collection. It does not ask the font
-// program, which Glyph needs of it.
+// textRune returns the character a code stands for by the file's own maps.
 func (ft *Font) textRune(c Char) rune {
 	if s := ft.Text(c); s != "" {
 		if r := []rune(s)[0]; r >= 32 && !(r >= 127 && r < 160) {
 			return r
 		}
 	}
-	// The collection comes before the program, which for such a font is a
-	// substitute whose glyph names say nothing about the text.
 	if ft.Type0 && ft.ordering != "" {
 		return uniRuneOf(cidUnicode(ft.ordering), c.CID)
 	}
 	return 0
 }
 
-// GlyphNameOf returns what the font program calls the glyph a character
-// selects, which is what a trace of the device calls it too.
+// GlyphNameOf returns the font program's name for the glyph a character selects.
 func (ft *Font) GlyphNameOf(c Char) string {
 	face, gid := ft.GlyphFace(c, nil)
 	p := face.Program()
@@ -757,10 +708,7 @@ func (ft *Font) GlyphNameOf(c Char) string {
 }
 
 // GlyphFace resolves a character to the glyph that draws it and the face it
-// comes from, which is one the machine has when the character is outside what
-// the stand in for a font the file did not embed can draw. cur is the face the
-// run is already in, which keeps a space between two words of a script the
-// stand in has no glyphs for from splitting the run in three.
+// comes from, preferring cur, the face the run is already in.
 func (ft *Font) GlyphFace(c Char, cur gfx.Font) (gfx.Font, int) {
 	if !ft.std {
 		return ft, ft.Glyph(c)
@@ -791,9 +739,7 @@ func (ft *Font) GlyphFace(c Char, cur gfx.Font) (gfx.Font, int) {
 	return ft.face(p), g
 }
 
-// RunFace is the face a whole shown string is drawn from: the one a character
-// the stand in has no glyph for reaches for, so that a word is not half in one
-// typeface and half in another. It is nil when the stand in covers the string.
+// RunFace returns the fallback face a whole shown string is drawn from, or nil.
 func (ft *Font) RunFace(cs []Char) gfx.Font {
 	if !ft.std {
 		return nil
@@ -809,8 +755,7 @@ func (ft *Font) RunFace(cs []Char) gfx.Font {
 	return nil
 }
 
-// fallbackFont is the font with one face swapped for another, which is all a
-// device needs to draw a glyph out of it.
+// fallbackFont is the font with one face swapped for another.
 type fallbackFont struct {
 	*Font
 	prog *font.Font
@@ -832,47 +777,53 @@ func (ft *Font) face(p *font.Font) *fallbackFont {
 	return f
 }
 
-// readW parses the /W array, which is a mix of "first last width" triples and
-// "first [w w w]" pairs.
+// readW parses the /W array of "first last width" triples and "first [w w w]" pairs.
 func readW(f *syntax.File, w Array, out map[uint32]float64) {
-	for i := 0; i < len(w); {
+	writes := 0
+	for i := 0; i < len(w) && writes < maxWWrites; {
 		first := f.GetInt(w[i], -1)
-		if first < 0 || i+1 >= len(w) {
+		if first < 0 || first > maxCID || i+1 >= len(w) {
 			return
 		}
 		switch v := f.Resolve(w[i+1]).(type) {
 		case Array:
 			for j, e := range v {
+				if first+int64(j) > maxCID {
+					break
+				}
 				out[uint32(first)+uint32(j)] = f.GetFloat(e, 0)
+				writes++
 			}
 			i += 2
 		default:
 			if i+2 >= len(w) {
 				return
 			}
-			last := f.GetInt(w[i+1], -1)
+			last := min(f.GetInt(w[i+1], -1), maxCID)
 			width := f.GetFloat(w[i+2], 0)
-			if last >= first && last-first < 1<<20 {
-				for c := first; c <= last; c++ {
-					out[uint32(c)] = width
-				}
+			for c := first; c <= last && writes < maxWWrites; c++ {
+				out[uint32(c)] = width
+				writes++
 			}
 			i += 3
 		}
 	}
 }
 
+// maxCID is the largest CID, and maxWWrites bounds the entries a /W array may write.
+const (
+	maxCID     = 0xffff
+	maxWWrites = 1 << 20
+)
+
 // Char is one character code decoded from a string.
 type Char struct {
 	Code  uint32
 	CID   uint32
 	Bytes int
-	// Width is the glyph advance in text space units of the font size, so
-	// 1000 units per em has already been divided out for everything but a
-	// Type3 font, whose advance goes through its own font matrix.
+	// Width is the glyph advance in text space units of the font size.
 	Width float32
-	// Space is true for a single byte code 32, which is what the word spacing
-	// parameter applies to.
+	// Space is true for a single byte code 32.
 	Space bool
 }
 
@@ -881,8 +832,7 @@ func (ft *Font) Decode(s []byte) []Char {
 	return ft.decode(make([]Char, 0, len(s)), s)
 }
 
-// decode is Decode appending into a buffer the caller owns, so that showing a
-// string need not allocate one.
+// decode is Decode appending into a buffer the caller owns.
 func (ft *Font) decode(out []Char, s []byte) []Char {
 	for i := 0; i < len(s); {
 		var c Char
@@ -930,8 +880,7 @@ func (ft *Font) width(c Char) float32 {
 	return 0
 }
 
-// uncacheable reports whether a Type3 glyph paints with graphics state it
-// never set for itself, and so has to run where the text is shown.
+// uncacheable reports whether a Type3 glyph paints with graphics state it never set.
 func (ft *Font) uncacheable(name Name, proc *Stream) bool {
 	ft.t3mu.Lock()
 	defer ft.t3mu.Unlock()
@@ -995,8 +944,7 @@ func scanType3(data []byte) bool {
 	}
 }
 
-// programWidth asks the font program, or the base-14 metrics when the program
-// is one of the fourteen, for the advance of a character.
+// programWidth returns the advance of a character from the font program or the base-14 metrics.
 func (ft *Font) programWidth(c Char) float32 {
 	if ft.base != "" && c.Code < 256 {
 		if w := font.StandardWidth(ft.base, ft.names[c.Code]); w >= 0 {

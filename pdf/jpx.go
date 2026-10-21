@@ -532,8 +532,8 @@ func jpxTileGrids(ctx *jpxContext) error {
 	}
 	nx := jpxCeilDiv(siz.xsiz-siz.xtosiz, siz.xtsiz)
 	ny := jpxCeilDiv(siz.ysiz-siz.ytosiz, siz.ytsiz)
-	if nx <= 0 || ny <= 0 || nx > 1<<20 || ny > 1<<20 || nx*ny > 1<<20 {
-		return fmt.Errorf("%w: JPX has %dx%d tiles", ErrInvalid, nx, ny)
+	if nx <= 0 || ny <= 0 || nx > 65535 || ny > 65535 || nx*ny > 65535 || nx*ny*len(ctx.components) > 1<<20 {
+		return fmt.Errorf("%w: JPX has %dx%d tiles of %d components", ErrInvalid, nx, ny, len(ctx.components))
 	}
 	for q := 0; q < ny; q++ {
 		for p := 0; p < nx; p++ {
@@ -1882,6 +1882,9 @@ func jpxParseCodestream(data []byte, start, end int) (*jpxContext, error) {
 			}
 			tile := ctx.tiles[part.index]
 			if part.partIndex == 0 {
+				if tile.packets != nil {
+					return ctx, fmt.Errorf("%w: JPX tile %d starts twice", ErrInvalid, part.index)
+				}
 				if err := jpxInitTile(ctx, tile, part); err != nil {
 					return ctx, err
 				}
@@ -2111,7 +2114,7 @@ func jpxDecode(data []byte, indexed bool) (*jpxImage, error) {
 			return nil, fmt.Errorf("%w: JP2 box is %d bytes", ErrInvalid, box)
 		}
 		size := int(box) - header
-		if kind == 0x6a703268 { // jp2h, read its children
+		if kind == 0x6a703268 { // jp2h
 			continue
 		}
 		if kind == 0x6a703263 { // jp2c

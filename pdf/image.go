@@ -15,14 +15,12 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// Image is an image XObject or an inline image. The pixels are not decoded
-// until a device asks for them.
+// Image is an image XObject or an inline image, decoded on demand.
 type Image struct {
 	Width, Height int
 	BPC           int
 	CS            *ColorSpace
-	// Mask is true for a stencil mask, which paints the fill color through
-	// its one bit samples rather than carrying color of its own.
+	// Mask is true for a stencil mask.
 	Mask bool
 	// Interpolate is the /Interpolate hint.
 	Interpolate bool
@@ -83,9 +81,8 @@ func (d *Document) image(st *syntax.Stream, dict Dict, res Dict, inline []byte, 
 	return img
 }
 
-// MaskImage returns the image that supplies this one's transparency, whether
-// it came from /SMask or from a stencil /Mask. Both are drawn the same way:
-// the mask clips, the image fills.
+// MaskImage returns the image that supplies this one's transparency, from
+// /SMask or from a stencil /Mask.
 func (i *Image) MaskImage() *Image {
 	if i.SMask != nil {
 		return i.SMask
@@ -102,8 +99,7 @@ func (i *Image) Size() (w, h int) { return i.Width, i.Height }
 // ColorSpace returns the space the samples are in, nil for a stencil mask.
 func (i *Image) ColorSpace() *ColorSpace { return i.CS }
 
-// Stencil reports an image mask, which paints the fill color through its one
-// bit samples and carries no color of its own.
+// Stencil reports an image mask.
 func (i *Image) Stencil() bool { return i.Mask }
 
 // Smooth reports the /Interpolate hint.
@@ -118,7 +114,6 @@ func (i *Image) Pixels(cs *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	return i.doc.decodedImage(i, cs, shrink)
 }
 
-// drawImage paints an image XObject.
 func (ip *interp) drawImage(st *Stream) {
 	img := ip.doc.image(st, st.Dict, ip.res, nil, 0)
 	if img == nil {
@@ -163,8 +158,7 @@ func (ip *interp) drawImageBody(img *Image, ctm raster.Matrix) {
 	ip.dev.FillImageMask(img, ctm, ip.gs.fill.cs, ip.gs.fill.value, ip.gs.fillAlpha, ip.gs.params)
 }
 
-// inlineImage reads BI ... ID ... EI. The binary data lies in the content
-// stream itself, so the parser has to be steered around it by hand.
+// inlineImage reads BI ... ID ... EI.
 func (ip *interp) inlineImage(p *syntax.Parser) {
 	dict := Dict{}
 	var key Name
@@ -270,17 +264,10 @@ func isPDFSpace(c byte) bool {
 const maxImagePixels = 1 << 28
 
 // Pixmap decodes the image into a pixmap in its own color space, with an
-// alpha channel when it carries transparency. A stencil mask decodes to an
-// alpha only pixmap, since it has no color of its own.
+// alpha channel when it carries transparency.
 func (i *Image) Pixmap() (*raster.Pixmap, error) { return i.decode(i.CS, 0) }
 
-// decode returns the image with its color converted into dst, the space the
-// page composites in, reduced by shrink halvings, which is what the caller is
-// going to draw it at. Where nothing has to touch the whole size
-// pixmap the reduction happens as the samples are unpacked and it is never
-// built; where transparency has to be hung on it first, it is built and
-// reduced afterwards, because the alpha has to be averaged with the color it
-// is premultiplied into rather than picked out of the middle of a block.
+// decode returns the image converted into dst and reduced by shrink halvings.
 func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if int64(i.Width)*int64(i.Height) > maxImagePixels {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
@@ -333,8 +320,7 @@ func (i *Image) data() ([]byte, Name, Dict, error) {
 	return f.DecodeImageData(i.dict, i.inline)
 }
 
-// stencil decodes an /ImageMask into coverage: a sample of zero paints, and
-// /Decode [1 0] turns that around.
+// stencil decodes an /ImageMask into coverage.
 func (i *Image) stencil(data []byte, bpc int, decode []float64, shrink int) (*raster.Pixmap, error) {
 	sh := raster.NewMaskShrinker(i.Width, i.Height, shrink)
 	if sh == nil {
@@ -377,8 +363,6 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *
 		dst = DeviceRGB
 	}
 	alpha := i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil || opacity != nil
-	// An image with no transparency is finished the moment it is unpacked, so
-	// it can be reduced on the way in. One with transparency is not.
 	during := shrink
 	if alpha {
 		during = 0
@@ -402,8 +386,7 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *
 	return px.Subsample(shrink), nil
 }
 
-// bilevel unpacks a one bit image, which is what a scan is, eight samples at a
-// time through a table of every byte's worth of them.
+// bilevel unpacks a one bit image eight samples at a time through a table.
 func (u *unpacker) bilevel(lut []uint8, rowBytes int) {
 	i, px := u.img, u.px
 	n := px.N
@@ -435,7 +418,6 @@ func (u *unpacker) bilevel(lut []uint8, rowBytes int) {
 			o += group
 		}
 		if k := o / group; o < width && k < len(src) {
-			// the last byte of the row holds fewer than eight samples
 			copy(row[o:width], exp[int(src[k])*group:])
 		}
 		u.sh.Commit()
@@ -450,8 +432,7 @@ type unpacker struct {
 	comps  int
 	decode []float64
 	dst    *ColorSpace
-	// cs is the space the samples are in, which for a JPX image is what its
-	// codestream says rather than what the dictionary does.
+	// cs is the space the samples are in.
 	cs *ColorSpace
 	px *raster.Pixmap
 	sh *raster.Shrinker
@@ -509,7 +490,6 @@ func (u *unpacker) run() {
 			src := u.data[start:min(start+rowBytes, len(u.data))]
 			w := min(i.Width, len(src)/u.comps)
 			if !px.Alpha {
-				// the samples are already the row
 				copy(row[:w*n], src[:w*n])
 				u.sh.Commit()
 				continue
@@ -667,8 +647,7 @@ func (u *unpacker) keyedAll(raw []uint32) uint8 {
 	return 0
 }
 
-// table builds the palette a one component image is converted through, one
-// entry per possible sample.
+// table builds the palette a one component image is converted through.
 func (u *unpacker) table() []uint8 {
 	if u.comps != 1 || u.bpc > 8 {
 		return nil
@@ -684,16 +663,14 @@ func (u *unpacker) table() []uint8 {
 	return lut
 }
 
-// direct reports whether the samples are already the destination's own
-// components, which is the ordinary case of an eight bit device image.
+// direct reports whether the samples are already the destination's own components.
 func (u *unpacker) direct() bool {
 	return u.bpc == 8 && len(u.decode) == 0 && u.comps == u.px.N &&
 		u.cs.Kind == u.dst.Kind &&
 		(u.dst.Kind == KindGray || u.dst.Kind == KindRGB || u.dst.Kind == KindCMYK)
 }
 
-// value turns one raw sample into the component the color space expects,
-// through the decode array when there is one.
+// value turns one raw sample into the component the color space expects.
 func (u *unpacker) value(j int, s uint32, maxVal float32) float32 {
 	lo, hi := float32(0), float32(1)
 	if u.cs.Kind == KindIndexed {
@@ -768,8 +745,7 @@ func (b *bits) next() uint32 {
 }
 
 // composite hangs an /SMask or a stencil /Mask on a decoded image and folds
-// the alpha into the color components, in one pass over the samples. Either
-// mask may be a different size, so both are sampled rather than copied.
+// the alpha into the color components.
 func (i *Image) composite(px *raster.Pixmap, opacity []byte) {
 	if !px.Alpha {
 		return
@@ -825,8 +801,7 @@ func (i *Image) composite(px *raster.Pixmap, opacity []byte) {
 	}
 }
 
-// coverage decodes a mask image into one byte a pixel: a stencil mask as its
-// one bit shape, a soft mask as its gray samples.
+// coverage decodes a mask image into one byte a pixel.
 func (i *Image) coverage() (*raster.Pixmap, error) {
 	px, err := i.decode(DeviceGray, 0)
 	if err != nil {
@@ -864,8 +839,7 @@ func adobeTransform(data []byte) int {
 	return -1
 }
 
-// undoAdobe puts back the samples the JPEG stored, which image/jpeg has
-// already turned into ink amounts.
+// undoAdobe puts back the samples the JPEG stored.
 func undoAdobe(pix []byte, transform int) {
 	switch transform {
 	case 0:
@@ -889,8 +863,7 @@ var (
 )
 
 // RegisterImageDecoder installs a decoder for an image filter, taking
-// precedence over the built in one. It is how a caller plugs in a JPEG
-// decoder that reads what image/jpeg refuses, or a JPEG 2000 one.
+// precedence over the built in one.
 func RegisterImageDecoder(filter Name, dec ImageDecoder) {
 	decoderMu.Lock()
 	defer decoderMu.Unlock()
@@ -907,10 +880,6 @@ func imageDecoder(filter Name) ImageDecoder {
 	return decoders[filter]
 }
 
-// filtered is what an image filter that produces pixels rather than bytes
-// leaves behind. The color space and the opacity channel are the codestream's
-// rather than the dictionary's, and neither is written back onto the Image,
-// because two goroutines may be decoding the same one.
 type filtered struct {
 	pix   []byte
 	comps int
@@ -918,8 +887,7 @@ type filtered struct {
 	cs    *ColorSpace
 }
 
-// decodeFiltered runs the filter that produces pixels rather than bytes and
-// returns eight bit samples.
+// decodeFiltered runs the image filter and returns eight bit samples.
 func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) (filtered, error) {
 	var (
 		out        filtered
@@ -954,9 +922,7 @@ func decodeFiltered(filter Name, data []byte, parms Dict, i *Image) (filtered, e
 	return out, nil
 }
 
-// refit lays samples of one size into a buffer of another, which is what a
-// file that lies about its image size gets: the overlap is kept and the rest
-// is left at zero, as the other readers pad it.
+// refit lays samples of one size into a zeroed buffer of another.
 func refit(pix []byte, w, h, dw, dh, n int) []byte {
 	if dw <= 0 || dh <= 0 || int64(dw)*int64(dh) > maxImagePixels {
 		return pix
@@ -968,8 +934,7 @@ func refit(pix []byte, w, h, dw, dh, n int) []byte {
 	return out
 }
 
-// tightRows returns rows of n bytes a pixel with no padding between them,
-// which is the decoder's own buffer whenever it has none to begin with.
+// tightRows returns rows of n bytes a pixel with no padding between them.
 func tightRows(pix []byte, stride, w, h, n int) []byte {
 	if stride == w*n && len(pix) >= w*h*n {
 		return pix[:w*h*n]
@@ -981,11 +946,12 @@ func tightRows(pix []byte, stride, w, h, n int) []byte {
 	return out
 }
 
-// jpegSamples decodes a JPEG into interleaved samples of its own components.
-// Gray stays gray, CMYK stays CMYK, and everything else becomes RGB, because
-// those are the three shapes a PDF color space can name.
+// jpegSamples decodes a JPEG into interleaved gray, RGB or CMYK samples.
 func jpegSamples(data []byte) ([]byte, int, int, int, error) {
-	img, ok, err := gfx.DecodeRegistered(data)
+	if cfg, err := jpeg.DecodeConfig(bytes.NewReader(data)); err == nil && int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return nil, 0, 0, 0, fmt.Errorf("%w: JPEG is %dx%d", ErrUnsupported, cfg.Width, cfg.Height)
+	}
+	img, ok, err := gfx.DecodeRegistered(data, maxImagePixels)
 	if !ok {
 		img, err = jpeg.Decode(bytes.NewReader(data))
 		if errors.Is(err, io.ErrUnexpectedEOF) {
@@ -1041,7 +1007,7 @@ func rgbaSamples(m *image.RGBA, w, h int) []byte {
 	return pix
 }
 
-// chromaShift is how far a coordinate shifts to index a subsampled plane.
+// chromaShift returns the coordinate shift that indexes a subsampled plane.
 func chromaShift(r image.YCbCrSubsampleRatio) (h, v uint) {
 	switch r {
 	case image.YCbCrSubsampleRatio422:
@@ -1080,9 +1046,7 @@ func ycbcrSamples(m *image.YCbCr, w, h int) []byte {
 type imageKey struct {
 	stream *syntax.Stream
 	comps  int
-	// shrink is how many times the decoded pixmap was halved. It belongs in
-	// the key because the cache holds the shrunk pixmap, and a page that draws
-	// one image at two sizes wants both.
+	// shrink counts the halvings of the decoded pixmap.
 	shrink int
 }
 
@@ -1093,13 +1057,10 @@ type imageEntry struct {
 	prev, next *imageEntry
 }
 
-// DefaultImageCacheBytes is how much of a document's decoded images are kept
-// when nothing says otherwise.
+// DefaultImageCacheBytes is the default size of a document's decoded image cache.
 const DefaultImageCacheBytes = 1 << 26
 
-// decodedImage decodes an image into dst's components, or into a stencil when
-// dst is nil, keeping the result while it fits in the cache. Inline images
-// are not cached: their data lives in the content stream and is drawn once.
+// decodedImage decodes an image into dst's components, or a stencil for a nil dst, through the cache.
 func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if img.stream == nil {
 		return img.decode(dst, shrink)
@@ -1119,9 +1080,6 @@ func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raste
 		return e.px, nil
 	}
 
-	// Decoding happens outside the lock: it is the slowest thing a page does
-	// and it depends on nothing the cache holds, so two pages that want the
-	// same image at once both decode it and one of the two is kept.
 	px, err := img.decode(dst, shrink)
 	if err != nil {
 		return nil, err
@@ -1185,9 +1143,7 @@ func (d *Document) imageUnlink(e *imageEntry) {
 	e.prev, e.next = nil, nil
 }
 
-// adoptJPX gives a JPX image the color space and the transparency the
-// codestream carries rather than the dictionary, which ISO 32000-1 7.4.9 says
-// is what a reader must do when the dictionary is silent or disagrees.
+// adoptJPX gives a JPX image the color space and transparency of its codestream, ISO 32000-1 7.4.9.
 func (i *Image) adoptJPX(pix []byte, w, h, n int) ([]byte, int, []byte, *ColorSpace) {
 	smask := i.smaskInData()
 	cs := i.CS
@@ -1225,8 +1181,7 @@ func (i *Image) adoptJPX(pix []byte, w, h, n int) ([]byte, int, []byte, *ColorSp
 	return pix, n, alpha, cs
 }
 
-// codestreamColorSpace is what a JPX image with no /ColorSpace paints in,
-// which is the component count of its codestream less any opacity channel.
+// codestreamColorSpace returns the color space of a JPX image with no /ColorSpace.
 func (i *Image) codestreamColorSpace() *ColorSpace {
 	data, filter, _, err := i.data()
 	if err != nil || filter != "JPXDecode" {

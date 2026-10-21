@@ -12,9 +12,7 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// Page is one page of a document.
-// Page is one page of a document, and is not safe for concurrent use: a
-// goroutine that wants to render a page asks the Document for its own.
+// Page is one page of a document, not safe for concurrent use.
 type Page struct {
 	doc      *Document
 	dict     Dict
@@ -22,8 +20,6 @@ type Page struct {
 	defaults *DefaultColorSpaces
 }
 
-// defaultSpaces is what /DefaultGray, /DefaultRGB and /DefaultCMYK resolve to
-// on this page, over the output intent.
 func (p *Page) defaultSpaces() *DefaultColorSpaces {
 	if p.defaults == nil {
 		p.defaults = p.doc.readDefaults(p.Resources(),
@@ -84,7 +80,7 @@ func (p *Page) Rotate() int {
 	return r / 90 * 90
 }
 
-// UserUnit is the /UserUnit scale, which is 1 for all but very large pages.
+// UserUnit is the /UserUnit scale.
 func (p *Page) UserUnit() float64 {
 	u := p.doc.f.GetFloat(p.dict["UserUnit"], 1)
 	if u <= 0 || u > 1000 {
@@ -94,9 +90,7 @@ func (p *Page) UserUnit() float64 {
 }
 
 // Matrix returns the transform from PDF user space to device space at a given
-// resolution: the y axis flips, the page rotation is applied, and the visible
-// box moves to the origin. The order is the one MuPDF uses, so that traces
-// taken from either carry the same numbers.
+// resolution, with the y axis flipped, the rotation applied and the box at the origin.
 func (p *Page) Matrix(dpi float64) raster.Matrix {
 	s := float32(dpi / 72 * p.UserUnit())
 	m := raster.Scale(s, -s)
@@ -107,8 +101,7 @@ func (p *Page) Matrix(dpi float64) raster.Matrix {
 	return raster.Concat(m, raster.Translate(-box.X0, -box.Y0))
 }
 
-// DeviceBounds returns the page rectangle in device space at a resolution,
-// which is where a raster of the page begins and ends.
+// DeviceBounds returns the page rectangle in device space at a resolution.
 func (p *Page) DeviceBounds(dpi float64) raster.Rect {
 	return p.Matrix(dpi).ApplyRect(p.Bounds())
 }
@@ -135,6 +128,10 @@ func (p *Page) Contents() []byte {
 				p.doc.errorf("page %d contents: %v", p.num+1, err)
 				continue
 			}
+			if buf.Len()+len(b) > maxContentBytes {
+				p.doc.errorf("page %d contents: over %d bytes", p.num+1, maxContentBytes)
+				break
+			}
 			buf.Write(b)
 			buf.WriteByte('\n')
 		}
@@ -143,8 +140,8 @@ func (p *Page) Contents() []byte {
 	return nil
 }
 
-// Run interprets the page into a device, with ctm mapping page space to
-// device space. Both the contents and the annotation appearances are drawn.
+// Run interprets the page contents and annotation appearances into a device,
+// with ctm mapping page space to device space.
 func (p *Page) Run(dev Device, ctm raster.Matrix) error {
 	p.RunContents(dev, ctm)
 	p.RunAnnotations(dev, ctm)
@@ -237,8 +234,6 @@ func (ip *interp) finish() {
 	}
 }
 
-// usesTransparency reports whether the page needs a transparency group: it
-// declares one, or something in its resources blends.
 func (p *Page) usesTransparency() bool {
 	f := p.doc.f
 	if g := f.GetDict(p.dict["Group"]); g != nil && f.GetName(g["S"]) == "Transparency" {
@@ -314,8 +309,7 @@ func (d *Document) resourcesBlend(res Dict, seen map[any]bool, depth int) bool {
 	return false
 }
 
-// key identifies an object for cycle detection: a reference by its number, a
-// direct object by nothing, since a direct object cannot be revisited.
+// key identifies an object for cycle detection.
 func key(o Object) any {
 	if r, ok := o.(Ref); ok {
 		return r
@@ -323,12 +317,8 @@ func key(o Object) any {
 	return nil
 }
 
-// Render draws the page into a new pixmap, with ctm mapping page space to
-// device space. The pixmap covers the page bounds under ctm, rounded out, and
-// records where that is in its X and Y.
-//
-// A page that fails part way still returns what was drawn; the errors are on
-// the Document unless Options.Strict asks for the first one back.
+// Render draws the page into a new pixmap covering the page bounds under ctm,
+// with ctm mapping page space to device space.
 func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 	x0, y0, x1, y1 := ctm.ApplyRect(p.Bounds()).Outer()
 	w, h := x1-x0, y1-y0
@@ -367,14 +357,11 @@ func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 	return px, err
 }
 
-// minBandHeight is how few rows a band may have before splitting the page
-// costs more than it saves.
+// minBandHeight is the fewest rows a band may have.
 const minBandHeight = 64
 
-// renderBands interprets the page once into a display list and then draws the
-// list into n horizontal bands of one pixmap, a goroutine each. Every
-// operation a raster renderer performs is local to the pixels it touches, so a
-// band is the same page with a smaller destination and the bands never meet.
+// renderBands records the page into a display list and draws it into n
+// horizontal bands of one pixmap, a goroutine each.
 func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n int) error {
 	list := NewListDevice()
 	if err := p.Run(list, ctm); err != nil {
@@ -423,9 +410,8 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 	return toRGBA(px), err
 }
 
-// ImageOptions renders the page at a resolution, returning the standard
-// library image type that matches the options: *image.Gray, *image.RGBA,
-// *image.CMYK, or *image.RGBA for anything with an alpha channel.
+// ImageOptions renders the page at a resolution into the standard library
+// image type that matches the options.
 func (p *Page) ImageOptions(dpi float64, o *Options) (image.Image, error) {
 	px, err := p.Render(p.Matrix(dpi), o)
 	if px == nil {
@@ -446,8 +432,7 @@ func (p *Page) RenderTo(dst draw.Image, ctm raster.Matrix, o *Options) error {
 	return err
 }
 
-// toImage converts a pixmap to the standard library type that holds it
-// without losing anything.
+// toImage converts a pixmap to the standard library type that holds it losslessly.
 func toImage(px *raster.Pixmap) image.Image {
 	if px.Alpha {
 		return toRGBA(px)
@@ -469,14 +454,13 @@ func toImage(px *raster.Pixmap) image.Image {
 	return toRGBA(px)
 }
 
-// toRGBA converts a pixmap to premultiplied RGBA, which is where color
-// leaves the document's own space.
-// toRGBA is gfx.ToRGBA, which svg and this package both convert through.
+// toRGBA converts a pixmap to premultiplied RGBA.
 func toRGBA(px *raster.Pixmap) *image.RGBA { return gfx.ToRGBA(px) }
 
-// premultiply scales a component by an alpha, which an image with its own
-// alpha channel is composited with.
 func premultiply(v, a uint8) uint8 {
 	t := uint32(v)*uint32(a) + 128
 	return uint8((t + t>>8) >> 8)
 }
+
+// maxContentBytes bounds the content streams of one page together.
+const maxContentBytes = 1 << 30

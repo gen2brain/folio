@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -14,9 +15,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// PictureDecoder reads one of the raster formats a document carries a picture
-// in. Returning an *image.RGBA whose bounds begin at the origin saves the
-// conversion DecodePicture would otherwise do.
+// PictureDecoder decodes one raster picture format.
 type PictureDecoder func(data []byte) (image.Image, error)
 
 type registered struct {
@@ -30,11 +29,7 @@ var (
 	decoders  []registered
 )
 
-// RegisterPictureDecoder installs a decoder for a picture format, taking
-// precedence over the standard library's for data beginning with magic, in
-// which a question mark matches any byte. Registering the same name again
-// replaces it, and a nil decoder removes it. Unlike image.RegisterFormat it
-// decides nothing for the rest of the program:
+// RegisterPictureDecoder installs a decoder for data beginning with magic, where "?" matches any byte.
 //
 //	gfx.RegisterPictureDecoder("jpeg", "\xff\xd8", func(b []byte) (image.Image, error) {
 //		return jpegn.Decode(bytes.NewReader(b), &jpegn.Options{ToRGBA: true})
@@ -82,26 +77,41 @@ func matchMagic(magic string, b []byte) bool {
 	return true
 }
 
-// DecodeRegistered decodes b with the decoder RegisterPictureDecoder installed
-// for what it begins with, and reports whether there was one.
-func DecodeRegistered(b []byte) (image.Image, bool, error) {
+// DecodeRegistered decodes b with a registered decoder and reports whether one matched.
+// A picture whose header gives more than limit pixels is refused.
+func DecodeRegistered(b []byte, limit int) (image.Image, bool, error) {
 	dec := pictureDecoder(b)
 	if dec == nil {
 		return nil, false, nil
+	}
+	if err := checkHeader(b, limit); err != nil {
+		return nil, true, err
 	}
 	img, err := dec(b)
 	return img, true, err
 }
 
+// checkHeader refuses a picture whose header gives more than limit pixels.
+func checkHeader(b []byte, limit int) error {
+	var w, h int64
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(b)); err == nil {
+		w, h = int64(cfg.Width), int64(cfg.Height)
+	} else if len(b) >= 24 && string(b[:8]) == "\x89PNG\r\n\x1a\n" && string(b[12:16]) == "IHDR" {
+		w, h = int64(binary.BigEndian.Uint32(b[16:])), int64(binary.BigEndian.Uint32(b[20:]))
+	}
+	if w > 1<<31 || h > 1<<31 || w*h > int64(limit) {
+		return fmt.Errorf("%w: picture is %dx%d", ErrUnsupported, w, h)
+	}
+	return nil
+}
+
 // ErrUnsupported is a picture in a form this cannot decode.
 var ErrUnsupported = errors.New("gfx: unsupported")
 
-// DecodeImage reads one of the raster formats a document may carry a picture
-// in and hands back an Image a device can draw.
+// DecodeImage decodes a raster picture into an Image.
 func DecodeImage(b []byte) (Image, error) { return DecodePicture(b) }
 
-// Picture is a raster image, decoded when it is made or, when it was opened
-// through a PictureCache, when a device first asks for its pixels.
+// Picture is a decoded raster image.
 type Picture struct {
 	pix   *raster.Pixmap
 	raw   []byte
@@ -109,13 +119,11 @@ type Picture struct {
 	// W and H are the picture's size in pixels.
 	W, H int
 	mu   sync.Mutex
-	// alt is the picture in another color model, kept for a device that
-	// composites in one this was not decoded into.
+	// alt holds the picture converted to other color models.
 	alt map[raster.Model]*raster.Pixmap
 }
 
-// NewPicture wraps a rendered pixmap as an image a device can draw. Its
-// samples are premultiplied and are not copied.
+// NewPicture wraps a premultiplied pixmap as a Picture without copying it.
 func NewPicture(px *raster.Pixmap) *Picture {
 	if px == nil {
 		return nil
@@ -180,14 +188,13 @@ func convertPixmap(src *raster.Pixmap, m raster.Model) *raster.Pixmap {
 const maxPictureArea = 1 << 26
 
 func boundPicture(w, h int) error {
-	if w <= 0 || h <= 0 || w*h > maxPictureArea {
+	if w <= 0 || h <= 0 || int64(w)*int64(h) > maxPictureArea {
 		return fmt.Errorf("%w: picture is %dx%d", ErrUnsupported, w, h)
 	}
 	return nil
 }
 
-// DecodePicture reads one of the raster formats a document carries a picture
-// in, through a decoder RegisterPictureDecoder installed or the standard one.
+// DecodePicture decodes a raster picture with a registered or a standard decoder.
 func DecodePicture(b []byte) (*Picture, error) {
 	px, err := decodePixmap(b)
 	if err != nil {
@@ -200,6 +207,9 @@ func decodePixmap(b []byte) (*raster.Pixmap, error) {
 	var src image.Image
 	var err error
 	if dec := pictureDecoder(b); dec != nil {
+		if err = checkHeader(b, maxPictureArea); err != nil {
+			return nil, err
+		}
 		src, err = dec(b)
 	} else {
 		var cfg image.Config

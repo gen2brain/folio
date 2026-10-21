@@ -2,6 +2,8 @@ package pdf
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/syntax"
 )
 
 func open(t *testing.T, name string) *Document {
@@ -71,8 +74,7 @@ func TestRotation(t *testing.T) {
 	}
 }
 
-// TestTrace runs the bundled files through the trace device and checks what
-// the interpreter produced.
+// TestTrace checks the trace of the bundled files.
 func TestTrace(t *testing.T) {
 	d := open(t, "minimal.pdf")
 	p, _ := d.Page(0)
@@ -111,8 +113,7 @@ func TestBBoxDevice(t *testing.T) {
 	}
 }
 
-// TestInterpreter drives one content stream per case and checks what reaches
-// the device.
+// TestInterpreter checks the device calls of one content stream per case.
 func TestInterpreter(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -203,8 +204,7 @@ func TestInterpreter(t *testing.T) {
 	}
 }
 
-// runContent builds a one page document around a content stream and returns
-// its trace.
+// runContent returns the trace of a one page document around a content stream.
 func runContent(t *testing.T, content string) string {
 	t.Helper()
 	d := open(t, "minimal.pdf")
@@ -229,8 +229,7 @@ func runContent(t *testing.T, content string) string {
 	return buf.String()
 }
 
-// TestMalformedContent feeds the interpreter broken content streams. None may
-// panic, hang or leave the device stack unbalanced.
+// TestMalformedContent checks broken content streams neither panic, hang nor unbalance the device.
 func TestMalformedContent(t *testing.T) {
 	for _, content := range []string{
 		"", "q", "Q", "Q Q Q Q", "BT", "ET", "f", "S", "W n",
@@ -300,8 +299,7 @@ func FuzzCMap(f *testing.F) {
 
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
 
-// TestFontMapping checks that a code reaches the right glyph, character and
-// width through each kind of font dictionary.
+// TestFontMapping checks code to glyph, character and width for each kind of font.
 func TestFontMapping(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -381,8 +379,7 @@ func TestToUnicodeLigature(t *testing.T) {
 	}
 }
 
-// TestCMapLongSection checks a cidrange section longer than the operand stack
-// the parser once kept, which silently dropped every entry past the 21st.
+// TestCMapLongSection checks a cidrange section of more than 21 entries.
 func TestCMapLongSection(t *testing.T) {
 	d := open(t, "minimal.pdf")
 	var b strings.Builder
@@ -403,8 +400,7 @@ func TestCMapLongSection(t *testing.T) {
 	}
 }
 
-// TestCMapOverlappingRanges checks that ranges which overlap keep the order
-// they were written in, where the first match wins, rather than being bisected.
+// TestCMapOverlappingRanges checks that the first of overlapping ranges wins.
 func TestCMapOverlappingRanges(t *testing.T) {
 	d := open(t, "minimal.pdf")
 	cmapData := "/CIDInit /ProcSet findresource begin\n" +
@@ -420,8 +416,7 @@ func TestCMapOverlappingRanges(t *testing.T) {
 	}
 }
 
-// TestPredefinedCMap checks a built in byte encoding, which decides how many
-// bytes a character code takes.
+// TestPredefinedCMap checks the code lengths of a built in byte encoding.
 func TestPredefinedCMap(t *testing.T) {
 	d := open(t, "minimal.pdf")
 	cm := d.predefinedCMap("90ms-RKSJ-H", 0)
@@ -447,8 +442,7 @@ func TestPredefinedCMap(t *testing.T) {
 	}
 }
 
-// renderContent draws a content stream onto the synthetic 200 by 100 page
-// runContent uses, so that a test can assert pixels.
+// renderContent draws a content stream onto the 200 by 100 page runContent uses.
 func renderContent(t *testing.T, content string, o *Options) *raster.Pixmap {
 	t.Helper()
 	d := open(t, "minimal.pdf")
@@ -712,8 +706,7 @@ func BenchmarkRenderText(b *testing.B) {
 	}
 }
 
-// benchPages builds a document of n identical pages of text and rules, which
-// is what a book looks like to the renderer.
+// benchPages builds a document of n identical pages of text and rules.
 func benchPages(b *testing.B, n int) *Document {
 	b.Helper()
 	objs := []string{"<< /Type /Catalog /Pages 2 0 R >>", ""}
@@ -740,8 +733,7 @@ func benchPages(b *testing.B, n int) *Document {
 	return buildPDFB(b, objs)
 }
 
-// BenchmarkRenderPagesSerial and BenchmarkRenderPagesParallel are the same
-// work, one page at a time and one page a goroutine, against one Document.
+// BenchmarkRenderPagesSerial renders the pages of one Document one at a time.
 func BenchmarkRenderPagesSerial(b *testing.B) {
 	const n = 16
 	d := benchPages(b, n)
@@ -780,10 +772,7 @@ func BenchmarkRenderPagesParallel(b *testing.B) {
 	}
 }
 
-// BenchmarkRenderBands is one page drawn whole and then in bands, which is what
-// Options.Threads buys on a page too big to draw in one goroutine. Text is the
-// case it helps least, because reading the page is most of the work; a shading
-// is the case it helps most, because every pixel is computed.
+// BenchmarkRenderBands draws one page whole and then in bands.
 func BenchmarkRenderBands(b *testing.B) {
 	shading := "<< /Sh << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 612 792]" +
 		" /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >>"
@@ -894,8 +883,6 @@ func TestImageOptions(t *testing.T) {
 				t.Fatalf("gray: the blue rectangle came out %v %v %v", r, g, b)
 			}
 		case tc.o != nil && tc.o.ColorSpace == DeviceCMYK && tc.o.Alpha:
-			// Composited in CMYK and converted back through the document's
-			// own lattice, which is what blue looks like on paper.
 			if b < g+0x4000 || b < r+0x4000 {
 				t.Fatalf("cmyk: the blue rectangle came out %v %v %v", r, g, b)
 			}
@@ -925,9 +912,7 @@ func TestRenderTo(t *testing.T) {
 	}
 }
 
-// buildPDF assembles a document from object bodies numbered from one, so that
-// a test can exercise the things that need a real stream: forms, patterns and
-// Type3 glyph procedures.
+// buildPDF assembles a document from object bodies numbered from one.
 func buildPDF(t *testing.T, objs []string) *Document {
 	t.Helper()
 	var buf bytes.Buffer
@@ -970,11 +955,7 @@ func renderDoc(t *testing.T, d *Document, o *Options) *raster.Pixmap {
 	return px
 }
 
-// TestType3Cycle checks that a Type3 glyph which shows itself stops. A font
-// with no program of its own draws a glyph by running content through the
-// device, which starts an interpreter of its own, so the depth counter of the
-// one that asked does not reach it and the work a cycle does doubles at every
-// turn.
+// TestType3Cycle checks that a Type3 glyph which shows itself stops.
 func TestType3Cycle(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1000,8 +981,7 @@ func TestType3Cycle(t *testing.T) {
 	}
 }
 
-// TestNewStream covers reading a document from a stream that cannot be
-// seeked.
+// TestNewStream covers reading a document from a stream that cannot be seeked.
 func TestNewStream(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "testdata", "minimal.pdf"))
 	if err != nil {
@@ -1020,8 +1000,7 @@ func TestNewStream(t *testing.T) {
 	}
 }
 
-// TestPageHTML covers a page as HTML: the text where it was drawn, in a
-// division of its own, escaped.
+// TestPageHTML covers a page as HTML.
 func TestPageHTML(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1048,10 +1027,7 @@ func TestPageHTML(t *testing.T) {
 	}
 }
 
-// TestNestedColorIsolation checks that a form, a pattern or a glyph procedure
-// setting a color does not reach back into the state that invoked it. The
-// color operators write their operands into the slice the graphics state
-// already holds, so a nested context has to be given its own.
+// TestNestedColorIsolation checks that a nested context's color does not leak to its caller.
 func TestNestedColorIsolation(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1071,9 +1047,7 @@ func TestNestedColorIsolation(t *testing.T) {
 	}
 }
 
-// type1Charstring encodes a Type1 charstring from a tiny operator list: a
-// number is pushed and a name is the operator that consumes what is on the
-// stack.
+// type1Charstring encodes a Type1 charstring from a tiny operator list.
 func type1Charstring(ops ...any) []byte {
 	var out []byte
 	for _, o := range ops {
@@ -1101,8 +1075,7 @@ func type1Charstring(ops ...any) []byte {
 	return out
 }
 
-// type1Crypt is the Type1 stream cipher, used with 55665 for the eexec section
-// and 4330 for a charstring.
+// type1Crypt is the Type1 stream cipher.
 func type1Crypt(plain []byte, key uint16, pad int) []byte {
 	r := key
 	out := make([]byte, 0, len(plain)+pad)
@@ -1118,9 +1091,7 @@ func type1Crypt(plain []byte, key uint16, pad int) []byte {
 	return out
 }
 
-// buildType1 assembles a Type1 font program whose CharStrings dictionary lists
-// names in the given order, so that the first one is glyph zero. A Type1
-// program has no glyph order of its own and nothing says .notdef comes first.
+// buildType1 assembles a Type1 font program with its glyphs in the given order.
 func buildType1(names []string, shapes map[string][]byte) []byte {
 	var priv bytes.Buffer
 	priv.WriteString("dup /Private 8 dict dup begin\n/lenIV 4 def\n")
@@ -1140,10 +1111,7 @@ func buildType1(names []string, shapes map[string][]byte) []byte {
 	return append([]byte(head), type1Crypt(priv.Bytes(), 55665, 4)...)
 }
 
-// TestType1GlyphZero checks that a name resolving to glyph zero is honored. A
-// Type1 CharStrings dictionary may put any glyph first, and treating zero as
-// "no glyph" sent every such name down the fallback path, which lands on the
-// glyph whose index happens to equal the character code.
+// TestType1GlyphZero checks that a name resolving to glyph zero is honored.
 func TestType1GlyphZero(t *testing.T) {
 	big := type1Charstring(0, 500, "hsbw", 100, 100, "rmoveto",
 		300, 0, "rlineto", 0, 300, "rlineto", -300, 0, "rlineto", "closepath", "endchar")
@@ -1176,8 +1144,6 @@ func TestType1GlyphZero(t *testing.T) {
 		streamObj(fmt.Sprintf("/Length1 %d /Length2 0 /Length3 0", len(prog)), string(prog)),
 	})
 	px := renderDoc(t, d, nil)
-	// Glyph "A" is the square from 10,10 to 40,40 at this size; "dollar", the
-	// glyph whose index equals the code, would paint from 60,60 to 80,80.
 	if got := pixel(px, 25, 75); !same(got, 0, 0, 0) {
 		t.Errorf("glyph A drew %v at 25,75, want black", got)
 	}
@@ -1186,17 +1152,12 @@ func TestType1GlyphZero(t *testing.T) {
 	}
 }
 
-// TestType1MissingName checks that a name the font does not carry resolves to
-// nothing rather than to whatever glyph sits at the character code. A subset
-// font keeps a few dozen glyphs in its own order, so reading the code as an
-// index lands on an unrelated letter.
+// TestType1MissingName checks that a name the font does not carry resolves to nothing.
 func TestType1MissingName(t *testing.T) {
 	big := type1Charstring(0, 500, "hsbw", 100, 100, "rmoveto",
 		300, 0, "rlineto", 0, 300, "rlineto", -300, 0, "rlineto", "closepath", "endchar")
 	blank := type1Charstring(0, 500, "hsbw", "endchar")
 
-	// No standard name is in this font, so every lookup fails and only the
-	// guess by index is left. "dollar" sits at 65, the code the page draws.
 	names := []string{".notdef"}
 	shapes := map[string][]byte{".notdef": blank, "dollar": big}
 	for i := 1; i < 65; i++ {
@@ -1222,16 +1183,12 @@ func TestType1MissingName(t *testing.T) {
 		streamObj(fmt.Sprintf("/Length1 %d /Length2 0 /Length3 0", len(prog)), string(prog)),
 	})
 	px := renderDoc(t, d, nil)
-	// Glyph 65 is "dollar", which paints 10,10 to 40,40 and must not be drawn.
 	if got := pixel(px, 25, 75); !same(got, 255, 255, 255) {
 		t.Errorf("the glyph at the character code drew %v at 25,75, want white", got)
 	}
 }
 
-// TestFormCycle checks that two form XObjects that reach each other draw one
-// pass and stop at the cycle, rather than running to the nesting limit. The
-// form halves the scale each time, so a depth counter alone would paint the
-// square sixteen times over.
+// TestFormCycle checks that two form XObjects that reach each other draw one pass.
 func TestFormCycle(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1247,14 +1204,12 @@ func TestFormCycle(t *testing.T) {
 			"0 0 50 50 re f 0.5 0 0 0.5 50 50 cm /A Do"),
 	})
 	px := renderDoc(t, d, nil)
-	// A paints the lower left quarter, B the quarter above it at half scale.
 	if got := pixel(px, 20, 80); !same(got, 0, 0, 255) {
 		t.Errorf("form A drew %v, want blue", got)
 	}
 	if got := pixel(px, 60, 40); !same(got, 0, 0, 255) {
 		t.Errorf("form B drew %v, want blue", got)
 	}
-	// A reached from B is the cycle and must not paint.
 	if got := pixel(px, 80, 20); !same(got, 255, 255, 255) {
 		t.Errorf("the cycle drew %v at the third step, want white", got)
 	}
@@ -1263,8 +1218,7 @@ func TestFormCycle(t *testing.T) {
 	}
 }
 
-// TestFormTwiceIsNotACycle checks that the guard unwinds: the same form drawn
-// twice side by side is not a cycle and draws both times.
+// TestFormTwiceIsNotACycle checks that the same form drawn twice draws both times.
 func TestFormTwiceIsNotACycle(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1284,8 +1238,7 @@ func TestFormTwiceIsNotACycle(t *testing.T) {
 	}
 }
 
-// TestNestedDashIsolation is the same hazard on the dash array, which the d
-// operator also rewrites in place.
+// TestNestedDashIsolation checks that a nested context's dash array does not leak to its caller.
 func TestNestedDashIsolation(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1303,8 +1256,7 @@ func TestNestedDashIsolation(t *testing.T) {
 	}
 }
 
-// imagePDF builds a one page document whose content stream draws a single
-// image, so that the decoders can be tested a sample at a time.
+// imagePDF builds a one page document that draws a single image.
 func imagePDF(t *testing.T, dict, data, content string) *Document {
 	t.Helper()
 	if content == "" {
@@ -1320,10 +1272,7 @@ func imagePDF(t *testing.T, dict, data, content string) *Document {
 	})
 }
 
-// TestImageShrinkCached checks that an image drawn far smaller than it is
-// decodes to the size it will be drawn at and that the cache keeps that, so a
-// page clipping to the same scan many times decodes it once. The whole size
-// pixmap is what the cache used to refuse.
+// TestImageShrinkCached checks that a shrunk image decodes once and is cached at its drawn size.
 func TestImageShrinkCached(t *testing.T) {
 	const w, h = 256, 256
 	d := imagePDF(t, fmt.Sprintf("/Width %d /Height %d /ColorSpace /DeviceGray"+
@@ -1454,8 +1403,6 @@ func TestImageInline(t *testing.T) {
 }
 
 func BenchmarkRenderImage(b *testing.B) {
-	// A 512 by 512 photograph shaped image drawn over a letter page, which is
-	// the downscale the sampler is written for.
 	pix := make([]byte, 512*512*3)
 	seed := uint32(1)
 	for i := range pix {
@@ -1494,8 +1441,6 @@ func BenchmarkRenderImage(b *testing.B) {
 }
 
 func BenchmarkRenderShading(b *testing.B) {
-	// A radial gradient over a letter page, which is the quadratic per pixel
-	// and the table lookup and nothing else.
 	d := buildPDFB(b, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -1523,8 +1468,6 @@ func BenchmarkRenderShading(b *testing.B) {
 }
 
 func BenchmarkRenderTransparency(b *testing.B) {
-	// The same curves as RenderPaths, but under a blend mode, so that every
-	// one of them opens a group of its own and composites it back.
 	var content strings.Builder
 	content.WriteString("/GS gs 0.2 0.4 0.8 rg\n")
 	seed := uint32(1)
@@ -1618,8 +1561,7 @@ func fixture(t *testing.T, name string) string {
 	return string(data)
 }
 
-// TestImageJBIG2 draws testdata/generic.jb2, an MMR coded generic region that
-// jbig2dec decodes as a black frame around a white square.
+// TestImageJBIG2 draws testdata/generic.jb2, an MMR coded generic region.
 func TestImageJBIG2(t *testing.T) {
 	d := imagePDF(t, "/Width 16 /Height 16 /ColorSpace /DeviceGray"+
 		" /BitsPerComponent 1 /Filter /JBIG2Decode", fixture(t, "generic.jb2"), "")
@@ -1634,9 +1576,7 @@ func TestImageJBIG2(t *testing.T) {
 	}
 }
 
-// TestImageJBIG2Globals splits the same image so that the page information
-// lives in the globals stream, which is the shape a real scanner produces and
-// which nothing in any corpus has.
+// TestImageJBIG2Globals draws the same image with its page information in the globals stream.
 func TestImageJBIG2Globals(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1658,8 +1598,7 @@ func TestImageJBIG2Globals(t *testing.T) {
 	}
 }
 
-// TestImageJPX decodes the three codestreams in testdata, which OpenJPEG made
-// from the ramps below without loss, and checks every sample.
+// TestImageJPX checks every sample of the three lossless codestreams in testdata.
 func TestImageJPX(t *testing.T) {
 	gray := make([]byte, 32*32)
 	color := make([]byte, 32*32*3)
@@ -1695,9 +1634,7 @@ func TestImageJPX(t *testing.T) {
 	}
 }
 
-// TestConcurrentRender renders every page of a document from its own goroutine
-// against one Document, which is what a caller converting a book wants and
-// what the object store and the caches are locked for.
+// TestConcurrentRender renders every page of one Document from its own goroutine.
 func TestConcurrentRender(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1757,8 +1694,7 @@ func TestConcurrentRender(t *testing.T) {
 	}
 }
 
-// TestRenderBands draws a page in horizontal bands from several goroutines and
-// requires the result to be the same pixels as drawing it in one.
+// TestRenderBands checks a page drawn in bands against the page drawn whole.
 func TestRenderBands(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -1788,9 +1724,6 @@ func TestRenderBands(t *testing.T) {
 		if got.W != want.W || got.H != want.H {
 			t.Fatalf("%d bands: %dx%d, want %dx%d", n, got.W, got.H, want.W, want.H)
 		}
-		// An edge that crosses a band boundary is clipped there, and the
-		// crossing point rounds to the rasterizer's 1/256 of a pixel, so
-		// a band may differ from the whole page by one coverage unit.
 		for i := range got.Samples {
 			if d := int(got.Samples[i]) - int(want.Samples[i]); d > 1 || d < -1 {
 				t.Fatalf("%d bands: sample %d is %d, want %d",
@@ -1800,13 +1733,27 @@ func TestRenderBands(t *testing.T) {
 	}
 }
 
-// pageObj is a page whose contents are the given object and whose resources
-// name one standard font, so that every page of the test document shares the
-// font cache, the glyph cache and the content stream.
+// pageObj is a page with the given contents and one standard font.
 func pageObj(contents int) string {
 	return fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents %d 0 R"+
 		" /Resources << /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
 		contents)
+}
+
+// TestJPXTileTwice checks a codestream that starts the same tile twice.
+func TestJPXTileTwice(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "testdata", "gray.j2k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := b[110 : 110+272]
+	twice := append(append(append([]byte{}, b[:110+272]...), part...), b[110+272:]...)
+	if _, err := jpxParseCodestream(twice, 0, len(twice)); err == nil || !strings.Contains(err.Error(), "starts twice") {
+		t.Errorf("a tile started twice gave %v", err)
+	}
+	if _, err := jpxDecode(b, false); err != nil {
+		t.Errorf("gray.j2k: %v", err)
+	}
 }
 
 func FuzzJPX(fu *testing.F) {
@@ -1821,8 +1768,7 @@ func FuzzJPX(fu *testing.F) {
 	})
 }
 
-// shadingPDF builds a one page document whose content stream paints one
-// shading, given as the last object.
+// shadingPDF builds a one page document that paints the last object as a shading.
 func shadingPDF(t *testing.T, content, shade string, extra ...string) *Document {
 	t.Helper()
 	objs := []string{
@@ -1852,8 +1798,7 @@ func TestShadingAxial(t *testing.T) {
 	}
 }
 
-// TestShadingAxialExtend checks that a shading paints past its axis only
-// where Extend says it may.
+// TestShadingAxialExtend checks that a shading paints past its axis only per Extend.
 func TestShadingAxialExtend(t *testing.T) {
 	d := shadingPDF(t, "/Sh sh",
 		"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [40 0 60 0]"+
@@ -1870,8 +1815,7 @@ func TestShadingAxialExtend(t *testing.T) {
 	}
 }
 
-// TestShadingRadial checks the concentric arrangement, whose quadratic
-// degenerates to a distance from one point.
+// TestShadingRadial checks a radial shading of concentric circles.
 func TestShadingRadial(t *testing.T) {
 	d := shadingPDF(t, "/Sh sh",
 		"<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [50 50 0 50 50 40]"+
@@ -1901,8 +1845,7 @@ func TestShadingPattern(t *testing.T) {
 	}
 }
 
-// TestTilingPattern checks that a tile repeats on the XStep lattice and that
-// the pattern's own bounding box clips what each repetition draws.
+// TestTilingPattern checks the XStep lattice and the clip to the pattern's bounding box.
 func TestTilingPattern(t *testing.T) {
 	d := shadingPDF(t, "/Pattern cs /P scn 0 0 100 100 re f",
 		streamObj("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"+
@@ -1923,8 +1866,7 @@ func TestTilingPattern(t *testing.T) {
 	}
 }
 
-// TestTilingPatternUncolored checks PaintType 2, where the tile has no color
-// of its own and takes the one the pattern was selected with.
+// TestTilingPatternUncolored checks a PaintType 2 tile takes the color it was selected with.
 func TestTilingPatternUncolored(t *testing.T) {
 	d := shadingPDF(t, "/Cs cs 0 0 1 /P scn 0 0 100 100 re f",
 		streamObj("/PatternType 1 /PaintType 2 /TilingType 1 /BBox [0 0 10 10]"+
@@ -1935,8 +1877,7 @@ func TestTilingPatternUncolored(t *testing.T) {
 	}
 }
 
-// TestTilingPatternPathIsolation checks that a tile's own path building does not
-// reach the path the pattern is filling, which the interpreter shares.
+// TestTilingPatternPathIsolation checks that a tile's path does not reach the path being filled.
 func TestTilingPatternPathIsolation(t *testing.T) {
 	d := shadingPDF(t, "/Pattern cs /P scn 20 20 60 60 re f",
 		streamObj("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"+
@@ -1951,8 +1892,7 @@ func TestTilingPatternPathIsolation(t *testing.T) {
 	}
 }
 
-// TestShadingFunctionBased checks a type 1 shading, which is evaluated over
-// a grid of its own domain and mapped onto the page by its matrix.
+// TestShadingFunctionBased checks a type 1 shading.
 func TestShadingFunctionBased(t *testing.T) {
 	d := shadingPDF(t, "/Sh sh",
 		"<< /ShadingType 1 /ColorSpace /DeviceRGB /Domain [0 1 0 1]"+
@@ -1967,8 +1907,7 @@ func TestShadingFunctionBased(t *testing.T) {
 	}
 }
 
-// TestShadingMesh checks a type 4 free form mesh: one triangle with a color
-// at each corner, interpolated across it.
+// TestShadingMesh checks a type 4 free form mesh of one triangle.
 func TestShadingMesh(t *testing.T) {
 	data := "\x00\x00\x00\xff\x00\x00" + // (0,0) red
 		"\x00\xff\x00\x00\xff\x00" + // (100,0) green
@@ -1992,9 +1931,7 @@ func TestShadingMesh(t *testing.T) {
 	}
 }
 
-// TestOptionalContentOff checks that a marked content section naming a group
-// the default configuration turns off draws nothing. The group is named by a
-// reference, so the property has to reach the visibility test unresolved.
+// TestOptionalContentOff checks that marked content in a group that is off draws nothing.
 func TestOptionalContentOff(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R]" +
@@ -2016,8 +1953,7 @@ func TestOptionalContentOff(t *testing.T) {
 	}
 }
 
-// groupPDF builds a one page document whose content draws a form XObject,
-// with the extra objects appended after it.
+// groupPDF builds a one page document that draws a form XObject.
 func groupPDF(t *testing.T, content, formDict, formBody string, extra ...string) *Document {
 	t.Helper()
 	objs := []string{
@@ -2031,9 +1967,7 @@ func groupPDF(t *testing.T, content, formDict, formBody string, extra ...string)
 	return buildPDF(t, append(objs, extra...))
 }
 
-// TestGroupAlpha checks that a transparency group composites as one object:
-// two overlapping opaque squares inside a group at half alpha have to come out
-// the same shade everywhere, not twice as dark where they overlap.
+// TestGroupAlpha checks that a transparency group composites as one object.
 func TestGroupAlpha(t *testing.T) {
 	d := groupPDF(t, "/GS gs /Fm Do",
 		"/Group << /S /Transparency /CS /DeviceRGB /I true >>",
@@ -2050,8 +1984,7 @@ func TestGroupAlpha(t *testing.T) {
 	}
 }
 
-// TestBlendMultiply checks a blend mode against what the backdrop under it
-// already holds.
+// TestBlendMultiply checks Multiply against the backdrop.
 func TestBlendMultiply(t *testing.T) {
 	px := renderContent(t, "1 0 0 rg 0 0 200 100 re f /Mul gs 0 0 1 rg 0 0 100 100 re f", nil)
 	if got := pixel(px, 50, 50); !same(got, 0, 0, 0) {
@@ -2062,8 +1995,7 @@ func TestBlendMultiply(t *testing.T) {
 	}
 }
 
-// TestBlendScreen is the same the other way: Screen against white is white,
-// which is what says the backdrop reaches the blend at all.
+// TestBlendScreen checks Screen against the backdrop.
 func TestBlendScreen(t *testing.T) {
 	px := renderContent(t, "/Scr gs 0 0 1 rg 0 0 100 100 re f", nil)
 	if got := pixel(px, 50, 50); !same(got, 255, 255, 255) {
@@ -2071,11 +2003,8 @@ func TestBlendScreen(t *testing.T) {
 	}
 }
 
-// TestSoftMaskLuminosity checks that a luminosity soft mask lets through what
-// its group painted white and stops what it painted black.
+// TestSoftMaskLuminosity checks a luminosity soft mask.
 func TestSoftMaskLuminosity(t *testing.T) {
-	// The mask group paints its left half white and leaves the rest at the
-	// black its backdrop defaults to.
 	d := groupPDF(t, "/GS gs 1 0 0 rg 0 0 100 100 re f",
 		"/Group << /S /Transparency /CS /DeviceGray >>",
 		"1 g 0 0 50 100 re f",
@@ -2089,9 +2018,7 @@ func TestSoftMaskLuminosity(t *testing.T) {
 	}
 }
 
-// TestSoftMaskPathIsolation checks that the form a soft mask renders does not
-// reach the path it is masking. The mask is rendered from inside the painting
-// operator, so both are building into the interpreter's one path.
+// TestSoftMaskPathIsolation checks that a soft mask's form does not reach the path it masks.
 func TestSoftMaskPathIsolation(t *testing.T) {
 	d := groupPDF(t, "/GS gs 1 0 0 rg 20 20 60 60 re f",
 		"/Group << /S /Transparency /CS /DeviceGray >>",
@@ -2106,8 +2033,7 @@ func TestSoftMaskPathIsolation(t *testing.T) {
 	}
 }
 
-// TestSoftMaskAlpha checks the other kind of soft mask, which reads what the
-// group painted rather than how bright it is.
+// TestSoftMaskAlpha checks an alpha soft mask.
 func TestSoftMaskAlpha(t *testing.T) {
 	d := groupPDF(t, "/GS gs 1 0 0 rg 0 0 100 100 re f",
 		"/Group << /S /Transparency /CS /DeviceGray >>",
@@ -2122,8 +2048,7 @@ func TestSoftMaskAlpha(t *testing.T) {
 	}
 }
 
-// TestSoftMaskTransfer checks that /TR is applied to the mask, here inverting
-// it so that the half the group painted white is the half that is hidden.
+// TestSoftMaskTransfer checks that /TR is applied to the mask.
 func TestSoftMaskTransfer(t *testing.T) {
 	d := groupPDF(t, "/GS gs 1 0 0 rg 0 0 100 100 re f",
 		"/Group << /S /Transparency /CS /DeviceGray >>",
@@ -2139,9 +2064,7 @@ func TestSoftMaskTransfer(t *testing.T) {
 	}
 }
 
-// TestGroupBlendInside checks that a blend mode inside a non-isolated group
-// still sees what is under the group, which is what makes such a group worth
-// keeping straight rather than turning into a pixmap of its own.
+// TestGroupBlendInside checks that a blend inside a non-isolated group sees the backdrop.
 func TestGroupBlendInside(t *testing.T) {
 	d := groupPDF(t, "0 1 0 rg 0 0 100 100 re f /Fm Do",
 		"/Group << /S /Transparency /CS /DeviceRGB /I false >>",
@@ -2153,10 +2076,7 @@ func TestGroupBlendInside(t *testing.T) {
 	}
 }
 
-// TestGroupKnockout checks that an element of a knockout group composites
-// against the backdrop the group opened with rather than against the element
-// before it. The inner group blends, so it says which backdrop it saw: red
-// over nothing, black if it saw the blue underneath.
+// TestGroupKnockout checks that a knockout group element composites against the group backdrop.
 func TestGroupKnockout(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -2183,9 +2103,7 @@ func TestGroupKnockout(t *testing.T) {
 	}
 }
 
-// layerPDF builds a document with two optional content groups, the second of
-// which the default configuration turns off, and a page that paints a
-// rectangle under each.
+// layerPDF builds a document with two optional content groups, the second off.
 func layerPDF(t *testing.T, config string) *Document {
 	t.Helper()
 	return buildPDF(t, []string{
@@ -2236,8 +2154,7 @@ func TestSetLayers(t *testing.T) {
 	}
 }
 
-// TestLayerUsage checks a usage application dictionary, which is how a group
-// says it is meant for the screen and not for paper.
+// TestLayerUsage checks a usage application dictionary.
 func TestLayerUsage(t *testing.T) {
 	d := layerPDF(t, "/AS [<< /Event /Print /Category [/Print] /OCGs [6 0 R] >>]")
 	if got := d.Layers(); !got[1].On {
@@ -2253,8 +2170,7 @@ func TestLayerUsage(t *testing.T) {
 	}
 }
 
-// TestBaseStateOff checks the other way a configuration can start, where every
-// group is off except the ones it lists.
+// TestBaseStateOff checks a configuration with /BaseState /OFF.
 func TestBaseStateOff(t *testing.T) {
 	d := layerPDF(t, "/BaseState /OFF /ON [6 0 R]")
 	got := d.Layers()
@@ -2284,8 +2200,7 @@ func annotPDF(t *testing.T, annots ...string) *Document {
 	return buildPDF(t, objs)
 }
 
-// TestAnnotationLink checks that a link is not drawn even when it carries an
-// appearance, which is what every renderer this is held to does.
+// TestAnnotationLink checks that a link is not drawn even when it carries an appearance.
 func TestAnnotationLink(t *testing.T) {
 	d := annotPDF(t, "<< /Type /Annot /Subtype /Link /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
 	px := renderDoc(t, d, nil)
@@ -2294,8 +2209,7 @@ func TestAnnotationLink(t *testing.T) {
 	}
 }
 
-// TestAnnotationUsage checks the print flag, which says an annotation is for
-// paper and not for the screen.
+// TestAnnotationUsage checks the print flag.
 func TestAnnotationUsage(t *testing.T) {
 	d := annotPDF(t, "<< /Type /Annot /Subtype /Square /F 4 /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
 	px := renderDoc(t, d, nil)
@@ -2328,9 +2242,7 @@ func TestAnnotationHidden(t *testing.T) {
 	}
 }
 
-// TestAnnotationWidgetsLast checks that a widget is drawn after the
-// annotations that come before it in the array, because a form field belongs
-// on top of the page it sits on.
+// TestAnnotationWidgetsLast checks that widgets are drawn after other annotations.
 func TestAnnotationWidgetsLast(t *testing.T) {
 	d := annotPDF(t,
 		"<< /Type /Annot /Subtype /Widget /FT /Btn /T (b) /Rect [0 0 100 100] /AP << /N 6 0 R >> >>",
@@ -2341,9 +2253,7 @@ func TestAnnotationWidgetsLast(t *testing.T) {
 	}
 }
 
-// TestAnnotationWidgetNoField checks that a widget whose field type and name
-// are on the parent field is drawn. Every widget of a page draws, which is
-// what MuPDF's own page list holds.
+// TestAnnotationWidgetNoField checks that a widget with its field on the parent is drawn.
 func TestAnnotationWidgetNoField(t *testing.T) {
 	d := annotPDF(t,
 		"<< /Type /Annot /Subtype /Widget /Parent 9 0 R /Rect [0 0 100 100] /AP << /N 6 0 R >> >>")
@@ -2353,9 +2263,7 @@ func TestAnnotationWidgetNoField(t *testing.T) {
 	}
 }
 
-// TestPatternText checks that text filled with a pattern clips to the glyphs
-// and paints the pattern through them, which is the only way a device that
-// knows nothing of patterns can draw one.
+// TestPatternText checks that pattern filled text clips to the glyphs and paints through them.
 func TestPatternText(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -2387,8 +2295,7 @@ func TestPatternText(t *testing.T) {
 	}
 }
 
-// textDoc is a page of Helvetica text: two lines, and a third far enough to
-// the right on the second baseline to be a line of its own.
+// textDoc is a page of three lines of Helvetica text.
 func textDoc(t *testing.T) *Document {
 	t.Helper()
 	return buildPDF(t, []string{
@@ -2445,8 +2352,6 @@ func TestStructuredText(t *testing.T) {
 	if got := len(first.Chars); got != len("Hello world") {
 		t.Fatalf("the first line has %d characters, want %d", got, len("Hello world"))
 	}
-	// The device works in page space, where y counts down from the top, so
-	// text drawn at y=160 in user space is near the top of a 200 point page.
 	if first.Bounds.Y0 < 20 || first.Bounds.Y0 > 45 {
 		t.Fatalf("the first line is at y %v, want it near the top", first.Bounds.Y0)
 	}
@@ -2475,8 +2380,6 @@ func TestPageLinks(t *testing.T) {
 	if got := links[0].Page; got != -1 {
 		t.Fatalf("page = %d, want -1 for a link out of the document", got)
 	}
-	// /Rect is in user space and the link comes back in page space, so the
-	// top of the rectangle is 200-175.
 	if got := links[0].Rect; got.Y0 != 25 || got.Y1 != 50 || got.X0 != 20 {
 		t.Fatalf("rect = %v", got)
 	}
@@ -2508,8 +2411,6 @@ func TestLinkDestination(t *testing.T) {
 }
 
 func TestPageImageNaturalSize(t *testing.T) {
-	// A page of 72 by 72 points carrying nothing but a 144 by 144 image is a
-	// scan at 144 dots per inch, and has to come back at that size.
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -2554,9 +2455,34 @@ func TestPageSVG(t *testing.T) {
 	}
 }
 
-// TestCIDUnicode checks the character collection standing in for a
-// /ToUnicode: a composite font that names one and embeds nothing says what
-// its text is only through the collection's own Unicode mapping.
+// TestReadW checks the /W array, and that repeated ranges cannot multiply work.
+func TestReadW(t *testing.T) {
+	f := &syntax.File{}
+	out := map[uint32]float64{}
+	readW(f, Array{Integer(1), Array{Integer(500), Integer(600)}, Integer(10), Integer(12), Integer(700)}, out)
+	want := map[uint32]float64{1: 500, 2: 600, 10: 700, 11: 700, 12: 700}
+	if len(out) != len(want) {
+		t.Fatalf("got %v, want %v", out, want)
+	}
+	for k, v := range want {
+		if out[k] != v {
+			t.Errorf("CID %d is %v, want %v", k, out[k], v)
+		}
+	}
+
+	var bomb Array
+	for range 4096 {
+		bomb = append(bomb, Integer(0), Integer(1<<40), Integer(1))
+	}
+	bomb = append(bomb, Integer(1<<40), Integer(1<<41), Integer(2))
+	out = map[uint32]float64{}
+	readW(f, bomb, out)
+	if len(out) != maxCID+1 {
+		t.Errorf("a /W of repeated ranges wrote %d CIDs, want %d", len(out), maxCID+1)
+	}
+}
+
+// TestCIDUnicode checks the character collection standing in for a /ToUnicode.
 func TestCIDUnicode(t *testing.T) {
 	cases := []struct {
 		ordering string
@@ -2594,10 +2520,7 @@ func TestCIDUnicode(t *testing.T) {
 	}
 }
 
-// TestCIDUnicodePrefersTheIdeograph checks the rule the tables are built
-// under: where Unicode has a compatibility form of a character, the character
-// itself is what a CID stands for. CID 843 of Adobe-Japan1 is reachable from
-// the Kangxi radical as well as from the ideograph.
+// TestCIDUnicodePrefersTheIdeograph checks that a CID maps to the ideograph, not its compatibility form.
 func TestCIDUnicodePrefersTheIdeograph(t *testing.T) {
 	if got := uniRuneOf(cidUnicode("Japan1"), 3284); got == '⽇' {
 		t.Fatalf("CID 843 came back as the Kangxi radical")
@@ -2633,8 +2556,7 @@ func TestOutline(t *testing.T) {
 	}
 }
 
-// TestOutlineCycle checks that an outline pointing back at itself terminates,
-// which a damaged file is free to do.
+// TestOutlineCycle checks that an outline pointing back at itself terminates.
 func TestOutlineCycle(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>",
@@ -2654,7 +2576,6 @@ func TestMetadata(t *testing.T) {
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
 	})
-	// The trailer buildPDF writes has no /Info, so put one in by hand.
 	d.f.Trailer()["Info"] = Dict{
 		"Title":        String("A Title"),
 		"Author":       String("An Author"),
@@ -2694,6 +2615,43 @@ func TestPageLabels(t *testing.T) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	}
+
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R /PageLabels 4 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+	}
+	for i := range 30 {
+		objs = append(objs, fmt.Sprintf("<< /Kids [%d 0 R %d 0 R] >>", 5+i, 5+i))
+	}
+	objs = append(objs, "<< /Nums [0 << /S /r >>] >>")
+	if got := buildPDF(t, objs).PageLabels(); len(got) != 1 || got[0] != "i" {
+		t.Errorf("a shared number tree gave %q", got)
+	}
+}
+
+// TestNameTreeShared checks name trees that point at themselves or share kids.
+func TestNameTreeShared(t *testing.T) {
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+		"<< /Kids [4 0 R] >>",
+	}
+	for i := range 30 {
+		objs = append(objs, fmt.Sprintf("<< /Kids [%d 0 R %d 0 R] >>", 6+i, 6+i))
+	}
+	objs = append(objs, "<< /Names [(b) 1] >>")
+	d := buildPDF(t, objs)
+	if v := d.f.NameTreeLookup(Ref{Num: 4}, "a"); v != nil {
+		t.Errorf("a tree that is its own kid gave %v", v)
+	}
+	if v := d.f.NameTreeLookup(Ref{Num: 5}, "a"); v != nil {
+		t.Errorf("a shared tree gave %v for a missing key", v)
+	}
+	if v := d.f.NameTreeLookup(Ref{Num: 5}, "b"); v == nil {
+		t.Error("a shared tree did not find the key it holds")
+	}
 }
 
 func TestRomanAndLetters(t *testing.T) {
@@ -2701,7 +2659,7 @@ func TestRomanAndLetters(t *testing.T) {
 		{"1", "R", "I"}, {"4", "R", "IV"}, {"9", "R", "IX"},
 		{"14", "r", "xiv"}, {"1990", "R", "MCMXC"}, {"4000", "R", "4000"},
 		{"1", "A", "A"}, {"26", "A", "Z"}, {"27", "a", "aa"}, {"53", "A", "AAA"},
-		{"54", "A", "BBB"},
+		{"54", "A", "BBB"}, {"4000", "A", "4000"}, {"1000000000", "a", "1000000000"},
 	}
 	for _, tc := range cases {
 		n, _ := strconv.Atoi(tc.n)
@@ -2711,9 +2669,7 @@ func TestRomanAndLetters(t *testing.T) {
 	}
 }
 
-// FuzzDocument reads a whole file and asks it everything the public API asks:
-// the outline, the metadata, the labels, and the text, links and structure of
-// the first pages. None of it may panic on any input.
+// FuzzDocument checks that no public API call panics on any input.
 func FuzzDocument(fu *testing.F) {
 	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.pdf"))
 	for _, name := range names {
@@ -2742,11 +2698,9 @@ func FuzzDocument(fu *testing.F) {
 	})
 }
 
-// TestCP936Disguise checks the font that says it is simple and is not: one
-// generator writes /WinAnsiEncoding on a Chinese font and then draws two byte
-// GBK codes through it.
+// TestCP936Disguise checks a simple Chinese font that draws two byte GBK codes.
 func TestCP936Disguise(t *testing.T) {
-	// The bytes are the GBK name of SimFang, and the string is "全世".
+	// The bytes are the GBK name of SimFang.
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -2770,8 +2724,7 @@ func TestCP936Disguise(t *testing.T) {
 	}
 }
 
-// TestCP936OnlyWhenDisguised checks the test is narrow: a font that is what it
-// says it is keeps its own encoding.
+// TestCP936OnlyWhenDisguised checks that a genuine simple font keeps its own encoding.
 func TestCP936OnlyWhenDisguised(t *testing.T) {
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -2792,8 +2745,7 @@ func TestCP936OnlyWhenDisguised(t *testing.T) {
 	}
 }
 
-// TestRegisteredPictureDecoderForDCT covers a picture decoder installed
-// through gfx serving a JPEG inside a PDF as well as one in a book.
+// TestRegisteredPictureDecoderForDCT covers a gfx picture decoder serving a JPEG in a PDF.
 func TestRegisteredPictureDecoderForDCT(t *testing.T) {
 	var buf bytes.Buffer
 	src := image.NewGray(image.Rect(0, 0, 8, 8))
@@ -2815,6 +2767,14 @@ func TestRegisteredPictureDecoderForDCT(t *testing.T) {
 	})
 	defer gfx.RegisterPictureDecoder("jpeg-test", "", nil)
 
+	big := bytes.Clone(buf.Bytes())
+	sof := bytes.Index(big, []byte{0xff, 0xc0})
+	binary.BigEndian.PutUint16(big[sof+5:], 65000)
+	binary.BigEndian.PutUint16(big[sof+7:], 65000)
+	if _, _, _, _, err := jpegSamples(big); !errors.Is(err, ErrUnsupported) || called != 0 {
+		t.Fatalf("a 65000x65000 header gave %v after %d decodes", err, called)
+	}
+
 	pix, w, h, n, err := jpegSamples(buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
@@ -2832,7 +2792,6 @@ func TestRegisteredPictureDecoderForDCT(t *testing.T) {
 		t.Errorf("first pixel is %v, want the decoder's own", pix[:3])
 	}
 
-	// Without one the standard library still reads the gray it encoded.
 	gfx.RegisterPictureDecoder("jpeg-test", "", nil)
 	pix, _, _, n, err = jpegSamples(buf.Bytes())
 	if err != nil {

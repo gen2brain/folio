@@ -20,7 +20,6 @@ const (
 // mobiIndex is the part the document itself comes back as.
 const mobiIndex = "index.html"
 
-// openMOBI reads a PalmDB database holding a book.
 func openMOBI(r io.ReaderAt, size int64) (*Document, error) {
 	if size < 78 || size > maxBookBytes {
 		return nil, fmt.Errorf("%w: %d bytes", ErrInvalid, size)
@@ -119,6 +118,13 @@ func kf8(recs [][]byte, m mobi) ([][]byte, mobi) {
 	}
 	return recs[b:], k
 }
+
+// The decompression limits for a book, a record, and the codes of a record.
+const (
+	maxMOBIText    = 1 << 28
+	maxRecordText  = 1 << 16
+	maxRecordCodes = 1 << 20
+)
 
 // maxBookBytes bounds a PalmDB.
 const maxBookBytes = 1 << 30
@@ -328,18 +334,19 @@ func (m mobi) text(recs [][]byte) ([]byte, int) {
 			if h == nil {
 				return out, n + 1
 			}
-			out = h.unpack(out, rec, 0)
+			steps := maxRecordCodes
+			out = h.unpack(out, rec, 0, len(out)+maxRecordText, &steps)
 		default:
 			return out, n + 1
 		}
-		if m.textLength > 0 && len(out) >= m.textLength {
+		if (m.textLength > 0 && len(out) >= m.textLength) || len(out) > maxMOBIText {
 			break
 		}
 	}
 	if m.textLength > 0 && len(out) > m.textLength {
 		out = out[:m.textLength]
 	}
-	return out, n + 1
+	return out[:min(len(out), maxMOBIText)], n + 1
 }
 
 // trimTrailing removes the trailing entries a record carries after its data.

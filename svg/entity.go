@@ -5,9 +5,7 @@ import (
 	"regexp"
 )
 
-// maxEntities and maxExpanded bound what the internal subset of a document
-// type declaration may expand to, so that a file whose entities refer to each
-// other cannot fill memory.
+// maxEntities and maxExpanded bound what the internal DTD subset may expand to.
 const (
 	maxEntities = 64
 	maxExpanded = 1 << 22
@@ -17,8 +15,6 @@ const (
 var entityDecl = regexp.MustCompile(`<!ENTITY\s+([A-Za-z_][\w.:-]*)\s+("[^"]*"|'[^']*')\s*>`)
 
 // expandEntities replaces the general entities a document declares for itself.
-// encoding/xml resolves none of them, and one may stand for markup rather than
-// for text, so the substitution happens on the bytes before they are read.
 func expandEntities(b []byte) []byte {
 	i := bytes.Index(b, []byte("<!DOCTYPE"))
 	if i < 0 {
@@ -47,10 +43,11 @@ func expandEntities(b []byte) []byte {
 	for range maxPasses {
 		hit := false
 		for n, name := range names {
-			if !bytes.Contains(body, name) {
+			count := bytes.Count(body, name)
+			if count == 0 {
 				continue
 			}
-			if len(body)+len(values[n]) > maxExpanded {
+			if len(body)+count*(len(values[n])-len(name)) > maxExpanded {
 				return b
 			}
 			body = bytes.ReplaceAll(body, name, values[n])
