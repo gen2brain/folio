@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gen2brain/folio/html"
 	"github.com/gen2brain/folio/pdf"
@@ -238,6 +239,7 @@ func FuzzDoc(fu *testing.F) {
 	fu.Add([]byte("PK\x03\x04rest of it"))
 	fu.Add([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"))
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		Detect(b)
 		d, err := Load(b)
 		if err != nil {
@@ -266,4 +268,14 @@ func FuzzDoc(fu *testing.F) {
 		p.Links()
 		p.StructuredText()
 	})
+}
+
+// slowFuzz fails a fuzz input that runs past five seconds.
+func slowFuzz(t *testing.T) func() {
+	start := time.Now()
+	return func() {
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %v", d)
+		}
+	}
 }

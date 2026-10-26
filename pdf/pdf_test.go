@@ -258,6 +258,7 @@ func FuzzContent(f *testing.F) {
 	f.Add("BT /F1 12 Tf (hi) Tj ET")
 	f.Add("BI /W 2 /H 2 /CS /G /BPC 8 ID \x00\x01\x02\x03 EI")
 	f.Fuzz(func(t *testing.T, content string) {
+		defer slowFuzz(t)()
 		d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
 		if err != nil {
 			t.Skip()
@@ -280,6 +281,7 @@ func FuzzCMap(f *testing.F) {
 		"2 beginbfchar <41> <00660066> <42> <0042> endbfchar\n")
 	f.Add("/WMode 1 def\n1 beginbfrange <00> <ff> [<41> <42>] endbfrange\n")
 	f.Fuzz(func(t *testing.T, src string) {
+		defer slowFuzz(t)()
 		d, err := Open(filepath.Join("..", "testdata", "minimal.pdf"))
 		if err != nil {
 			t.Skip()
@@ -1764,6 +1766,7 @@ func FuzzJPX(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		jpxDecode(b, false)
 	})
 }
@@ -2678,6 +2681,7 @@ func FuzzDocument(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		d, err := Load(b, "")
 		if err != nil {
 			return
@@ -2802,5 +2806,15 @@ func TestRegisteredPictureDecoderForDCT(t *testing.T) {
 	}
 	if pix[0] < 0x30 || pix[0] > 0x50 {
 		t.Errorf("gray came back as %d, want about 0x40", pix[0])
+	}
+}
+
+// slowFuzz fails a fuzz input that runs past five seconds.
+func slowFuzz(t *testing.T) func() {
+	start := time.Now()
+	return func() {
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %v", d)
+		}
 	}
 }

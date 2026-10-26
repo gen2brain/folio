@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/gen2brain/folio/font"
 	"github.com/gen2brain/folio/gfx"
@@ -324,6 +325,7 @@ func FuzzBook(fu *testing.F) {
 		`<description><title-info><book-title>t</book-title></title-info></description>` +
 		`<body><section><p>x</p></section></body></FictionBook>`))
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		d, err := Load(b)
 		if err != nil {
 			return
@@ -1087,6 +1089,7 @@ func FuzzCSS(fu *testing.F) {
 	fu.Add(`@import url("x.css") print;`)
 	fu.Add(`p{font:italic bold 2em/1.4 "x",serif}`)
 	fu.Fuzz(func(t *testing.T, s string) {
+		defer slowFuzz(t)()
 		sheet := ParseCSS([]byte(s), OriginAuthor)
 		root, err := Parse([]byte(selDoc))
 		if err != nil {
@@ -1213,6 +1216,7 @@ func FuzzLineBreak(fu *testing.F) {
 	fu.Add("日本語のテキスト")
 	fu.Add("a‍̈b\r\n (1.5)")
 	fu.Fuzz(func(t *testing.T, s string) {
+		defer slowFuzz(t)()
 		starts := map[int]bool{len(s): true}
 		for i := range s {
 			starts[i] = true
@@ -1513,6 +1517,7 @@ func FuzzLayout(fu *testing.F) {
 	fu.Add("<div class=c><i class=f>f</i></div>",
 		".f{float:left;width:9px}.c::after{content:'';display:table;clear:both}i::before{content:'x'}")
 	fu.Fuzz(func(t *testing.T, body, sheet string) {
+		defer slowFuzz(t)()
 		root, err := Parse([]byte("<html><body>" + body + "</body></html>"))
 		if err != nil {
 			t.Fatal(err)
@@ -4523,5 +4528,15 @@ func TestInlineSVG(t *testing.T) {
 	w, h := float32(maxX-minX+1), float32(maxY-minY+1)
 	if r := h / w; r < 1.8 || r > 2.2 {
 		t.Errorf("the drawing is %vx%v, ratio %v, want the viewBox ratio 2", w, h, r)
+	}
+}
+
+// slowFuzz fails a fuzz input that runs past five seconds.
+func slowFuzz(t *testing.T) func() {
+	start := time.Now()
+	return func() {
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %v", d)
+		}
 	}
 }

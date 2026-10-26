@@ -245,6 +245,7 @@ func FuzzParse(fu *testing.F) {
 		fu.Add(b)
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		f, err := Parse(b)
 		if err != nil {
 			return
@@ -263,6 +264,7 @@ func FuzzBrotli(fu *testing.F) {
 	}
 	fu.Add([]byte{0x0b})
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		const limit = 1 << 20
 		out, err := brotliDecode(b, limit)
 		if err == nil && len(out) > limit {
@@ -1189,4 +1191,14 @@ func TestBidiConformance(t *testing.T) {
 		t.Fatalf("%d of %d bidi cases wrong", bad, total)
 	}
 	t.Logf("%d bidi class cases", total)
+}
+
+// slowFuzz fails a fuzz input that runs past five seconds.
+func slowFuzz(t *testing.T) func() {
+	start := time.Now()
+	return func() {
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %v", d)
+		}
+	}
 }

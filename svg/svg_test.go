@@ -233,12 +233,14 @@ func (d *Document) Page0() *Page {
 }
 
 // FuzzSVG checks that no file panics and a drawing that opens also draws.
+
 func FuzzSVG(fu *testing.F) {
 	fu.Add([]byte(`<svg width="20" height="20"><rect width="10" height="10"/></svg>`))
 	fu.Add([]byte(`<svg viewBox="0 0 8 8"><path d="M0 0A4 4 0 1 1 8 8Z" fill="#abc"/></svg>`))
 	fu.Add([]byte(`<svg><defs><g id="a"><circle r="3"/></g></defs><use href="#a" x="4"/></svg>`))
 	fu.Add([]byte(`<svg><g transform="rotate(30 1 2) skewX(10)" opacity=".5"><line x2="9"/></g></svg>`))
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		d, err := Load(b)
 		if err != nil {
 			return
@@ -1505,5 +1507,15 @@ func TestMetadata(t *testing.T) {
 	}
 	if m := (&Document{}).Metadata(); m.Title != "" || m.Description != "" {
 		t.Errorf("an empty drawing says %+v", m)
+	}
+}
+
+// slowFuzz fails a fuzz input that runs past five seconds.
+func slowFuzz(t *testing.T) func() {
+	start := time.Now()
+	return func() {
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %v", d)
+		}
 	}
 }

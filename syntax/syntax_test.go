@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func open(t *testing.T, name, password string) *File {
@@ -18,8 +19,7 @@ func open(t *testing.T, name, password string) *File {
 	return f
 }
 
-// checkMinimal asserts everything testdata/minimal.pdf contains, whatever
-// shape the file it came from was written in.
+// checkMinimal asserts everything testdata/minimal.pdf contains.
 func checkMinimal(t *testing.T, f *File) {
 	t.Helper()
 	if got := f.NumPages(); got != 1 {
@@ -61,8 +61,7 @@ func TestMinimal(t *testing.T) {
 	}
 }
 
-// TestXrefStream reads the same document written with an xref stream and
-// object streams, so every object arrives through a different path.
+// TestXrefStream reads the minimal document written with an xref stream and object streams.
 func TestXrefStream(t *testing.T) {
 	f := open(t, "xrefstream.pdf", "")
 	checkMinimal(t, f)
@@ -108,8 +107,7 @@ func TestWrongPassword(t *testing.T) {
 	}
 }
 
-// TestMalformedFiles truncates and corrupts every bundled file through the
-// whole entry path. Nothing may panic, hang or allocate without bound.
+// TestMalformedFiles opens every bundled file truncated and corrupted.
 func TestMalformedFiles(t *testing.T) {
 	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.pdf"))
 	if len(names) == 0 {
@@ -162,6 +160,7 @@ func FuzzLoad(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		f, err := Load(b, "")
 		if err != nil {
 			return
@@ -172,10 +171,7 @@ func FuzzLoad(fu *testing.F) {
 	})
 }
 
-// BenchmarkJBIG2 decodes the fixtures, which between them cover the generic
-// region on its own, a region carried by a globals stream, an intermediate
-// region buffer, and a refinement region with typical prediction on. Run it on
-// a board: this laptop carries load.
+// BenchmarkJBIG2 decodes the JBIG2 fixtures.
 func BenchmarkJBIG2(b *testing.B) {
 	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.jb2"))
 	var data [][]byte
@@ -203,13 +199,13 @@ func FuzzJBIG2(fu *testing.F) {
 		}
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
+		defer slowFuzz(t)()
 		d := jbig2Decoder{budget: 1 << 14, maxBudget: 1 << 16}
 		_ = d.segments(b)
 	})
 }
 
-// conformanceDirs is the colon separated list of corpus roots, which is the
-// knob every decoder in this family reads.
+// conformanceDirs is the colon separated list of corpus roots in $CONFORMANCE_DIR.
 func conformanceDirs(t *testing.T) []string {
 	t.Helper()
 
@@ -232,9 +228,7 @@ func corpusFile(dirs []string, name string) (string, bool) {
 	return "", false
 }
 
-// TestCorpus reads every file in the corpora named by $CONFORMANCE_DIR and
-// holds the result to testdata/corpus.tsv, which records what MuPDF and
-// poppler make of each one. It skips when the variable is unset.
+// TestCorpus holds every file of $CONFORMANCE_DIR to testdata/corpus.tsv.
 func TestCorpus(t *testing.T) {
 	dirs := conformanceDirs(t)
 	manifest, err := os.ReadFile(filepath.Join("..", "testdata", "corpus.tsv"))
@@ -304,4 +298,14 @@ func atoi(s string) int {
 		return -1
 	}
 	return n
+}
+
+// slowFuzz fails a fuzz input that runs past five seconds.
+func slowFuzz(t *testing.T) func() {
+	start := time.Now()
+	return func() {
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %v", d)
+		}
+	}
 }
