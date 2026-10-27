@@ -74,6 +74,9 @@ func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 // Image renders the drawing at the size it asks to be, a pixel per pixel.
 func (p *Page) Image() (*image.RGBA, error) { return p.ImageDPI(96) }
 
+// NaturalDPI is the resolution Image renders the drawing at.
+func (p *Page) NaturalDPI() float64 { return 96 }
+
 // ImageDPI renders the drawing at a resolution, where 96 is the pixel its
 // lengths are written in.
 func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {

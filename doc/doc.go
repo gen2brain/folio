@@ -114,8 +114,9 @@ type Page interface {
 	// Bounds is the page in its own space, which ImageDPI renders one to one
 	// at 72 for a PDF or a book and at 96 for a drawing.
 	Bounds() raster.Rect
-	// Image renders the page at its natural resolution.
+	// Image renders the page at its natural resolution, and NaturalDPI is that resolution.
 	Image() (*image.RGBA, error)
+	NaturalDPI() float64
 	// ImageDPI renders it at the resolution asked for.
 	ImageDPI(dpi float64) (*image.RGBA, error)
 	// Text is what the page says.

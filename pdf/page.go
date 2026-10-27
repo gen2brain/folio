@@ -18,6 +18,7 @@ type Page struct {
 	dict     Dict
 	num      int
 	defaults *DefaultColorSpaces
+	natural  gfx.Natural
 }
 
 func (p *Page) defaultSpaces() *DefaultColorSpaces {

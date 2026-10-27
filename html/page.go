@@ -83,6 +83,7 @@ type Page struct {
 	// top and bottom bound the part of the column the page shows, in CSS pixels.
 	// bottom is where the next page starts, not top plus the page height.
 	top, bottom float32
+	natural     gfx.Natural
 }
 
 // Layout lays the book out onto pages of a size and returns how many it
@@ -402,11 +403,23 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 	return img, nil
 }
 
+func (p *Page) naturalDPI() (float64, raster.Rect, bool) {
+	return p.natural.Get(func() (float64, raster.Rect, bool) {
+		st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
+		return gfx.NaturalDPI(st, p.Bounds(), gfx.BookCropArea, p.doc.pixelLimit())
+	})
+}
+
+// NaturalDPI is the resolution Image renders the page at.
+func (p *Page) NaturalDPI() float64 {
+	dpi, _, _ := p.naturalDPI()
+	return dpi
+}
+
 // Image renders the page at the resolution its own content is in. A page with
 // no text whose largest image covers a quarter of it is cropped to that image.
 func (p *Page) Image() (*image.RGBA, error) {
-	st, _ := p.StructuredTextOptions(&TextOptions{Images: true})
-	dpi, box, crop := gfx.NaturalDPI(st, p.Bounds(), gfx.BookCropArea, p.doc.pixelLimit())
+	dpi, box, crop := p.naturalDPI()
 	img, err := p.ImageDPI(dpi)
 	if img == nil || !crop {
 		return img, err

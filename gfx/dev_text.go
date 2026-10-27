@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/gen2brain/folio/raster"
@@ -552,6 +553,20 @@ const BookCropArea = 0.25
 
 // NaturalPixels bounds the pixel area of a page rendered at its natural resolution.
 const NaturalPixels = 1 << 26
+
+// Natural remembers what NaturalDPI gave one page; the zero value is ready to use.
+type Natural struct {
+	once sync.Once
+	dpi  float64
+	box  raster.Rect
+	crop bool
+}
+
+// Get returns what f gives, calling it once.
+func (n *Natural) Get(f func() (float64, raster.Rect, bool)) (float64, raster.Rect, bool) {
+	n.once.Do(func() { n.dpi, n.box, n.crop = f() })
+	return n.dpi, n.box, n.crop
+}
 
 // NaturalDPI is the highest resolution any image on the page is drawn at,
 // lowered until the page fits in NaturalPixels and in limit pixels, and the box

@@ -102,8 +102,15 @@ func TestLoad(t *testing.T) {
 		if c.says != "" && !strings.Contains(txt, c.says) {
 			t.Errorf("%s: page says %q, want %q in it", c.name, txt, c.says)
 		}
-		if _, err := p.Image(); err != nil {
+		img, err := p.Image()
+		if err != nil {
 			t.Errorf("%s: image: %v", c.name, err)
+		}
+		if dpi := p.NaturalDPI(); !(dpi > 0) {
+			t.Errorf("%s: natural resolution %v", c.name, dpi)
+		} else if ref, _ := p.ImageDPI(dpi); img != nil && ref != nil &&
+			(img.Rect.Dx() > ref.Rect.Dx() || img.Rect.Dy() > ref.Rect.Dy()) {
+			t.Errorf("%s: the natural image is %v, larger than %v at %v dpi", c.name, img.Rect, ref.Rect, dpi)
 		}
 		if _, err := p.ImageDPI(72); err != nil {
 			t.Errorf("%s: image at 72 dpi: %v", c.name, err)
