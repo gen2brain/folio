@@ -170,6 +170,11 @@ type Document struct {
 	fonts   map[string]*font.Font
 	metrics map[*font.Font]*faceMetrics
 
+	// partMu guards laid, the chapters' box trees kept, and recent, their order of use.
+	partMu sync.Mutex
+	laid   map[*laidPart]*laid
+	recent []*laidPart
+
 	// layoutMu guards what Layout produced; autoMu serializes an unsized layout.
 	layoutMu sync.Mutex
 	autoMu   sync.Mutex

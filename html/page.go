@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"slices"
 	"strings"
+	"sync"
 
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -64,7 +66,11 @@ func (o *LayoutOptions) or(def *LayoutOptions) LayoutOptions {
 // laidPart is one part of the spine after it has been laid out.
 type laidPart struct {
 	path string
+	// root is the part's box tree, nil for a chapter, which rootOf lays out again.
 	root *box
+	// item and opt are what the chapter was laid out from.
+	item Item
+	opt  LayoutOptions
 	// tops are where each page of the part starts down the column.
 	tops []float32
 	// height is how far the column reaches.
@@ -116,31 +122,12 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 			}
 			continue
 		}
-		root, err := d.ParsePart(it.Path)
-		if err != nil {
-			errs = append(errs, err)
+		p, root, perrs := d.layPart(it, opt, media)
+		errs = append(errs, perrs...)
+		if p == nil {
 			continue
 		}
-		sheets := d.Stylesheets(it.Path, root)
-		if opt.UserSheet != nil {
-			sheets = append(sheets[:1:1], append([]*Stylesheet{opt.UserSheet}, sheets[1:]...)...)
-		}
-		st := Cascade(root, media, sheets...)
-		vertical := writingOf(root, st).Vertical()
-		colw, pageLen := cw, ch
-		if vertical {
-			colw, pageLen = ch, cw
-		}
-		l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets), vertical: vertical,
-			cbh: pageLen, pw: colw, ph: pageLen}
-		l.run(buildBoxes(root, st), colw)
-		errs = append(errs, l.errs...)
-		if len(l.spans) == 0 {
-			continue
-		}
-
-		p := &laidPart{path: it.Path, root: l.root, tops: paginate(l.spans, pageLen),
-			height: l.y, vertical: vertical, anchors: anchorsOf(root, l.root)}
+		d.keepPart(p, root)
 		parts = append(parts, p)
 		for i, top := range p.tops {
 			bottom := p.height
@@ -154,6 +141,82 @@ func (d *Document) Layout(o *LayoutOptions) (int, error) {
 	d.opt, d.parts, d.pages, d.laidOut = opt, parts, pages, true
 	d.layoutMu.Unlock()
 	return len(pages), errors.Join(errs...)
+}
+
+// layPart lays one chapter out and returns its pages and its box tree apart, nil for an empty one.
+func (d *Document) layPart(it Item, opt LayoutOptions, media Media) (*laidPart, *box, []error) {
+	cw, ch := opt.Width-2*opt.Margin, opt.Height-2*opt.Margin
+	root, err := d.ParsePart(it.Path)
+	if err != nil {
+		return nil, nil, []error{err}
+	}
+	sheets := d.Stylesheets(it.Path, root)
+	if opt.UserSheet != nil {
+		sheets = append(sheets[:1:1], append([]*Stylesheet{opt.UserSheet}, sheets[1:]...)...)
+	}
+	st := Cascade(root, media, sheets...)
+	vertical := writingOf(root, st).Vertical()
+	colw, pageLen := cw, ch
+	if vertical {
+		colw, pageLen = ch, cw
+	}
+	l := &layout{doc: d, path: it.Path, fonts: newFontSet(d, sheets), vertical: vertical,
+		cbh: pageLen, pw: colw, ph: pageLen}
+	l.run(buildBoxes(root, st), colw)
+	if len(l.spans) == 0 {
+		return nil, nil, l.errs
+	}
+	return &laidPart{path: it.Path, item: it, opt: opt, tops: paginate(l.spans, pageLen),
+		height: l.y, vertical: vertical, anchors: anchorsOf(root, l.root)}, l.root, l.errs
+}
+
+// maxLaidParts bounds the chapters kept laid out at once.
+const maxLaidParts = 8
+
+// laid is one chapter's box tree, built once however many pages ask for it.
+type laid struct {
+	once sync.Once
+	root *box
+}
+
+// keepPart puts a chapter's box tree in the cache, dropping the least recently used.
+func (d *Document) keepPart(p *laidPart, root *box) *laid {
+	d.partMu.Lock()
+	defer d.partMu.Unlock()
+	e, ok := d.laid[p]
+	if !ok {
+		e = &laid{}
+		if root != nil {
+			e.once.Do(func() { e.root = root })
+		}
+		if d.laid == nil {
+			d.laid = map[*laidPart]*laid{}
+		}
+		d.laid[p] = e
+	}
+	if i := slices.Index(d.recent, p); i >= 0 {
+		d.recent = slices.Delete(d.recent, i, i+1)
+	}
+	d.recent = append(d.recent, p)
+	for len(d.recent) > maxLaidParts {
+		delete(d.laid, d.recent[0])
+		d.recent = d.recent[1:]
+	}
+	return e
+}
+
+// rootOf is the box tree of a part, laid out again when the cache no longer has it.
+func (d *Document) rootOf(p *laidPart) *box {
+	if p.root != nil || p.item.Path == "" {
+		return p.root
+	}
+	e := d.keepPart(p, nil)
+	e.once.Do(func() {
+		o := p.opt
+		media := Media{Width: o.Width - 2*o.Margin, Height: o.Height - 2*o.Margin, FontSize: o.FontSize}
+		_, e.root, _ = d.layPart(p.item, o, media)
+	})
+	return e.root
 }
 
 // PageOf is the page a place in the book is on: the part path names and, in
@@ -355,7 +418,7 @@ func (p *Page) Run(dev gfx.Device, ctm raster.Matrix) error {
 	o := p.doc.options()
 	m := raster.Concat(p.pageMatrix(o), ctm)
 	r := &painter{dev: dev, ctm: m, top: p.top, bottom: p.bottom, vertical: p.part.vertical}
-	r.walk(p.part.root)
+	r.walk(p.doc.rootOf(p.part))
 	return errors.Join(r.errs...)
 }
 
@@ -430,7 +493,7 @@ func (p *Page) Image() (*image.RGBA, error) {
 // Text returns what the page says, a line of the text for each line box.
 func (p *Page) Text() (string, error) {
 	t := &textCollector{top: p.top, bottom: p.bottom}
-	t.walk(p.part.root)
+	t.walk(p.doc.rootOf(p.part))
 	return t.b.String(), errors.Join(t.errs...)
 }
 

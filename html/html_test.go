@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"compress/zlib"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -1444,7 +1445,7 @@ func TestLayoutMarginsCollapse(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return ys
 	}
 	ys := at(`body { margin: 0 } div { margin: 0 } p { margin: 20px 0 }`)
@@ -1480,7 +1481,7 @@ func TestLayoutAlign(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return x
 	}
 	l := left(`body, p { margin: 0 } p { text-align: left }`)
@@ -1636,7 +1637,7 @@ func TestLayoutBorders(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return ys
 	}
 	plain := lines(`body { margin: 0 } div { margin: 0 } p { margin: 20px 0 }`)
@@ -1764,7 +1765,7 @@ func TestLayoutMargins(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return out
 	}
 	for _, tc := range []struct {
@@ -1795,7 +1796,7 @@ func TestLayoutFloat(t *testing.T) {
 			walk(k)
 		}
 	}
-	walk(d.parts[0].root)
+	walk(d.rootOf(d.parts[0]))
 	if len(lines) < 4 {
 		t.Fatalf("%d lines", len(lines))
 	}
@@ -1812,7 +1813,7 @@ func TestLayoutFloat(t *testing.T) {
 		&LayoutOptions{Width: 400, Height: 900, Margin: 0})
 	defer d2.Close()
 	lines = nil
-	walk(d2.parts[0].root)
+	walk(d2.rootOf(d2.parts[0]))
 	if len(lines) == 0 || lines[0].y < 200 {
 		t.Fatalf("cleared line at %v, want it below the float", lines)
 	}
@@ -1898,7 +1899,7 @@ func TestLayoutClearfix(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		if out < 0 {
 			t.Fatal("no paragraph")
 		}
@@ -1948,7 +1949,7 @@ func TestLayoutTable(t *testing.T) {
 			walk(k)
 		}
 	}
-	walk(d.parts[0].root)
+	walk(d.rootOf(d.parts[0]))
 	if table == nil {
 		t.Fatal("no table box")
 	}
@@ -2068,7 +2069,7 @@ func TestLayoutSpacing(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return out
 	}
 	tight := geom(``)
@@ -2496,6 +2497,79 @@ func TestBackdropDrawingBudget(t *testing.T) {
 	p.ImageDPI(96)
 }
 
+// TestPartsLaidAgain renders a book of twenty chapters twice, more than are kept laid out.
+func TestPartsLaidAgain(t *testing.T) {
+	files := map[string]string{"META-INF/container.xml": container}
+	var items, refs strings.Builder
+	for i := range 20 {
+		fmt.Fprintf(&items, `<item id="c%d" href="text/c%d.xhtml" media-type="application/xhtml+xml"/>`, i, i)
+		fmt.Fprintf(&refs, `<itemref idref="c%d"/>`, i)
+		files[fmt.Sprintf("EPUB/text/c%d.xhtml", i)] = fmt.Sprintf(`<html><body><h1>Chapter %d</h1>%s`+
+			`<p><a href="c%d.xhtml">next</a></p></body></html>`, i,
+			strings.Repeat(fmt.Sprintf("<p>Words of chapter %d, line after line.</p>", i), 40), (i+1)%20)
+	}
+	files["EPUB/package.opf"] = strings.Replace(strings.Replace(onePart,
+		`<item id="one" href="text/one.xhtml" media-type="application/xhtml+xml"/>`, items.String(), 1),
+		`<itemref idref="one"/>`, refs.String(), 1)
+	d := openBook(t, files)
+	n, err := d.Layout(&LayoutOptions{Width: 300, Height: 400, Margin: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range d.parts {
+		if p.root != nil {
+			t.Fatalf("%s keeps its box tree after layout", p.path)
+		}
+	}
+	render := func() []string {
+		var out []string
+		for i := range n {
+			p, err := d.Page(i)
+			if err != nil {
+				t.Fatal(err)
+			}
+			img, err := p.ImageDPI(48)
+			if err != nil {
+				t.Fatal(err)
+			}
+			txt, _ := p.Text()
+			out = append(out, fmt.Sprintf("%x %s %d", sha256.Sum256(img.Pix), txt, len(p.Links())))
+		}
+		return out
+	}
+	first := render()
+	if len(d.laid) > maxLaidParts {
+		t.Errorf("%d chapters kept laid out, over %d", len(d.laid), maxLaidParts)
+	}
+	for i, s := range render() {
+		if s != first[i] {
+			t.Errorf("page %d differs when its chapter is laid out again", i)
+		}
+	}
+	var wg sync.WaitGroup
+	got := make([]string, n)
+	for i := range n {
+		wg.Go(func() {
+			p, err := d.Page(i)
+			if err != nil {
+				return
+			}
+			img, err := p.ImageDPI(48)
+			if err != nil {
+				return
+			}
+			txt, _ := p.Text()
+			got[i] = fmt.Sprintf("%x %s %d", sha256.Sum256(img.Pix), txt, len(p.Links()))
+		})
+	}
+	wg.Wait()
+	for i := range n {
+		if got[i] != first[i] {
+			t.Errorf("page %d differs rendered beside the others", i)
+		}
+	}
+}
+
 func TestCSSTypography(t *testing.T) {
 	s := styleOf(t, `#i { font-variant: small-caps; letter-spacing: 2px; text-transform: uppercase }`,
 		`<p id="i">t</p>`, "i")
@@ -2531,7 +2605,7 @@ func TestLayoutTracking(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return w
 	}
 	plain := width(`body, p { margin: 0 }`)
@@ -2556,7 +2630,7 @@ func TestLayoutSized(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return w
 	}
 	if got := at(`body { margin: 0 } #i { max-width: 120px }`); got != 120 {
@@ -2587,7 +2661,7 @@ func TestLayoutPositioned(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return out
 	}
 	m := boxes(`body, p { margin: 0 } #a { position: relative; left: 30px; top: 10px }`,
@@ -2648,7 +2722,7 @@ func TestLayoutFallbackFace(t *testing.T) {
 			walk(k)
 		}
 	}
-	walk(d.parts[0].root)
+	walk(d.rootOf(d.parts[0]))
 	if len(faces) < 3 {
 		t.Fatalf("%d fragments, want the ideographs in one of their own", len(faces))
 	}
@@ -2760,7 +2834,7 @@ func TestLayoutVerticalAlign(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return out
 	}
 
@@ -2810,7 +2884,7 @@ func TestLayoutVerticalAlign(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return out
 	}
 
@@ -2851,7 +2925,7 @@ func TestLayoutPercentHeight(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return found
 	}
 
@@ -2897,7 +2971,7 @@ func TestLayoutInlineBlock(t *testing.T) {
 				walk(k)
 			}
 		}
-		walk(d.parts[0].root)
+		walk(d.rootOf(d.parts[0]))
 		return found, frags, float32(lines)
 	}
 
@@ -4559,7 +4633,7 @@ func TestBidiLayout(t *testing.T) {
 			walk(k)
 		}
 	}
-	walk(p.part.root)
+	walk(p.doc.rootOf(p.part))
 	if len(frags) < 2 {
 		t.Fatalf("%d fragments", len(frags))
 	}

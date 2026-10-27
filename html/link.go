@@ -33,7 +33,11 @@ func hrefOf(n *xhtml.Node) string {
 // Links returns the links on the page, one for every run of text an anchor
 // covers, in the order they are laid out.
 func (p *Page) Links() []Link {
-	if p.part == nil || p.part.root == nil {
+	if p.part == nil {
+		return nil
+	}
+	root := p.doc.rootOf(p.part)
+	if root == nil {
 		return nil
 	}
 	o := p.doc.options()
@@ -59,7 +63,7 @@ func (p *Page) Links() []Link {
 			walk(k)
 		}
 	}
-	walk(p.part.root)
+	walk(root)
 	return out
 }
 
