@@ -48,6 +48,15 @@ func (s *Stream) ImageData() (data []byte, filter Name, parms Dict, err error) {
 	return s.decode()
 }
 
+// ImageDataLimit is ImageData decoding no more than limit bytes, and not cached.
+func (s *Stream) ImageDataLimit(limit int) ([]byte, Name, Dict, error) {
+	data, err := s.Raw()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return s.doc.decodeImageData(s.Dict, data, s.Ref, min(limit, maxDecoded))
+}
+
 func (s *Stream) decode() ([]byte, Name, Dict, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -58,7 +67,7 @@ func (s *Stream) decode() ([]byte, Name, Dict, error) {
 	if err != nil {
 		return nil, "", nil, err
 	}
-	data, s.imgFilter, s.imgParms, s.err = s.doc.decodeImageData(s.Dict, data, s.Ref)
+	data, s.imgFilter, s.imgParms, s.err = s.doc.decodeImageData(s.Dict, data, s.Ref, maxDecoded)
 	s.decoded = true
 	if s.err != nil {
 		return nil, "", nil, s.err
@@ -70,11 +79,11 @@ func (s *Stream) decode() ([]byte, Name, Dict, error) {
 // DecodeImageData applies the byte filters dict names to data and returns the
 // bytes, the remaining image filter and its parameters.
 func (f *File) DecodeImageData(dict Dict, data []byte) ([]byte, Name, Dict, error) {
-	return f.decodeImageData(dict, data, Ref{})
+	return f.decodeImageData(dict, data, Ref{}, maxDecoded)
 }
 
 // decodeImageData is DecodeImageData for a stream that knows its own object.
-func (f *File) decodeImageData(dict Dict, data []byte, self Ref) ([]byte, Name, Dict, error) {
+func (f *File) decodeImageData(dict Dict, data []byte, self Ref, limit int) ([]byte, Name, Dict, error) {
 	filters := f.names(dict, "Filter", "F")
 	if len(filters) > maxFilters {
 		return nil, "", nil, fmt.Errorf("%w: %d filters", ErrInvalid, len(filters))
@@ -88,7 +97,11 @@ func (f *File) decodeImageData(dict Dict, data []byte, self Ref) ([]byte, Name, 
 			}
 			return data, name, parms[i], nil
 		}
-		out, err := applyFilter(f, name, data, parms[i], self)
+		stage := maxDecoded
+		if i == len(filters)-1 && limit < maxDecoded {
+			stage = min(2*limit+64, maxDecoded)
+		}
+		out, err := applyFilter(f, name, data, parms[i], self, stage)
 		if err != nil {
 			if out == nil {
 				return nil, "", nil, err
@@ -130,10 +143,10 @@ func (f *File) parmsList(dict Dict, n int) []Dict {
 	return out
 }
 
-func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte, error) {
+func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref, limit int) ([]byte, error) {
 	switch name {
 	case "FlateDecode", "Fl":
-		out, err := flateDecode(data)
+		out, err := flateDecode(data, limit)
 		if out != nil {
 			out = applyPredictor(f, out, parms)
 		}
@@ -143,7 +156,7 @@ func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte,
 		if f != nil {
 			early = f.GetInt(parms["EarlyChange"], 1)
 		}
-		out, err := lzwDecode(data, early != 0)
+		out, err := lzwDecode(data, early != 0, limit)
 		if out != nil {
 			out = applyPredictor(f, out, parms)
 		}
@@ -153,7 +166,7 @@ func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte,
 	case "ASCIIHexDecode", "AHx":
 		return asciiHexDecode(data), nil
 	case "RunLengthDecode", "RL":
-		return runLengthDecode(data, maxDecoded), nil
+		return runLengthDecode(data, limit), nil
 	case "JBIG2Decode":
 		return jbig2Decode(f, data, parms, self)
 	case "CCITTFaxDecode", "CCF":
@@ -167,7 +180,7 @@ func applyFilter(f *File, name Name, data []byte, parms Dict, self Ref) ([]byte,
 }
 
 // flateDecode inflates a stream, tolerating a corrupt header and trailing garbage.
-func flateDecode(data []byte) ([]byte, error) {
+func flateDecode(data []byte, limit int) ([]byte, error) {
 	for i := 0; i < len(data) && i < 32 && isSpace[data[i]]; i++ {
 		data = data[1:]
 		i--
@@ -176,15 +189,15 @@ func flateDecode(data []byte) ([]byte, error) {
 		return []byte{}, nil
 	}
 
-	out, err := inflate(data, true)
+	out, err := inflate(data, true, limit)
 	if err == nil || len(out) > 0 {
 		return out, err
 	}
-	if out, err2 := inflate(data, false); err2 == nil || len(out) > 0 {
+	if out, err2 := inflate(data, false, limit); err2 == nil || len(out) > 0 {
 		return out, err2
 	}
 	if len(data) > 1 {
-		if out, err2 := inflate(data[1:], true); err2 == nil || len(out) > 0 {
+		if out, err2 := inflate(data[1:], true, limit); err2 == nil || len(out) > 0 {
 			return out, err2
 		}
 	}
@@ -194,7 +207,7 @@ func flateDecode(data []byte) ([]byte, error) {
 // inflaters pools the flate decompressors.
 var inflaters [2]sync.Pool
 
-func inflate(data []byte, header bool) ([]byte, error) {
+func inflate(data []byte, header bool, limit int) ([]byte, error) {
 	pool := &inflaters[0]
 	if header {
 		pool = &inflaters[1]
@@ -230,7 +243,7 @@ func inflate(data []byte, header bool) ([]byte, error) {
 
 	var buf bytes.Buffer
 	buf.Grow(min(len(data)*4, 1<<20))
-	_, err = io.Copy(&buf, io.LimitReader(r, maxDecoded))
+	_, err = io.Copy(&buf, io.LimitReader(r, int64(limit)))
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 		if buf.Len() == 0 {
 			return nil, err

@@ -12,26 +12,26 @@ import (
 // maxFilterArea bounds the samples one filter region may allocate.
 const maxFilterArea = 1 << 24
 
+// maxFilterHeld bounds the bytes of the results one filter chain keeps.
+const maxFilterHeld = 8 * 4 * maxFilterArea
+
 // irect is a rectangle of samples inside a filter region.
 type irect struct{ x0, y0, x1, y1 int }
 
-// fimage is one primitive's result: a pixmap the size of the filter region,
-// the space its samples are in, and the part of it that holds anything.
+// fimage is one primitive's result over the whole filter region; sub is the
+// part of px that holds anything.
 type fimage struct {
 	px  *raster.Pixmap
 	lin bool
 	sub irect
 }
 
-// filtered draws an element through the filters it names and reports whether
-// it dealt with the element. A reference that resolves to nothing takes the
-// element off the page, SVG 1.1 15.7.
+// filtered draws n through the filters it names and reports whether it dealt
+// with n; a reference to nothing hides it, SVG 1.1 15.7.
 func (r *runner) filtered(n *node, ctm raster.Matrix, st state, alpha float32) bool {
 	return r.filterWith(n, ctm, st, alpha, r.paint)
 }
 
-// filterWith is filtered with the drawing named. The root element is a
-// viewport rather than a shape and passes its children.
 func (r *runner) filterWith(n *node, ctm raster.Matrix, st state, alpha float32,
 	draw func(*node, raster.Matrix, state)) bool {
 
@@ -54,9 +54,6 @@ func (r *runner) filterWith(n *node, ctm raster.Matrix, st state, alpha float32,
 	for _, l := range chain {
 		reg = reg.Union(l.reg)
 	}
-	// A filter is a grid of samples over the user's own axes. Where the
-	// element is only scaled and moved those are the device's; a rotation or
-	// a skew is split off and put back afterwards.
 	inner, back := filterSpace(ctm)
 	x0, y0, x1, y1 := inner.ApplyRect(reg).Outer()
 	w, h := x1-x0, y1-y0
@@ -95,8 +92,7 @@ func (r *runner) filterWith(n *node, ctm raster.Matrix, st state, alpha float32,
 }
 
 // filterSpace splits a transform into the scale the filter's samples are laid
-// out on and whatever turn is left over. One with no rotation and no skew in it
-// keeps the whole thing, and nothing is resampled.
+// out on and the rotation and skew left over.
 func filterSpace(ctm raster.Matrix) (inner, back raster.Matrix) {
 	if ctm.B == 0 && ctm.C == 0 {
 		return ctm, raster.Identity
@@ -181,8 +177,7 @@ func (r *runner) filterLink(id string, box raster.Rect, st state) (link, bool) {
 	return l, true
 }
 
-// funcMargin is how far past the element the shorthand spreads. A filter
-// element declares a region and a function does not.
+// funcMargin is the distance past the element the shorthand spreads.
 func funcMargin(prims []*node) float32 {
 	m := float32(0)
 	for _, k := range prims {
@@ -282,7 +277,7 @@ func (r *runner) flen(f *node, name string, ref float32, st state, def float32) 
 	return def
 }
 
-// scaleOf is how much a matrix stretches each axis.
+// scaleOf returns the stretch a matrix applies to each axis.
 func scaleOf(m raster.Matrix) (float32, float32) {
 	return float32(math.Hypot(float64(m.A), float64(m.B))),
 		float32(math.Hypot(float64(m.C), float64(m.D)))
@@ -458,8 +453,7 @@ func amount(s string, unit bool) float32 {
 	return out
 }
 
-// badAmount is an argument that is not a number at all, or is negative, which
-// none of these functions takes.
+// badAmount reports an argument that is not a number or is negative.
 func badAmount(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {

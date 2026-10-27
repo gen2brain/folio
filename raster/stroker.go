@@ -8,18 +8,17 @@ const (
 	vertexEpsilon   = 1e-14
 	intersectionEps = 1e-30
 	arcTolerance    = 0.125
+	// maxOutlinePoints bounds the points one stroke flattens to and outlines into.
+	maxOutlinePoints = 1 << 22
 )
 
-// Outline returns the path whose non-zero fill is the stroke of p. The path is
-// stroked in its own space, so the caller transforms the result; scale is how
-// much that transform magnifies lengths, and sets the flattening tolerance,
-// the number of segments in an arc, and the width of a hairline.
+// Outline returns the path whose non-zero fill is the stroke of p, in p's own
+// space; scale is the length magnification of the caller's transform.
 func (s *Stroke) Outline(p *Path, scale float32) *Path {
 	return s.OutlineInto(&Path{}, p, scale)
 }
 
-// OutlineInto is Outline writing into dst, which it empties first, so that a
-// caller stroking many paths can keep the memory.
+// OutlineInto is Outline writing into dst, which it empties first.
 func (s *Stroke) OutlineInto(dst *Path, p *Path, scale float32) *Path {
 	if scale <= 0 || scale != scale {
 		scale = 1
@@ -50,6 +49,9 @@ func (s *Stroke) OutlineInto(dst *Path, p *Path, scale float32) *Path {
 	d := newDasher(s, scale)
 	var v []vertexDist
 	for _, sub := range c.subs {
+		if len(st.out.pts) > maxOutlinePoints {
+			break
+		}
 		v = vertices(v[:0], c.pts[sub.start:sub.end], sub.closed, st.eps)
 		if len(v) == 0 {
 			continue
@@ -62,6 +64,9 @@ func (s *Stroke) OutlineInto(dst *Path, p *Path, scale float32) *Path {
 		st.startCap, st.endCap = s.DashCap, s.DashCap
 		d.reset()
 		d.run(v, sub.closed, func(pts []Point, whole bool) {
+			if len(st.out.pts) > maxOutlinePoints {
+				return
+			}
 			if whole {
 				st.startCap, st.endCap = s.StartCap, s.EndCap
 				st.polyline(vertices(st.run[:0], pts, true, st.eps), true)
@@ -74,8 +79,6 @@ func (s *Stroke) OutlineInto(dst *Path, p *Path, scale float32) *Path {
 	return st.out
 }
 
-// subpath is a range of the collector's points, which are all in one slice so
-// that a path with many subpaths does not allocate per subpath.
 type subpath struct {
 	start, end int
 	closed     bool
@@ -90,6 +93,9 @@ type collector struct {
 }
 
 func (c *collector) MoveTo(x, y float32) {
+	if len(c.pts) > maxOutlinePoints {
+		return
+	}
 	c.flush()
 	c.start = len(c.pts)
 	c.pts = append(c.pts, Point{x, y})
@@ -102,6 +108,9 @@ func (c *collector) LineTo(x, y float32) {
 		c.start = len(c.pts)
 		c.pts = append(c.pts, c.last)
 		c.open = true
+	}
+	if len(c.pts) > maxOutlinePoints {
+		return
 	}
 	c.pts = append(c.pts, Point{x, y})
 }

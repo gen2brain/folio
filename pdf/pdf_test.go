@@ -2458,6 +2458,28 @@ func TestPageSVG(t *testing.T) {
 	}
 }
 
+// TestDeviceNColorants checks that a DeviceN of more than 32 colorants is refused.
+func TestDeviceNColorants(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+	})
+	names := func(n int) Array {
+		var a Array
+		for i := range n {
+			a = append(a, Name(fmt.Sprintf("c%d", i)))
+		}
+		return a
+	}
+	if cs := d.colorSpace(Array{Name("DeviceN"), names(32), Name("DeviceCMYK")}, nil, 0); cs.N != 32 {
+		t.Errorf("32 colorants gave %d components", cs.N)
+	}
+	if cs := d.colorSpace(Array{Name("DeviceN"), names(3277), Name("DeviceCMYK")}, nil, 0); cs.N != 1 {
+		t.Errorf("3277 colorants gave %d components", cs.N)
+	}
+}
+
 // TestReadW checks the /W array, and that repeated ranges cannot multiply work.
 func TestReadW(t *testing.T) {
 	f := &syntax.File{}

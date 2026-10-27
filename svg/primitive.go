@@ -1,6 +1,7 @@
 package svg
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// fresult is what one primitive produced, under the name it gave it.
+// fresult is one primitive's result, under the name it gave it.
 type fresult struct {
 	name string
 	img  *fimage
@@ -29,6 +30,7 @@ type pipe struct {
 	sx, sy float32
 	full   irect
 	res    []fresult
+	held   int
 }
 
 // run applies every primitive in turn and hands back the last result in sRGB,
@@ -88,8 +90,17 @@ func (p *pipe) run(kids []*node) *raster.Pixmap {
 				out.sub = sub
 			}
 		}
+		if n := len(p.res); n > 0 && p.res[n-1].name == "" {
+			p.held -= len(p.res[n-1].img.px.Samples)
+			p.res = p.res[:n-1]
+		}
 		p.res = append(p.res, fresult{name: strings.TrimSpace(k.attr["result"]), img: out})
+		p.held += len(out.px.Samples)
 		last = out
+		if p.held > maxFilterHeld {
+			p.r.fail(fmt.Errorf("%w: filter results past %d bytes", ErrUnsupported, maxFilterHeld))
+			break
+		}
 	}
 	if last == nil {
 		return nil
@@ -195,8 +206,8 @@ func (p *pipe) plen(k *node, name string) (float32, bool) {
 	return length(s, ref, p.st.em)
 }
 
-// input is what a primitive reads: the previous result when it names none,
-// and the element's own rendering when there is no previous one.
+// input returns the image a primitive reads: the previous result when it names
+// none, and the element's own rendering when there is no previous one.
 func (p *pipe) input(k *node, attr string) *fimage {
 	return p.named(strings.TrimSpace(k.attr[attr]))
 }
@@ -259,8 +270,8 @@ func (p *pipe) flood(k *node) *fimage {
 	return out
 }
 
-// current is what currentColor stands for inside a filter: the colour on the
-// primitive, then on the filter element.
+// current returns currentColor inside a filter: the colour on the primitive,
+// then on the filter element.
 func (p *pipe) current(k *node) paint {
 	for _, n := range []*node{k, p.f} {
 		if n == nil {
@@ -327,7 +338,7 @@ func (p *pipe) shift(k *node, def float32) (float32, float32) {
 	return dx * bx * p.sx, dy * by * p.sy
 }
 
-// unit is what a length in primitiveUnits measures against.
+// unit returns the reference a length in primitiveUnits measures against.
 func (p *pipe) unit() (float32, float32) {
 	if p.pobj && !p.box.IsEmpty() {
 		return p.box.X1 - p.box.X0, p.box.Y1 - p.box.Y0
@@ -905,8 +916,6 @@ func (p *pipe) convolve(k *node, lin bool) *fimage {
 	if cols < 1 || rows < 1 || cols*rows != len(m) {
 		return p.blank(lin)
 	}
-	// The default divisor is the sum of the kernel. A kernel written to cancel
-	// out reaches zero exactly only when it is added in wider arithmetic.
 	sum := float64(0)
 	for _, v := range m {
 		sum += float64(v)

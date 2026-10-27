@@ -8,16 +8,13 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// maxCachedGlyph is the area above which a glyph is drawn straight into the
-// page rather than rendered to a mask and remembered.
+// maxCachedGlyph is the largest glyph area, in pixels, kept as a cached mask.
 const maxCachedGlyph = 100 * 100
 
 // maxGlyphDepth bounds a font whose glyphs show text in the same font.
 const maxGlyphDepth = 32
 
-// DrawDevice renders into a raster.Pixmap. Everything it is given is in the
-// pixmap's own coordinates, so a caller rendering part of a page translates
-// the transform rather than the device.
+// DrawDevice renders into a raster.Pixmap, in the pixmap's own coordinates.
 type DrawDevice struct {
 	BaseDevice
 
@@ -27,22 +24,20 @@ type DrawDevice struct {
 
 	clip  clipState
 	stack []drawFrame
-	// off counts the reasons not to draw, a group or a mask whose area came
-	// out empty. Clips are still tracked, so the stacks stay balanced.
-	off int
-	// knockout is set while the destination is a knockout group, whose
-	// elements replace one another rather than layering.
+	// off counts the open groups and masks with an empty area.
+	off      int
 	knockout bool
 
 	flat    float32
 	stroked raster.Path
-	// src is the destination color of the operation being drawn, valid only
-	// until the next one; a nested interpreter takes its own.
+	// src is the destination color of the current operation, valid until the next.
 	src   []uint8
 	depth int
 	// cache and err belong to whoever opened the document.
 	cache *raster.GlyphCache
 	err   func(error)
+	// held is the bytes of the masks and groups on the stack, budget their bound.
+	held, budget int64
 }
 
 // clipState is the clip in force: a rectangle, and an optional mask over it.
@@ -56,10 +51,11 @@ type clipState struct {
 type drawFrame struct {
 	clip clipState
 	off  bool
-	// dst is the destination to go back to, and group what was opened, when
-	// the frame opened a transparency group or a soft mask.
+	// dst and group are set when the frame opened a group or a soft mask.
 	dst   *raster.Pixmap
 	group *groupFrame
+	// cost is the bytes the state this frame was pushed under holds.
+	cost int64
 }
 
 // groupFrame is a transparency group or a soft mask being drawn into.
@@ -68,23 +64,19 @@ type groupFrame struct {
 	box   raster.Rect
 	blend raster.BlendMode
 	alpha uint8
-	// mask and luminosity describe a soft mask, which ends as a clip rather
-	// than as something composited onto the page.
+	// mask and luminosity describe a soft mask, which ends as a clip.
 	mask       bool
 	luminosity bool
-	// knockout is what the destination this group closes into was, which is
-	// also how this group has to composite into it.
+	// knockout is the knockout flag of the destination this group closes into.
 	knockout bool
 }
 
 // NewDrawDevice returns a device that renders into dst.
 func NewDrawDevice(dst *raster.Pixmap) *DrawDevice {
-	// A pixmap covers the device rectangle its origin and size describe, so
-	// a destination that is a band of a page, or a group's own buffer, is
-	// drawn in the page's coordinates and mapped by the blitter.
 	return &DrawDevice{
-		dst: dst,
-		ras: raster.NewRasterizer(dst.X+dst.W, dst.Y+dst.H),
+		dst:    dst,
+		budget: maxHeldPages * int64(dst.W) * int64(dst.H) * int64(dst.N+1),
+		ras:    raster.NewRasterizer(dst.X+dst.W, dst.Y+dst.H),
 		clip: clipState{rect: raster.Rect{
 			X0: float32(dst.X), Y0: float32(dst.Y),
 			X1: float32(dst.X + dst.W), Y1: float32(dst.Y + dst.H),
@@ -111,7 +103,7 @@ func (d *DrawDevice) fail(err error) {
 	}
 }
 
-// SetFlatness is how far a flattened curve may stray, in device pixels.
+// SetFlatness sets the distance a flattened curve may stray, in device pixels.
 func (d *DrawDevice) SetFlatness(tol float32) {
 	d.flat = tol
 	d.ras.SetFlatness(tol)
@@ -219,6 +211,9 @@ func (d *DrawDevice) maskClip(bounds raster.Rect, add func(*raster.Rasterizer, i
 	if x1 <= x0 || y1 <= y0 {
 		return clipState{rect: raster.EmptyRect}
 	}
+	if !d.fits(int64(x1-x0) * int64(y1-y0)) {
+		return clipState{rect: box, mask: d.clip.mask}
+	}
 	mask := raster.NewMask(x1-x0, y1-y0)
 	if mask == nil {
 		return clipState{rect: raster.EmptyRect}
@@ -247,12 +242,25 @@ func (d *DrawDevice) maskClip(bounds raster.Rect, add func(*raster.Rasterizer, i
 }
 
 func (d *DrawDevice) push(c clipState) {
-	d.stack = append(d.stack, drawFrame{clip: d.clip})
+	var cost int64
+	if c.mask != nil && c.mask != d.clip.mask {
+		cost = int64(len(c.mask.Samples))
+	}
+	d.held += cost
+	d.stack = append(d.stack, drawFrame{clip: d.clip, cost: cost})
 	d.clip = c
 }
 
-// PopClip implements Device. It also closes a group, because a content stream
-// that leaves its stack unbalanced has to leave the device balanced anyway.
+// fits reports whether n more bytes stay within the budget, failing when not.
+func (d *DrawDevice) fits(n int64) bool {
+	if d.held+n > d.budget {
+		d.fail(fmt.Errorf("%w: a clip or group past %d bytes is drawn without it", ErrUnsupported, d.budget))
+		return false
+	}
+	return true
+}
+
+// PopClip implements Device. It also closes a group.
 func (d *DrawDevice) PopClip() {
 	n := len(d.stack)
 	if n == 0 {
@@ -261,6 +269,7 @@ func (d *DrawDevice) PopClip() {
 	f := d.stack[n-1]
 	d.stack = d.stack[:n-1]
 	d.clip = f.clip
+	d.held -= f.cost
 	if f.off {
 		d.off--
 	}
@@ -306,14 +315,18 @@ func (d *DrawDevice) FillShade(sh Shade, ctm raster.Matrix, alpha float32, cp Co
 	})
 }
 
-// BeginMask implements Device. The mask group draws into a pixmap of its own,
-// which EndMask turns into the clip that narrows what comes next.
+// BeginMask implements Device.
 func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams) {
 	if d.off > 0 {
 		d.pushOff()
 		return
 	}
 	box := area.Intersect(d.clip.rect)
+	cost := d.groupBytes(box, !luminosity)
+	if !d.fits(cost) {
+		d.push(d.clip)
+		return
+	}
 	g := &groupFrame{box: box, mask: true, luminosity: luminosity, alpha: 255, knockout: d.knockout}
 	g.px = d.groupPixmap(box, !luminosity)
 	if g.px != nil && luminosity {
@@ -327,14 +340,14 @@ func (d *DrawDevice) BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace
 		d.off++
 		return
 	}
-	d.stack = append(d.stack, drawFrame{clip: d.clip, dst: d.dst, group: g})
+	d.held += cost
+	d.stack = append(d.stack, drawFrame{clip: d.clip, dst: d.dst, group: g, cost: cost})
 	d.dst = g.px
 	d.knockout = false
 	d.clip = clipState{rect: box, mask: d.clip.mask}
 }
 
-// EndMask implements Device. The frame stays on the stack, because the mask is
-// a clip and the interpreter pops it.
+// EndMask implements Device. The frame stays on the stack for PopClip.
 func (d *DrawDevice) EndMask(transfer *[256]uint8) {
 	n := len(d.stack)
 	if n == 0 {
@@ -352,6 +365,8 @@ func (d *DrawDevice) EndMask(transfer *[256]uint8) {
 	f.group = nil
 	d.dst = f.dst
 	d.knockout = g.knockout
+	d.held -= f.cost
+	f.cost = 0
 	if g.px == nil {
 		d.clip = clipState{rect: raster.EmptyRect}
 		return
@@ -361,14 +376,13 @@ func (d *DrawDevice) EndMask(transfer *[256]uint8) {
 		d.clip = clipState{rect: raster.EmptyRect}
 		return
 	}
+	f.cost = int64(len(m.Samples))
+	d.held += f.cost
 	m.MulMask(f.clip.mask)
 	d.clip = clipState{rect: g.box, mask: m}
 }
 
-// BeginGroup implements Device. A group that cannot see what is under it, or
-// that has something to do when it closes, draws into a pixmap of its own;
-// a non-isolated group with no alpha, no blend mode and no knockout on either
-// side draws straight through, which is exactly the same result.
+// BeginGroup implements Device.
 func (d *DrawDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knockout bool, blend BlendMode, alpha float32) {
 	a := alphaByte(alpha)
 	through := !isolated && !knockout && !d.knockout && blend == BlendNormal && a == 255
@@ -377,13 +391,19 @@ func (d *DrawDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knoc
 		return
 	}
 	box := area.Intersect(d.clip.rect)
+	cost := d.groupBytes(box, true)
+	if !d.fits(cost) {
+		d.push(d.clip)
+		return
+	}
 	px := d.groupPixmap(box, true)
 	if px == nil {
 		d.pushOff()
 		return
 	}
+	d.held += cost
 	d.stack = append(d.stack, drawFrame{
-		clip: d.clip, dst: d.dst,
+		clip: d.clip, dst: d.dst, cost: cost,
 		group: &groupFrame{px: px, box: box, blend: blend, alpha: a, knockout: d.knockout},
 	})
 	d.dst = px
@@ -395,8 +415,7 @@ func (d *DrawDevice) BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knoc
 func (d *DrawDevice) EndGroup() { d.PopClip() }
 
 // groupPixmap allocates the destination a group draws into, covering the whole
-// pixels of its area and positioned there, so that everything drawing into it
-// keeps working in the page's own coordinates.
+// pixels of box and positioned in page coordinates.
 func (d *DrawDevice) groupPixmap(box raster.Rect, alpha bool) *raster.Pixmap {
 	x0, y0, x1, y1 := box.Outer()
 	if x1 <= x0 || y1 <= y0 {
@@ -410,13 +429,29 @@ func (d *DrawDevice) groupPixmap(box raster.Rect, alpha bool) *raster.Pixmap {
 	return px
 }
 
+// groupBytes is the size of the pixmap groupPixmap allocates for box.
+func (d *DrawDevice) groupBytes(box raster.Rect, alpha bool) int64 {
+	x0, y0, x1, y1 := box.Outer()
+	if x1 <= x0 || y1 <= y0 {
+		return 0
+	}
+	n := int64(d.dst.N)
+	if alpha {
+		n++
+	}
+	return int64(x1-x0) * int64(y1-y0) * n
+}
+
+// maxHeldPages bounds the masks and groups held at once, in pages of the destination.
+const maxHeldPages = 4
+
 func (d *DrawDevice) pushOff() {
 	d.stack = append(d.stack, drawFrame{clip: d.clip, off: true})
 	d.off++
 }
 
 // BeginTile implements Device. Returning zero asks the interpreter to run the
-// pattern's content once for every repetition, which is what draws it.
+// pattern's content once for every repetition.
 func (d *DrawDevice) BeginTile(area, view raster.Rect, xstep, ystep float32, ctm raster.Matrix) int {
 	d.push(d.clip)
 	return 0
@@ -487,8 +522,7 @@ func (d *DrawDevice) pushTextClip(t *Text, ctm raster.Matrix, s *raster.Stroke) 
 	}, false))
 }
 
-// runGlyph lets a font with no program draw one glyph for itself. The scratch
-// color is saved, because the glyph draws through this device.
+// runGlyph lets a font with no program draw one glyph for itself.
 func (d *DrawDevice) runGlyph(f Font, gid int, m raster.Matrix, cs *ColorSpace, col []float32, alpha float32) {
 	if d.depth >= maxGlyphDepth {
 		return
@@ -527,8 +561,8 @@ func (d *DrawDevice) drawGlyph(prog *font.Font, gid int, m raster.Matrix, paint 
 	d.stampGlyph(prog, gid, m, paint, nil, 0)
 }
 
-// stampGlyph draws one glyph filled, or stroked when there is a pen, from the
-// cache when it is small enough to be worth remembering.
+// stampGlyph draws one glyph filled, or stroked when s is not nil, from the
+// cache when it is within maxCachedGlyph.
 func (d *DrawDevice) stampGlyph(prog *font.Font, gid int, m raster.Matrix, paint raster.Paint, s *raster.Stroke, scale float32) {
 	p := prog.GlyphPath(gid)
 	if p == nil {
@@ -727,16 +761,13 @@ func sourceMatrix(ctm raster.Matrix, src *raster.Pixmap) (raster.Matrix, bool) {
 	return raster.Concat(inv, raster.Scale(float32(src.W), float32(src.H))), true
 }
 
-// subsampleBy is how many times an image should be halved before it is
-// sampled, which is what keeps a scan from turning into noise.
+// subsampleBy returns the number of times an image is halved before sampling.
 func subsampleBy(src *raster.Pixmap, ctm raster.Matrix) int {
 	return subsampleFor(src.W, src.H, ctm)
 }
 
 // shrinkFor is subsampleBy asked before anything is decoded, from the size the
-// image declares. A page that clips to the same scan forty times decodes
-// it forty times if the answer only arrives after the pixmap does, and the
-// full size pixmap is too large for the cache to keep.
+// image declares.
 func shrinkFor(img Image, ctm raster.Matrix) int {
 	if img == nil {
 		return 0
@@ -768,7 +799,7 @@ func smoothImage(src *raster.Pixmap, ctm raster.Matrix, interpolate bool) bool {
 	return w < float32(src.W)*4 || h < float32(src.H)*4
 }
 
-// deviceExtent is how wide and tall the unit square is after ctm.
+// deviceExtent returns the width and height of the unit square after ctm.
 func deviceExtent(ctm raster.Matrix) (w, h float32) {
 	return abs32(ctm.A) + abs32(ctm.C), abs32(ctm.B) + abs32(ctm.D)
 }

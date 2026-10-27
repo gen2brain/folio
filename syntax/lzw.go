@@ -9,7 +9,7 @@ func newRawInflater(r io.Reader) io.ReadCloser { return flate.NewReader(r) }
 
 // lzwDecode implements the LZW variant PDF uses: MSB-first packing, 8-bit
 // literals, and the early code width change that /EarlyChange turns off.
-func lzwDecode(data []byte, early bool) ([]byte, error) {
+func lzwDecode(data []byte, early bool, limit int) ([]byte, error) {
 	const (
 		clearCode = 256
 		eodCode   = 257
@@ -86,6 +86,9 @@ func lzwDecode(data []byte, early bool) ([]byte, error) {
 			stack[len(stack)-1] = byte(cur)
 		}
 		out = append(out, stack[top:]...)
+		if len(out) >= limit && limit < maxDecoded {
+			return out[:limit], nil
+		}
 		if len(out) > maxDecoded {
 			return out, errInvalidf("lzw: output exceeds %d bytes", maxDecoded)
 		}
@@ -102,8 +105,7 @@ func lzwDecode(data []byte, early bool) ([]byte, error) {
 	}
 }
 
-// BitReader reads MSB-first fields, which is how every packed value in PDF is
-// stored: image samples, predictor components, function samples.
+// BitReader reads MSB-first fields.
 type BitReader struct {
 	buf []byte
 	pos int

@@ -311,6 +311,9 @@ func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 // data is the image bytes with the byte filters applied, and what is left.
 func (i *Image) data() ([]byte, Name, Dict, error) {
 	if i.stream != nil {
+		if n := i.sampleBytes(); n > 0 {
+			return i.stream.ImageDataLimit(n)
+		}
 		return i.stream.ImageData()
 	}
 	var f *syntax.File
@@ -318,6 +321,22 @@ func (i *Image) data() ([]byte, Name, Dict, error) {
 		f = i.doc.f
 	}
 	return f.DecodeImageData(i.dict, i.inline)
+}
+
+// sampleBytes is the size of the image's samples, zero when it is not known.
+func (i *Image) sampleBytes() int {
+	comps := 1
+	if !i.Mask {
+		if i.CS == nil {
+			return 0
+		}
+		comps = i.CS.N
+	}
+	row := (int64(i.Width)*int64(comps)*int64(i.BPC) + 7) / 8
+	if i.Width <= 0 || i.Height <= 0 || i.BPC <= 0 || row*int64(i.Height) > maxImagePixels*4*2 {
+		return 0
+	}
+	return int(row * int64(i.Height))
 }
 
 // stencil decodes an /ImageMask into coverage.

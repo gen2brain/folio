@@ -415,6 +415,47 @@ func (s stubImage) Stencil() bool                                   { return fal
 func (s stubImage) Smooth() bool                                    { return false }
 func (s stubImage) Pixels(*ColorSpace, int) (*raster.Pixmap, error) { return nil, nil }
 
+// TestDrawBudget checks that stacked clips and groups stay within the device budget.
+func TestDrawBudget(t *testing.T) {
+	px := raster.NewPixmap(raster.ModelRGB, 100, 100, false)
+	px.ClearWhite()
+	d := NewDrawDevice(px)
+	errs := 0
+	d.SetErrorFunc(func(error) { errs++ })
+	var tri raster.Path
+	tri.MoveTo(0, 0)
+	tri.LineTo(100, 0)
+	tri.LineTo(0, 100)
+	tri.Close()
+	for range 100 {
+		d.ClipPath(&tri, false, raster.Identity, raster.InfiniteRect)
+		if d.held > d.budget {
+			t.Fatalf("clips hold %d bytes, over %d", d.held, d.budget)
+		}
+	}
+	for range 50 {
+		d.BeginGroup(raster.InfiniteRect, DeviceRGB, true, false, BlendNormal, 0.9)
+		if d.held > d.budget {
+			t.Fatalf("groups hold %d bytes, over %d", d.held, d.budget)
+		}
+	}
+	var sq raster.Path
+	sq.Rect(0, 0, 10, 10)
+	d.FillPath(&sq, false, raster.Identity, DeviceRGB, []float32{0, 0, 0}, 1, ColorParams{})
+	for range 150 {
+		d.PopClip()
+	}
+	if errs == 0 {
+		t.Error("going past the budget reported nothing")
+	}
+	if d.held != 0 {
+		t.Errorf("%d bytes held after every pop", d.held)
+	}
+	if px.Samples[0] == 255 {
+		t.Error("the fill inside the groups never reached the page")
+	}
+}
+
 // TestNaturalDPI covers the natural render resolution and the crop to a picture.
 func TestNaturalDPI(t *testing.T) {
 	page := raster.Rect{X1: 600, Y1: 900}

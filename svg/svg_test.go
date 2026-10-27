@@ -1385,6 +1385,23 @@ func TestTextPieces(t *testing.T) {
 	}
 }
 
+// TestFilterHeld checks that a filter chain stops before its results pass maxFilterHeld.
+func TestFilterHeld(t *testing.T) {
+	var fl strings.Builder
+	for i := range 20 {
+		fmt.Fprintf(&fl, `<feFlood flood-color="red" result="r%d"/>`, i)
+	}
+	d, err := Load([]byte(`<svg width="4096" height="4096"><filter id="f" x="0" y="0" width="1" height="1">` +
+		fl.String() + `</filter><rect width="4096" height="4096" filter="url(#f)"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := d.Page(0)
+	if _, err := p.ImageDPI(96); err == nil || !strings.Contains(err.Error(), "filter results") {
+		t.Errorf("twenty 64 MB results gave %v", err)
+	}
+}
+
 // TestEntityBomb checks an entity referenced far more often than it is long.
 func TestEntityBomb(t *testing.T) {
 	value := strings.Repeat("v", 1<<16)

@@ -400,3 +400,18 @@ func TestStrokeTriangleCap(t *testing.T) {
 		t.Fatal("triangle cap drew a dot")
 	}
 }
+
+// TestStrokeBound checks that a stroke of many huge curves stays within maxOutlinePoints.
+func TestStrokeBound(t *testing.T) {
+	var p Path
+	for i := range 1000 {
+		y := float32(i)
+		p.MoveTo(0, y)
+		p.CurveTo(1e6, y+1e6, -1e6, y+2e6, 0, y+3e6)
+	}
+	s := &Stroke{Width: 1, MiterLimit: 4, Dash: []float32{0.5}}
+	out := s.Outline(&p, 1)
+	if n := len(out.pts); n > maxOutlinePoints+1<<17 {
+		t.Errorf("the outline has %d points, over %d", n, maxOutlinePoints)
+	}
+}

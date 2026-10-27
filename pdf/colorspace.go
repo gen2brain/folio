@@ -5,8 +5,6 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// colorSpace resolves a color space object, which is either a name, an array,
-// or a name that has to be looked up in the resource dictionary.
 func (d *Document) colorSpace(obj Object, res Dict, depth int) *ColorSpace {
 	if depth > maxNesting {
 		d.errorf("color space nested too deeply")
@@ -147,6 +145,10 @@ func (d *Document) colorSpaceArray(a Array, res Dict, depth int) *ColorSpace {
 			return DeviceGray
 		}
 		names := d.f.GetArray(a[1])
+		if len(names) > maxColorants {
+			d.errorf("DeviceN names %d colorants", len(names))
+			return DeviceGray
+		}
 		cs := &ColorSpace{
 			Name:      "DeviceN",
 			Kind:      KindDeviceN,
@@ -181,10 +183,8 @@ func (d *Document) colorSpaceArray(a Array, res Dict, depth int) *ColorSpace {
 	return DeviceGray
 }
 
-// iccProfile reads the profile an ICCBased space embeds, which says what its
-// numbers mean where the alternate space only says how many there are. It is
-// nil for a profile shaped in a way this cannot read, for one that says no
-// more than sRGB already does, and for one that disagrees with /N.
+// iccProfile reads the profile an ICCBased space embeds; nil when unreadable,
+// when it says no more than sRGB, or when it disagrees with /N.
 func (d *Document) iccProfile(st *syntax.Stream, n int) *gfx.ICC {
 	if n != 1 && n != 3 {
 		return nil
@@ -199,3 +199,6 @@ func (d *Document) iccProfile(st *syntax.Stream, n int) *gfx.ICC {
 	}
 	return p
 }
+
+// maxColorants is the most colorants a DeviceN may name, ISO 32000-2 Annex C.
+const maxColorants = 32

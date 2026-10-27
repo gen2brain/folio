@@ -48,6 +48,20 @@ func TestRunLengthDecode(t *testing.T) {
 	}
 }
 
+// TestDecodeLimit checks that an image decodes only as far as its samples.
+func TestDecodeLimit(t *testing.T) {
+	f := &File{}
+	chain := Array{Name("RL"), Name("RL"), Name("RL"), Name("RL")}
+	out, _, _, _ := f.decodeImageData(Dict{"Filter": chain}, []byte{0x81, 0x81}, Ref{}, 100)
+	if len(out) > 2*100+64 {
+		t.Errorf("a 100 byte image decoded %d bytes", len(out))
+	}
+	out, _, _, _ = f.decodeImageData(Dict{"Filter": chain}, []byte{0x81, 0x81}, Ref{}, maxDecoded)
+	if len(out) != 1<<25 {
+		t.Errorf("without a limit the chain decoded %d bytes", len(out))
+	}
+}
+
 // TestFilterBounds checks the decoders whose output a few bytes can multiply.
 func TestFilterBounds(t *testing.T) {
 	f := &File{}
@@ -80,7 +94,7 @@ func TestFilterBounds(t *testing.T) {
 func TestLZWDecode(t *testing.T) {
 	in := []byte{0x80, 0x0B, 0x60, 0x50, 0x22, 0x0C, 0x0C, 0x85, 0x01}
 	want := []byte{45, 45, 45, 45, 45, 65, 45, 45, 45, 66}
-	got, err := lzwDecode(in, true)
+	got, err := lzwDecode(in, true, maxDecoded)
 	if err != nil {
 		t.Fatalf("lzw: %v", err)
 	}
@@ -90,7 +104,7 @@ func TestLZWDecode(t *testing.T) {
 }
 
 func TestLZWEarlyChange(t *testing.T) {
-	if _, err := lzwDecode([]byte{0x80, 0x0B, 0x60, 0x50, 0x22, 0x0C, 0x0C, 0x85, 0x01}, false); err != nil {
+	if _, err := lzwDecode([]byte{0x80, 0x0B, 0x60, 0x50, 0x22, 0x0C, 0x0C, 0x85, 0x01}, false, maxDecoded); err != nil {
 		t.Fatalf("lzw: %v", err)
 	}
 }
@@ -102,15 +116,15 @@ func TestFlateDecode(t *testing.T) {
 	w.Write(want)
 	w.Close()
 
-	got, err := flateDecode(buf.Bytes())
+	got, err := flateDecode(buf.Bytes(), maxDecoded)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("flate: %v, %d bytes", err, len(got))
 	}
 
-	if got, err := flateDecode(append([]byte("  \n"), buf.Bytes()...)); err != nil || !bytes.Equal(got, want) {
+	if got, err := flateDecode(append([]byte("  \n"), buf.Bytes()...), maxDecoded); err != nil || !bytes.Equal(got, want) {
 		t.Errorf("flate with leading space: %v", err)
 	}
-	if got, _ := flateDecode(buf.Bytes()[:20]); len(got) == 0 {
+	if got, _ := flateDecode(buf.Bytes()[:20], maxDecoded); len(got) == 0 {
 		t.Error("truncated flate returned nothing; partial data is better than none")
 	}
 }
