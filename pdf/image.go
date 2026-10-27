@@ -8,6 +8,7 @@ import (
 	stdcolor "image/color"
 	"image/jpeg"
 	"io"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -575,6 +576,14 @@ func (u *unpacker) run() {
 
 	c := make([]float32, u.comps)
 	raw := make([]uint32, u.comps)
+	var tc *tintCache
+	cost := int64(0)
+	if f, ok := u.cs.Tint.(*Function); ok && f != nil {
+		tc, cost = newTintCache(u.comps, px.N), int64(f.cost())
+	}
+	work := int64(0)
+	last := make([]uint8, px.N)
+	defer func() { i.spent.Add(work) }()
 	for y := 0; y < i.Height; y++ {
 		row := u.sh.Row()
 		if row == nil {
@@ -586,13 +595,74 @@ func (u *unpacker) run() {
 				raw[j] = r.next()
 				c[j] = u.value(j, raw[j], maxVal)
 			}
-			u.cs.Convert(c, row[x*n:x*n+px.N])
+			out := row[x*n : x*n+px.N]
+			switch {
+			case tc == nil:
+				u.cs.Convert(c, out)
+			case tc.get(raw, out):
+			case work+cost > maxTintWork:
+				if work <= maxTintWork && i.doc != nil {
+					i.doc.errorf("image color conversion past %d function steps", maxTintWork)
+				}
+				work = maxTintWork + 1
+				copy(out, last)
+			default:
+				work += cost
+				u.cs.Convert(c, out)
+				tc.put(raw, out)
+			}
+			copy(last, out)
 			if px.Alpha {
 				row[x*n+px.N] = u.keyedAll(raw)
 			}
 		}
 		u.sh.Commit()
 	}
+}
+
+// maxTintWork bounds the tint function steps one image decode takes.
+const maxTintWork = 1 << 28
+
+// tintCache holds the colors the last samples converted to, as MuPDF's color converter cache does.
+type tintCache struct {
+	comps, n int
+	keys     []uint32
+	vals     []uint8
+	used     []bool
+}
+
+// tintSlots is the size of a tintCache, a power of two.
+const tintSlots = 1 << 12
+
+func newTintCache(comps, n int) *tintCache {
+	return &tintCache{comps: comps, n: n, keys: make([]uint32, tintSlots*comps),
+		vals: make([]uint8, tintSlots*n), used: make([]bool, tintSlots)}
+}
+
+// slot is the FNV-1a hash of raw, cut to the cache.
+func (t *tintCache) slot(raw []uint32) int {
+	h := uint32(2166136261)
+	for _, v := range raw {
+		h = (h ^ v) * 16777619
+	}
+	return int(h & (tintSlots - 1))
+}
+
+// get writes the color cached for raw into out and reports whether there was one.
+func (t *tintCache) get(raw []uint32, out []uint8) bool {
+	i := t.slot(raw)
+	if !t.used[i] || !slices.Equal(t.keys[i*t.comps:(i+1)*t.comps], raw) {
+		return false
+	}
+	copy(out, t.vals[i*t.n:(i+1)*t.n])
+	return true
+}
+
+func (t *tintCache) put(raw []uint32, out []uint8) {
+	i := t.slot(raw)
+	t.used[i] = true
+	copy(t.keys[i*t.comps:(i+1)*t.comps], raw)
+	copy(t.vals[i*t.n:(i+1)*t.n], out)
 }
 
 // mapped is the palette path for byte samples.

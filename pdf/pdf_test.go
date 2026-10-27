@@ -1193,6 +1193,62 @@ func TestImageWork(t *testing.T) {
 	}
 }
 
+// TestTintCache converts a DeviceN image through its tint function: two colors
+// repeated, and a million distinct ones through a calculator of ten thousand steps.
+func TestTintCache(t *testing.T) {
+	page := func(img, fn string) *Document {
+		return buildPDF(t, []string{
+			"<< /Type /Catalog /Pages 2 0 R >>",
+			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+				" /Resources << /XObject << /I 5 0 R >> >> >>",
+			streamObj("", "q 100 0 0 100 0 0 cm /I Do Q"),
+			img,
+			streamObj("/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1]", fn),
+		})
+	}
+	var two []byte
+	for y := range 100 {
+		for x := range 100 {
+			if (x+y)%2 == 0 {
+				two = append(two, 0, 255)
+			} else {
+				two = append(two, 255, 0)
+			}
+		}
+	}
+	d := page(streamObj("/Type /XObject /Subtype /Image /Width 100 /Height 100 /BitsPerComponent 8"+
+		" /ColorSpace [/DeviceN [/A /B] /DeviceRGB 6 0 R]", string(two)), "{ exch pop dup dup }")
+	px := renderDoc(t, d, &Options{})
+	for _, c := range [][2]int{{0, 99}, {1, 99}, {50, 50}, {51, 50}} {
+		v := uint8(0)
+		if (c[0]+c[1])%2 == 0 {
+			v = 255
+		}
+		if got := pixel(px, c[0], c[1]); !same(got, v, v, v) {
+			t.Errorf("%d,%d is %v, want %d", c[0], c[1], got, v)
+		}
+	}
+
+	var many []byte
+	for y := range 1000 {
+		for x := range 1000 {
+			many = append(many, uint8(x), uint8(y))
+		}
+	}
+	d = page(streamObj("/Type /XObject /Subtype /Image /Width 1000 /Height 1000 /BitsPerComponent 8"+
+		" /ColorSpace [/DeviceN [/A /B] /DeviceRGB 6 0 R]", string(many)),
+		"{ "+strings.Repeat("dup pop ", 5000)+"pop dup dup }")
+	renderDoc(t, d, nil)
+	found := false
+	for _, err := range d.Err() {
+		found = found || strings.Contains(err.Error(), "function steps")
+	}
+	if !found {
+		t.Error("a million conversions of ten thousand steps ran to the end")
+	}
+}
+
 // TestNewStream covers reading a document from a stream that cannot be seeked.
 func TestNewStream(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "testdata", "minimal.pdf"))
