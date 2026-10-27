@@ -26,27 +26,20 @@ type box struct {
 	style *Style
 	node  *Node
 	kids  []*box
-	// text is what a text box says, as the source wrote it.
-	text string
+	text  string
 
-	// x, y, w and h are the content box in CSS pixels, which layout fills in.
+	// x, y, w and h are the content box in CSS pixels.
 	x, y, w, h float32
-	// lines are the line boxes of a block whose children are inline.
-	lines []lineBox
-	// marker is what a list item draws before its first line, and back what
-	// is painted behind any box.
+	lines      []lineBox
+	// marker is the text a list item draws before its first line; back is painted behind the box.
 	marker string
 	back   *visual
-	// natural is how wide a table came out, which its lines do not say, and
-	// markerFace what a list item draws its marker with.
+	// natural is the width a table came out at; markerFace draws the marker.
 	natural    float32
 	markerFace face
-	// reach is how far down the subtree of a box goes, which is past its own
-	// height when something in it is out of the flow.
+	// reach is the bottom of the subtree, past h when something in it is out of flow.
 	reach float32
-	// collapsed is the grid a table whose cells share their borders
-	// resolved, edges the segments it paints, skipBorders a box whose own
-	// borders they replace, and inset the widths such a box lays out with.
+	// collapsed is a collapsed-border table's grid, edges its segments, and inset the border widths a cell lays out with.
 	collapsed   *grid
 	edges       []edgeLine
 	skipBorders bool
@@ -63,8 +56,7 @@ type edgeLine struct {
 // lineBox is one line of a block.
 type lineBox struct {
 	y, h, baseline float32
-	// natural is what the line measures before it is aligned, which a float
-	// shrinking to fit is measured by.
+	// natural is the line's width before alignment.
 	natural float32
 	frags   []frag
 }
@@ -75,25 +67,23 @@ type frag struct {
 	text  string
 	style *Style
 	face  face
-	// extra is what justification adds to each space of the run.
+	// extra is the justification added to each space.
 	extra float32
-	// dy is how far vertical-align raises the run above the line's baseline.
+	// dy is the vertical-align raise above the baseline.
 	dy float32
-	// sub is the box an inline-block put on the line, which is laid out on
-	// its own and moved to where the line ended up.
+	// sub is the box of an inline-block on the line.
 	sub *box
-	// vis is set for a picture or a drawing, and h its height.
+	// vis is set for a picture or a drawing.
 	vis *visual
 	h   float32
-	// rtl is a run drawn right to left.
 	rtl bool
-	// link is the address of the anchor the run is written inside.
+	// link is the href of the enclosing anchor.
 	link string
 }
 
 // buildBoxes turns a styled tree into the boxes that lay out.
 func buildBoxes(root *Node, st Styles) *box {
-	b := build(root, st)
+	b := build(root, st, &matchCtx{})
 	if b == nil {
 		return nil
 	}
@@ -101,7 +91,7 @@ func buildBoxes(root *Node, st Styles) *box {
 	return b
 }
 
-func build(n *Node, st Styles) *box {
+func build(n *Node, st Styles, m *matchCtx) *box {
 	switch n.Type {
 	case xhtml.TextNode:
 		if n.Data == "" || n.Parent == nil {
@@ -133,8 +123,6 @@ func build(n *Node, st Styles) *box {
 		}
 	}
 	b := &box{style: s, node: n}
-	// A float and an absolutely placed box are block level whatever display
-	// says, so an inline image can be floated out of the line it was in.
 	if n.Type == xhtml.ElementNode && s.Display == DisplayInline &&
 		s.Float == FloatNone && s.Position != PosAbsolute {
 		b.kind = inlineBox
@@ -143,7 +131,7 @@ func build(n *Node, st Styles) *box {
 		b.kids = append(b.kids, g)
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if k := build(c, st); k != nil {
+		if k := build(c, st, m); k != nil {
 			b.kids = append(b.kids, k)
 		}
 	}
@@ -151,13 +139,12 @@ func build(n *Node, st Styles) *box {
 		b.kids = append(b.kids, g)
 	}
 	if b.kind == blockBox && s.Display == DisplayListItem {
-		b.marker = listMarker(n, s)
+		b.marker = listMarker(n, s, m)
 	}
 	return b
 }
 
-// generated is the box a rule asks for before or after the content of an
-// element, and nil when no rule asks for one.
+// generated is the ::before or ::after box of an element, or nil.
 func generated(n *Node, st Styles, p PseudoElement) *box {
 	s := st.Pseudo(n, p)
 	if s == nil || !s.HasContent || s.Display == DisplayNone {
@@ -173,9 +160,7 @@ func generated(n *Node, st Styles, p PseudoElement) *box {
 	return b
 }
 
-// inlineLevel reports a box that belongs on a line rather than in the block
-// flow of its parent. A float belongs to neither: it is placed where it is
-// written and the lines beside it work around it.
+// inlineLevel reports a box that goes on a line, not in the block flow.
 func (b *box) inlineLevel() bool {
 	if b.ownFlow() {
 		return true
@@ -187,9 +172,7 @@ func (b *box) inlineLevel() bool {
 	return false
 }
 
-// ownFlow reports a box laid out on its own rather than as part of the lines
-// of the block around it: a float, a box taken out of the flow, and an
-// inline-block, which is a block that happens to sit on a line.
+// ownFlow reports a float, an absolutely placed box or an inline-block.
 func (b *box) ownFlow() bool {
 	if b.floated() || b.placed() {
 		return true
@@ -197,15 +180,12 @@ func (b *box) ownFlow() bool {
 	return b.kind != textBox && b.style != nil && b.style.Display == DisplayInlineBlock
 }
 
-// floated reports a box taken out of the flow. A text box carries the style
-// of the element around it, so only a box of its own can be one.
 func (b *box) floated() bool { return b.kind != textBox && b.style.Float != FloatNone }
 
-// placed reports a box put somewhere of its own rather than in the flow.
+// placed reports an absolutely positioned box.
 func (b *box) placed() bool { return b.kind != textBox && b.style.Position == PosAbsolute }
 
-// blank reports a text box that is nothing but collapsible white space, which
-// generates no box between two blocks.
+// blank reports a text box of only collapsible white space.
 func (b *box) blank() bool {
 	if b.kind != textBox || b.style.WhiteSpace != WhiteNormal {
 		return false
@@ -213,9 +193,7 @@ func (b *box) blank() bool {
 	return strings.TrimFunc(b.text, func(r rune) bool { return r < 128 && isSpaceByte(byte(r)) }) == ""
 }
 
-// fixup makes every block's children either all inline or all block. An
-// inline box that turns out to hold a block becomes one, and runs of inline
-// children beside a block are wrapped in a block of their own.
+// fixup makes every block's children either all inline or all block, CSS 2.1 9.2.1.1.
 func fixup(b *box) {
 	for _, k := range b.kids {
 		fixup(k)
@@ -258,9 +236,6 @@ func fixup(b *box) {
 			}
 		}
 		if !empty {
-			// An anonymous block takes the inherited properties of the box
-			// it is inside and the initial value of the rest: it has no
-			// margin, no padding and no background of its own.
 			s := b.style.inherit()
 			out = append(out, &box{style: &s, kids: run})
 		}
@@ -278,7 +253,6 @@ func fixup(b *box) {
 	b.kids = out
 }
 
-// romanNumeral writes a number the way an ordered list may ask for.
 func romanNumeral(n int) string {
 	if n < 1 || n > 3999 {
 		return itoa(n)
@@ -293,7 +267,7 @@ func romanNumeral(n int) string {
 	return b.String()
 }
 
-// letters counts in the alphabet, as a spreadsheet numbers its columns.
+// letters counts in the alphabet from first, as spreadsheet columns do.
 func letters(n int, first rune) string {
 	if n < 1 {
 		return itoa(n)
@@ -309,9 +283,8 @@ func letters(n int, first rune) string {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// listMarker is what a list item draws before its first line, which for an
-// ordered list counts its position among its siblings.
-func listMarker(n *Node, s *Style) string {
+// listMarker is the marker text of a list item.
+func listMarker(n *Node, s *Style, m *matchCtx) string {
 	switch s.ListStyle {
 	case ListNone:
 		return ""
@@ -322,7 +295,7 @@ func listMarker(n *Node, s *Style) string {
 	case ListSquare:
 		return "▪"
 	}
-	i := index(n, false, true)
+	i := m.index(n, false, true)
 	switch s.ListStyle {
 	case ListDecimal:
 		return itoa(i) + "."

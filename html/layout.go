@@ -12,71 +12,68 @@ import (
 	"github.com/gen2brain/folio/font"
 )
 
-// layout flows a box tree down a column of a given width. Everything it
-// writes into a box is absolute and in CSS pixels, with y counting down.
+// layout flows a box tree down a column of a given width, in absolute CSS pixels, y down.
 type layout struct {
 	doc  *Document
 	path string
-	// y is where the next content goes, and pend the collapsing margin that
-	// has not been applied to it yet.
+	// y is the top of the next content; pend the collapsing margin not yet applied.
 	y    float32
 	pend float32
-	// waiting are the boxes whose top the pending margin will move, which is
-	// how a margin collapses through a box that has nothing at its top edge.
+	// waiting are the boxes whose top the pending margin will move.
 	waiting []*box
-	// spans are the line boxes in order, what pagination breaks between, and
-	// force marks one a page must start at.
+	// spans are the line boxes for pagination; next forces a page break before the next one.
 	spans []lineSpan
 	next  bool
-	// floats are the boxes taken out of the flow, which the line boxes
-	// beside them work around.
-	floats []exclusion
-	pics   map[string]*visual
-	arts   map[*xhtml.Node]*visual
-	errs   []error
-	// budget bounds the trial layouts a table and a float measure with,
-	// which nest and would otherwise multiply.
+	// floats are the out-of-flow boxes by bottom; clearL and clearR the lowest left and right bottoms.
+	floats         []exclusion
+	clearL, clearR float32
+	// floatTop is the top of the last float, the highest a later one may rise, CSS 2.1 9.5.1.
+	floatTop float32
+	pics     map[string]*visual
+	arts     map[*xhtml.Node]*visual
+	errs     []error
+	// budget bounds the boxes the trial layouts of tables and floats lay out.
 	budget *int
-	// posX, posY, posW and posH are the box an absolutely placed child is
-	// placed against: the nearest ancestor that is positioned itself. posH is
-	// zero when that box has no height of its own yet.
+	// posX, posY, posW and posH are the containing block of an absolutely placed child; posH is zero while unknown.
 	posX, posY, posW, posH float32
-	// cbh is the height of the containing block, which a percentage height
-	// resolves against, and negative when that block has no height of its own
-	// and takes one from what it holds: CSS 2.1 10.5 makes that auto.
+	// cbh is the containing block height for percentage heights, negative when auto, CSS 2.1 10.5.
 	cbh float32
-	// pw and ph are the page box, which is what a percentage size on the
-	// root element of a drawing measures against.
+	// pw and ph are the page box, against percentage sizes on a drawing's root.
 	pw, ph float32
-	// fonts are the faces the book brings with it for this part.
+	// fonts are the faces the book brings for this part.
 	fonts *fontSet
-	// root is the tree run laid out.
-	root *box
+	root  *box
 	// vertical is a part whose lines run down the page.
 	vertical bool
 }
 
-// face is the face a style asks for, out of what the part has.
 func (l *layout) face(s *Style) face { return styleFace(s, l.fonts) }
 
-// layoutProbes is how many trial layouts one part may measure with.
-const layoutProbes = 1 << 16
+// layoutWork bounds the boxes the trial layouts of one part lay out.
+const layoutWork = 1 << 19
 
-// sub is a layout for a box measured or placed on its own: a float, a table
-// cell, or a trial of either.
+// sub is a layout for a float, a table cell, or a trial of either, measured on its own.
 func (l *layout) sub(y float32) *layout {
 	return &layout{doc: l.doc, path: l.path, pics: l.pics, budget: l.budget, y: y,
 		fonts: l.fonts, posX: l.posX, posY: l.posY, posW: l.posW, posH: l.posH,
 		cbh: l.cbh, vertical: l.vertical}
 }
 
-// spend takes one trial layout out of the budget.
-func (l *layout) spend() bool {
+// spend takes a trial layout of b out of the budget.
+func (l *layout) spend(b *box) bool {
 	if l.budget == nil || *l.budget <= 0 {
 		return false
 	}
-	*l.budget--
+	*l.budget -= boxCount(b)
 	return true
+}
+
+func boxCount(b *box) int {
+	n := 1
+	for _, k := range b.kids {
+		n += boxCount(k)
+	}
+	return n
 }
 
 // lineSpan is one line box as pagination sees it.
@@ -92,12 +89,11 @@ type exclusion struct {
 	right       bool
 }
 
-// band is the free horizontal range between x and x+avail over a vertical
-// range, once the floats that overlap it are taken out.
+// band is the free horizontal range within x and x+avail over top to bottom, past the floats.
 func (l *layout) band(x, avail, top, bottom float32) (float32, float32) {
 	x0, x1 := x, x+avail
-	for _, f := range l.floats {
-		if f.bottom <= top || f.top >= bottom {
+	for _, f := range l.floats[l.past(top):] {
+		if f.top >= bottom {
 			continue
 		}
 		if f.right {
@@ -109,36 +105,44 @@ func (l *layout) band(x, avail, top, bottom float32) (float32, float32) {
 	return x0, x1
 }
 
-// nextBottom is the next vertical position at which a float ends, and top
-// itself when none does.
+// nextBottom is the next float bottom below top, or top when none.
 func (l *layout) nextBottom(top float32) float32 {
-	next := top
-	for _, f := range l.floats {
-		if f.bottom > top && (next == top || f.bottom < next) {
-			next = f.bottom
-		}
+	if i := l.past(top); i < len(l.floats) {
+		return l.floats[i].bottom
 	}
-	return next
+	return top
 }
 
-// clearance is how far down a box must go to be past the floats it clears.
+// past is the first float that ends below top.
+func (l *layout) past(top float32) int {
+	i, _ := slices.BinarySearchFunc(l.floats, top, func(f exclusion, y float32) int {
+		if f.bottom <= y {
+			return -1
+		}
+		return 1
+	})
+	return i
+}
+
+// clearance is the lowest bottom of the floats c clears.
 func (l *layout) clearance(c Clear) float32 {
-	y := float32(0)
-	for _, f := range l.floats {
-		if c == ClearLeft && f.right || c == ClearRight && !f.right {
-			continue
-		}
-		y = max(y, f.bottom)
+	switch c {
+	case ClearLeft:
+		return l.clearL
+	case ClearRight:
+		return l.clearR
 	}
-	return y
+	return max(l.clearL, l.clearR)
 }
 
-// placeFloat takes a box out of the flow and puts it against one edge, below
-// whatever is already there that it does not fit beside.
+// placeFloat takes a box out of the flow and puts it against an edge, below floats it does not fit beside.
 func (l *layout) placeFloat(b *box, x, avail float32) {
 	l.apply()
 	w := min(l.floatWidth(b, avail), avail)
 	top := l.y
+	if len(l.floats) > 0 {
+		top = max(top, l.floatTop)
+	}
 	for {
 		x0, x1 := l.band(x, avail, top, top+1)
 		if x1-x0 >= w {
@@ -160,14 +164,20 @@ func (l *layout) placeFloat(b *box, x, avail float32) {
 	sub.apply()
 	l.spans = append(l.spans, sub.spans...)
 	l.errs = append(l.errs, sub.errs...)
-	l.floats = append(l.floats, exclusion{
+	f := exclusion{
 		top: top, bottom: max(sub.y, top), x0: left, x1: left + w,
 		right: b.style.Float == FloatRight,
-	})
+	}
+	l.floats = slices.Insert(l.floats, l.past(f.bottom), f)
+	l.floatTop = top
+	if f.right {
+		l.clearR = max(l.clearR, f.bottom)
+	} else {
+		l.clearL = max(l.clearL, f.bottom)
+	}
 }
 
-// floatWidth is how wide a float ends up: what it asks for, or the widest
-// line it makes when it is left to shrink to fit.
+// floatWidth is a float's width: its own, or shrink-to-fit.
 func (l *layout) floatWidth(b *box, avail float32) float32 {
 	s := b.style
 	frame := s.MarginLeft.Resolve(avail) + s.MarginRight.Resolve(avail) +
@@ -176,7 +186,7 @@ func (l *layout) floatWidth(b *box, avail float32) float32 {
 	if !s.Width.Auto() {
 		return s.Width.Resolve(avail) + frame
 	}
-	if !l.spend() {
+	if !l.spend(b) {
 		return avail
 	}
 	probe := l.sub(0)
@@ -186,8 +196,7 @@ func (l *layout) floatWidth(b *box, avail float32) float32 {
 	return min(w+frame, avail)
 }
 
-// reset clears what a layout wrote into a box: measuring a float and then
-// placing it must not leave the tree with both.
+// reset clears the layout results in a subtree.
 func reset(b *box) {
 	b.lines, b.natural = nil, 0
 	b.x, b.y, b.w, b.h = 0, 0, 0, 0
@@ -214,8 +223,7 @@ func (l *layout) collapse(m float32) {
 	}
 }
 
-// apply spends the collapsing margin, moving with it every box that was
-// waiting to find out where its top edge is.
+// apply spends the collapsing margin, moving every box waiting on it.
 func (l *layout) apply() {
 	if l.pend != 0 {
 		l.y += l.pend
@@ -231,7 +239,7 @@ func (l *layout) apply() {
 func (l *layout) run(b *box, w float32) {
 	l.root = b
 	if l.budget == nil {
-		n := layoutProbes
+		n := layoutWork
 		l.budget = &n
 	}
 	if b == nil {
@@ -239,19 +247,14 @@ func (l *layout) run(b *box, w float32) {
 	}
 	l.block(b, 0, w)
 	l.apply()
-	// A float's lines are laid out where the float was met, so the spans
-	// reach pagination out of order.
 	sort.Slice(l.spans, func(i, j int) bool { return l.spans[i].top < l.spans[j].top })
-	// A box placed out of the flow may sit below everything in it, so the
-	// column runs to the bottom of what it holds or the content has no page.
 	for i := range l.spans {
 		l.y = max(l.y, l.spans[i].bottom)
 	}
 	reachOf(b)
 }
 
-// block places one block level box and everything under it, or puts it where
-// it asked to be put instead.
+// block places one block level box and its subtree, in flow or out of it.
 func (l *layout) block(b *box, x, avail float32) {
 	if b.style.Position == PosAbsolute {
 		l.absolute(b, x, avail)
@@ -269,8 +272,6 @@ func (l *layout) flow(b *box, x, avail float32) {
 	bt, br, bb, bl := borderInset(b)
 	frame := pl + pr + bl + br
 	w := avail - ml - mr - frame
-	// A cell is as wide as its column, which the table worked out from what
-	// every cell in it asked for.
 	if !s.Width.Auto() && s.Display != DisplayTableCell {
 		w = s.Width.Resolve(avail)
 		if s.MarginLeft.Auto() && s.MarginRight.Auto() {
@@ -316,8 +317,6 @@ func (l *layout) flow(b *box, x, avail float32) {
 	case definite:
 		l.cbh = own
 	case b == l.root:
-		// The outermost box is the initial containing block, which is the
-		// page, and it has a height whatever its own content comes to.
 		l.cbh = savedCB
 	}
 
@@ -368,8 +367,7 @@ func (l *layout) flow(b *box, x, avail float32) {
 	}
 }
 
-// reachOf fills in how far down every subtree goes, which is what a page culls
-// a box by: its own height leaves out what was placed out of the flow below.
+// reachOf fills in the reach of every subtree.
 func reachOf(b *box) float32 {
 	r := b.y + b.h
 	for _, k := range b.kids {
@@ -379,8 +377,7 @@ func reachOf(b *box) float32 {
 	return r
 }
 
-// borderInset is the room a box gives its four borders, which for a cell of a
-// collapsed table is half of the border it shares with the cell beside it.
+// borderInset is the room a box gives its borders, halved for a collapsed table cell.
 func borderInset(b *box) (top, right, bottom, left float32) {
 	if b.inset != nil {
 		return b.inset[0], b.inset[1], b.inset[2], b.inset[3]
@@ -390,8 +387,7 @@ func borderInset(b *box) (top, right, bottom, left float32) {
 		s.BorderBottom.Thickness(), s.BorderLeft.Thickness()
 }
 
-// definiteHeight resolves a height that does not depend on what a box holds:
-// a length, or a percentage of a containing block that has one of its own.
+// definiteHeight resolves a length or a percentage of a definite containing block height.
 func definiteHeight(v Length, cb float32) (float32, bool) {
 	switch v.Unit {
 	case UnitPx:
@@ -404,8 +400,7 @@ func definiteHeight(v Length, cb float32) (float32, bool) {
 	return 0, false
 }
 
-// clampLength holds a length between what min and max ask for, treating a
-// length there is none of as no bound at all.
+// clampLength clamps v to min and max, ignoring an absent bound.
 func clampLength(v float32, lo, hi Length, against float32) float32 {
 	if !hi.Auto() {
 		v = min(v, hi.Resolve(against))
@@ -416,7 +411,7 @@ func clampLength(v float32, lo, hi Length, against float32) float32 {
 	return max(v, 0)
 }
 
-// offsets is how far a relatively placed box moves from where the flow put it.
+// offsets is the displacement of a relatively positioned box.
 func offsets(s *Style, avail float32) (float32, float32) {
 	dx, dy := float32(0), float32(0)
 	switch {
@@ -465,9 +460,6 @@ func (l *layout) absolute(b *box, x, avail float32) {
 	sub.posX, sub.posY, sub.posW = bx, by, w
 	sub.flow(b, bx, w)
 	sub.apply()
-	// A box placed from the bottom needs its own height, which is only known
-	// once it is laid out, and its container's, which is only known when the
-	// container was given one.
 	if s.Top.Auto() && !s.Bottom.Auto() && l.posH > 0 {
 		if dy := cy + l.posH - s.Bottom.Resolve(cw) - (sub.y - by) - by; dy != 0 {
 			shift(b, 0, dy)
@@ -502,7 +494,7 @@ func (l *layout) inline(b *box, x, w float32) {
 	sf := l.face(b.style)
 	above, below := strut(b.style, sf)
 	indent := b.style.TextIndent.Resolve(w)
-	start, prev := 0, -1
+	start, prev, tried := 0, -1, 0
 	first := true
 	for _, br := range c.breaks() {
 		l.release(c, x, w, start)
@@ -512,9 +504,9 @@ func (l *layout) inline(b *box, x, w float32) {
 			avail -= indent
 		}
 		width := c.measure(start, trimEnd(c.str, br.pos))
-		if width > avail && prev >= 0 {
+		if tried++; (width > avail || tried > maxLineBreaks) && prev >= 0 {
 			l.emit(b, c, x0, x1-x0, lineIndent(indent, first), start, prev, false)
-			first, start, prev = false, skipSpaces(c.str, prev), -1
+			first, start, prev, tried = false, skipSpaces(c.str, prev), -1, 1
 			l.release(c, x, w, start)
 			x0, x1 = l.lineBand(x, w, above+below)
 			avail = x1 - x0
@@ -522,7 +514,7 @@ func (l *layout) inline(b *box, x, w float32) {
 		}
 		if br.mandatory {
 			l.emit(b, c, x0, x1-x0, lineIndent(indent, first), start, br.pos, true)
-			first, start, prev = false, skipSpaces(c.str, br.pos), -1
+			first, start, prev, tried = false, skipSpaces(c.str, br.pos), -1, 0
 			continue
 		}
 		if width <= avail || prev < 0 {
@@ -532,6 +524,9 @@ func (l *layout) inline(b *box, x, w float32) {
 	l.release(c, x, w, len(c.str))
 }
 
+// maxLineBreaks bounds the break opportunities one line is measured at.
+const maxLineBreaks = 1024
+
 func lineIndent(indent float32, first bool) float32 {
 	if first {
 		return indent
@@ -539,8 +534,7 @@ func lineIndent(indent float32, first bool) float32 {
 	return 0
 }
 
-// lineBand is the room a line has once the floats beside it are taken out,
-// moving down past any that leave it none.
+// lineBand is the room a line has beside the floats, moving down past any that leave none.
 func (l *layout) lineBand(x, w, h float32) (float32, float32) {
 	h = max(h, 1)
 	x0, x1 := l.band(x, w, l.y, l.y+h)
@@ -555,8 +549,7 @@ func (l *layout) lineBand(x, w, h float32) (float32, float32) {
 	return x0, x1
 }
 
-// release places the floats written before a point in the text, which is
-// where they belong: beside the line they were written in.
+// release places the floats written before upto, beside the current line.
 func (l *layout) release(c *inlineCtx, x, w float32, upto int) {
 	for len(c.floats) > 0 && c.floats[0].at <= upto {
 		l.placeFloat(c.floats[0].box, x, w)
@@ -564,8 +557,7 @@ func (l *layout) release(c *inlineCtx, x, w float32, upto int) {
 	}
 }
 
-// imageBlock lays a picture out as a block of its own, which an image that is
-// floated or block level is.
+// imageBlock lays out a floated or block level picture as a block of its own.
 func (l *layout) imageBlock(b *box, x, w float32) {
 	vis := l.picture(b)
 	if vis == nil {
@@ -612,8 +604,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 		dy := alignShift(it.style, it.face, sf, a, d)
 		above, below = max(above, a+dy), max(below, d-dy)
 	}
-	// A box aligned to the edge of the line is placed against a height the rest
-	// of the line decided, and grows it only when it does not fit, 10.8.1.
+	// CSS 2.1 10.8.1.
 	if edge {
 		for _, p := range c.pieces(lo, hi) {
 			it := &c.items[p.item]
@@ -647,7 +638,6 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 		}
 	}
 
-	// Placed in the order they are drawn, kept in the order they were written.
 	type placed struct {
 		f  frag
 		at int
@@ -693,8 +683,6 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	}
 
 	line.h, line.baseline, line.natural = above+below, above, total+indent
-	// An inline-block was laid out on its own, so it is moved to where the
-	// line put it once the line knows where its baseline is.
 	for i := range line.frags {
 		f := &line.frags[i]
 		if f.sub == nil {
@@ -709,9 +697,7 @@ func (l *layout) emit(b *box, c *inlineCtx, x, w, indent float32, lo, hi int, la
 	l.y += line.h
 }
 
-// itemBox is how far an item on a line reaches above and below its own
-// baseline: the em box of its face for a run of text, the whole of a picture,
-// and what an inline-block came out as.
+// itemBox is the extent of an inline item above and below its baseline.
 func itemBox(it *inlineItem) (above, below float32) {
 	switch {
 	case it.sub != nil:
@@ -722,9 +708,7 @@ func itemBox(it *inlineItem) (above, below float32) {
 	return strut(it.style, it.face)
 }
 
-// alignShift is how far vertical-align raises a box above the baseline of the
-// line it sits on. The edge alignments are not here: they are measured against a
-// line whose height the rest of it has already decided.
+// alignShift is the vertical-align raise of a box above its line's baseline, edge alignments excluded.
 func alignShift(s *Style, f, parent face, above, below float32) float32 {
 	switch s.VerticalAlign {
 	case AlignSub:
@@ -746,8 +730,7 @@ func alignShift(s *Style, f, parent face, above, below float32) float32 {
 	return 0
 }
 
-// strut is how far a line box reaches above and below its baseline for one
-// style, which is the em box of the face with the leading spread around it.
+// strut is the extent of a line box above and below its baseline for one style: the em box plus half-leading.
 func strut(s *Style, f face) (above, below float32) {
 	a, d := f.ascent(), f.descent()
 	half := (lineHeight(s, f) - (a + d)) / 2
@@ -775,8 +758,7 @@ func skipSpaces(s string, lo int) int {
 	return lo
 }
 
-// paginate cuts a column into pages of a height, never inside a line box and
-// never leaving a page with nothing on it.
+// paginate cuts a column into pages of a height, never inside a line box and never leaving a page empty.
 func paginate(spans []lineSpan, h float32) []float32 {
 	tops := []float32{0}
 	cur, used := float32(0), false
@@ -790,46 +772,48 @@ func paginate(spans []lineSpan, h float32) []float32 {
 	return tops
 }
 
-// inlineItem is one run of an inline formatting context: the text of one
-// element, or one picture.
+// inlineItem is one run of an inline formatting context: one element's text or one picture.
 type inlineItem struct {
 	start int
 	style *Style
 	face  face
 	vis   *visual
-	// link is the address of the anchor the item is written inside.
+	// link is the href of the enclosing anchor.
 	link   string
 	iw, ih float32
-	// sub is the box an inline-block contributes, and ib how far its own
-	// baseline sits below its top.
+	// sub is the box of an inline-block; ib its baseline below its top.
 	sub *box
 	ib  float32
 }
 
-// breaks are the places a line may end: the opportunities of UAX #14, less
-// the ones inside a run the style says must not wrap.
+// breaks are the UAX #14 line break opportunities, less those inside nowrap ranges.
 func (c *inlineCtx) breaks() []lineBreak {
 	brs := lineBreaks(c.str)
 	if len(c.nowrap) == 0 {
 		return brs
 	}
+	rs := slices.Clone(c.nowrap)
+	slices.SortFunc(rs, func(a, b [2]int) int { return a[0] - b[0] })
+	merged := rs[:1]
+	for _, r := range rs[1:] {
+		if last := &merged[len(merged)-1]; r[0] < last[1] {
+			last[1] = max(last[1], r[1])
+		} else {
+			merged = append(merged, r)
+		}
+	}
 	out := brs[:0]
+	j := 0
 	for _, br := range brs {
-		if !br.mandatory && c.inNowrap(br.pos) {
+		for j < len(merged) && merged[j][1] <= br.pos {
+			j++
+		}
+		if !br.mandatory && j < len(merged) && br.pos > merged[j][0] {
 			continue
 		}
 		out = append(out, br)
 	}
 	return out
-}
-
-func (c *inlineCtx) inNowrap(pos int) bool {
-	for _, r := range c.nowrap {
-		if pos > r[0] && pos < r[1] {
-			return true
-		}
-	}
-	return false
 }
 
 // pendingFloat is a float and the point in the text it was written at.
@@ -844,28 +828,23 @@ type piece struct {
 	lo, hi int
 }
 
-// inlineCtx collects the inline content of a block into one string, over
-// which a break opportunity crosses the elements it is written in.
+// inlineCtx collects the inline content of a block into one string for line breaking.
 type inlineCtx struct {
 	l     *layout
 	text  strings.Builder
 	str   string
 	items []inlineItem
-	// link is the anchor the content being gathered is written inside.
+	// link is the href of the enclosing anchor.
 	link string
-	// avail is the width a picture is scaled down to fit, floats are the
-	// boxes met so far that belong beside a line rather than on one, and
-	// nowrap the ranges of the text no line may break inside.
+	// avail is the width a picture scales down to fit, floats the pending floats, nowrap the unbreakable ranges.
 	avail  float32
 	floats []pendingFloat
 	placed []*box
 	nowrap [][2]int
-	// space is a collapsible space owed before the next character, and begun
-	// says whether anything has been written yet.
+	// space is a collapsible space owed before the next character; begun reports any text yet.
 	space bool
 	begun bool
-	// levels is the bidirectional level of every byte of the paragraph, nil
-	// when it all runs left to right, and rtl the paragraph's own direction.
+	// levels is the bidi level of every byte, nil when all left to right; rtl the paragraph direction.
 	levels []byte
 	rtl    bool
 }
@@ -892,8 +871,6 @@ func (c *inlineCtx) gather(b *box) {
 	case imageBox:
 		c.addImage(b)
 	default:
-		// The style of a text box is the style of the element around it, so
-		// only a box of its own can be the inline-block.
 		if b.style.Display == DisplayInlineBlock {
 			c.addInlineBlock(b)
 			return
@@ -963,9 +940,7 @@ func (c *inlineCtx) addText(s string, st *Style) {
 	}
 }
 
-// write puts one run of text in, splitting it where the face has to change:
-// for the small capitals of a lower case run, and for a character the face in
-// hand has no glyph for.
+// write appends a run of text, splitting it for small capitals and for characters base cannot draw.
 func (c *inlineCtx) write(s string, st *Style, base face) {
 	c.begun = true
 	small := smallCapsFace(base)
@@ -998,7 +973,7 @@ func (c *inlineCtx) write(s string, st *Style, base face) {
 	flush()
 }
 
-// transform is what text-transform asks for.
+// transform applies text-transform.
 func transform(s string, t TextTransform) string {
 	switch t {
 	case TransformUpper:
@@ -1026,8 +1001,7 @@ func (c *inlineCtx) addBreak(s *Style) {
 	c.begun = true
 }
 
-// objectChar stands for a picture in the text of a line, and its line break
-// class is the one that breaks on both sides.
+// objectChar stands for a picture on a line; its UAX #14 class breaks on both sides.
 const objectChar = "￼"
 
 func (c *inlineCtx) addImage(b *box) {
@@ -1044,9 +1018,7 @@ func (c *inlineCtx) addImage(b *box) {
 	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: c.l.face(b.style)})
 }
 
-// addInlineBlock lays a box out on its own and puts it on the line as one
-// character wide as it came out. CSS 2.1 10.3.9 gives it the width it would
-// take if nothing wrapped, less whatever the line has room for.
+// addInlineBlock lays a box out on its own and puts it on the line as one character, CSS 2.1 10.3.9.
 func (c *inlineCtx) addInlineBlock(b *box) {
 	l := c.l
 	w := c.avail
@@ -1075,8 +1047,7 @@ func (c *inlineCtx) addInlineBlock(b *box) {
 	c.items = append(c.items, inlineItem{start: c.text.Len(), style: b.style, face: l.face(b.style)})
 }
 
-// inlineBaseline is where an inline-block's baseline is, which CSS 2.1 10.8.1
-// puts on its last line box, or at its bottom edge when it holds none.
+// inlineBaseline is an inline-block's last line box baseline, or its bottom edge, CSS 2.1 10.8.1.
 func inlineBaseline(b *box) float32 {
 	if v, ok := lastLineBaseline(b); ok {
 		return v - b.y
@@ -1096,7 +1067,7 @@ func lastLineBaseline(b *box) (float32, bool) {
 	return 0, false
 }
 
-// itemAt is which item a byte of the text belongs to.
+// itemAt is the index of the item holding byte off.
 func (c *inlineCtx) itemAt(off int) int {
 	i := sort.Search(len(c.items), func(i int) bool { return c.items[i].start > off })
 	return max(i-1, 0)
@@ -1109,7 +1080,7 @@ func (c *inlineCtx) itemEnd(i int) int {
 	return len(c.str)
 }
 
-// pieces cuts a range of the text into the parts of the items it covers.
+// pieces cuts a range of the text at item boundaries.
 func (c *inlineCtx) pieces(lo, hi int) []piece {
 	var out []piece
 	for i := c.itemAt(lo); lo < hi && i < len(c.items); i++ {
@@ -1134,8 +1105,7 @@ func (c *inlineCtx) measure(lo, hi int) float32 {
 	return w
 }
 
-// resolveBidi levels every byte of the paragraph. levels stays nil when the
-// whole of it runs left to right.
+// resolveBidi levels every byte of the paragraph; levels stays nil when all is left to right.
 func (c *inlineCtx) resolveBidi(dir Direction) {
 	c.rtl = dir.RTL()
 	if !c.rtl && !font.NeedsBidi(c.str) {
@@ -1158,8 +1128,7 @@ func (c *inlineCtx) resolveBidi(dir Direction) {
 	}
 }
 
-// visual splits the pieces of a line where the level changes and orders them
-// the way rule L2 draws them.
+// visual splits the pieces of a line at level changes and orders them by rule L2.
 func (c *inlineCtx) visual(in []piece) []piece {
 	if c.levels == nil {
 		return in
@@ -1191,7 +1160,7 @@ func (c *inlineCtx) visual(in []piece) []piece {
 	return res
 }
 
-// rightToLeft reports a byte of the paragraph that is drawn right to left.
+// rightToLeft reports a byte drawn right to left.
 func (c *inlineCtx) rightToLeft(at int) bool {
 	return c.levels != nil && c.levels[at]&1 != 0
 }

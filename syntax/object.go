@@ -1,6 +1,7 @@
 package syntax
 
 import (
+	"container/list"
 	"fmt"
 	"slices"
 	"strconv"
@@ -9,8 +10,7 @@ import (
 )
 
 // Object is a PDF object. The concrete types are Bool, Integer, Real, String,
-// Name, Array, Dict, Ref and *Stream. A nil Object is the null object, which
-// the spec makes equivalent to a missing one.
+// Name, Array, Dict, Ref and *Stream. A nil Object is the null object.
 type Object interface {
 	object()
 }
@@ -24,8 +24,7 @@ type Integer int64
 // Real is a PDF real number.
 type Real float64
 
-// String is a PDF string, already unescaped and decrypted. It is a byte
-// string, not text: interpreting it needs the context it appeared in.
+// String is a PDF byte string, already unescaped and decrypted.
 type String []byte
 
 // Name is a PDF name, without the leading slash and with #xx decoded.
@@ -34,8 +33,7 @@ type Name string
 // Array is a PDF array.
 type Array []Object
 
-// Dict is a PDF dictionary. A missing key and a key with a null value are the
-// same thing, per ISO 32000-1 7.3.9.
+// Dict is a PDF dictionary; a null value is a missing key, ISO 32000-1 7.3.9.
 type Dict map[Name]Object
 
 // Ref is an indirect reference.
@@ -53,14 +51,17 @@ type Stream struct {
 	crypt *cryptFilter
 	raw   []byte // as stored, still encrypted and encoded
 
-	// mu guards the decoded form, which is filled on the first Data and kept
-	// because a stream is shared by every page that names it.
+	// mu guards the decoded form.
 	mu        sync.Mutex
-	dec       []byte // decoded, filled on first Data
+	dec       []byte
 	decoded   bool
+	gen       int
 	imgFilter Name // the image filter left undecoded, if any
 	imgParms  Dict
 	err       error
+	// elem and held are the stream's place and size in the cache, under File.decMu.
+	elem *list.Element
+	held int
 }
 
 func (Bool) object()    {}
@@ -109,9 +110,7 @@ func (f *File) resolve(o Object, depth int) Object {
 
 const maxResolveDepth = 32
 
-// Lookup resolves dict[key], trying each key in turn. Several dictionaries use
-// an abbreviated key inside inline images, so /Filter and /F name the same
-// entry; the full name comes first.
+// Lookup resolves dict[key], trying each key in turn.
 func (f *File) Lookup(dict Dict, keys ...Name) Object {
 	for _, k := range keys {
 		if v, ok := dict[k]; ok {
@@ -123,8 +122,7 @@ func (f *File) Lookup(dict Dict, keys ...Name) Object {
 	return nil
 }
 
-// GetDict resolves o and returns it as a dictionary, or nil. A stream's
-// dictionary counts: /Resources and friends are sometimes given as one.
+// GetDict resolves o and returns it, or a stream's dictionary, as a dictionary, or nil.
 func (f *File) GetDict(o Object) Dict {
 	switch v := f.Resolve(o).(type) {
 	case Dict:
@@ -169,8 +167,7 @@ func (f *File) GetBool(o Object, def bool) bool {
 	return def
 }
 
-// GetInt resolves o and returns it as an integer, or def. A real is truncated:
-// files write /Length 12.0 and mean 12.
+// GetInt resolves o and returns it as an integer, truncating a real, or def.
 func (f *File) GetInt(o Object, def int64) int64 { return f.getInt(o, def, 0) }
 
 func (f *File) getInt(o Object, def int64, depth int) int64 {
@@ -207,8 +204,7 @@ func (f *File) GetFloats(o Object) []float64 {
 	return out
 }
 
-// GetNames resolves o as either a single name or an array of names, which is
-// how /Filter and /ProcSet are written.
+// GetNames resolves o as either a single name or an array of names.
 func (f *File) GetNames(o Object) []Name {
 	switch v := f.Resolve(o).(type) {
 	case Name:
@@ -228,8 +224,7 @@ func (f *File) GetNames(o Object) []Name {
 // String formats the reference as it appears in a file.
 func (r Ref) String() string { return fmt.Sprintf("%d %d R", r.Num, r.Gen) }
 
-// format renders an object in PDF syntax, for diagnostics and tests. Nothing
-// in the renderer depends on it.
+// format renders an object in PDF syntax, for diagnostics and tests.
 func format(o Object) string {
 	var b strings.Builder
 	writeObject(&b, o)

@@ -383,6 +383,22 @@ func TestCovers(t *testing.T) {
 	if (&entry{path: filepath.Join(t.TempDir(), "missing.ttf")}).covers('a') {
 		t.Error("a missing file covers a character")
 	}
+	mini, err := os.ReadFile(filepath.Join("..", "testdata", "mini.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(t.TempDir(), "gone.ttf")
+	if err := os.WriteFile(gone, mini, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := &entry{path: gone}
+	if !e.covers('A') {
+		t.Fatal("mini.ttf does not cover A")
+	}
+	os.Remove(gone)
+	if !e.covers('A') {
+		t.Error("the character map was read again rather than remembered")
+	}
 
 	const r = 0x10fffd
 	scanned := func() int {
@@ -507,6 +523,35 @@ func TestCIDSharedPrivate(t *testing.T) {
 	}
 	if got := after.TotalAlloc - before.TotalAlloc; got > 64<<20 {
 		t.Errorf("4096 dictionaries sharing one Private allocated %d MB", got>>20)
+	}
+}
+
+// TestCIDRanges reads FDSelect ranges that overlap and maps CIDs back to glyphs.
+func TestCIDRanges(t *testing.T) {
+	const n = 60000
+	d := []byte{3}
+	d = binary.BigEndian.AppendUint16(d, n)
+	for i := range n {
+		first, fd := 0, byte(1)
+		if i%2 == 1 {
+			first, fd = 0xffff, 2
+		}
+		d = append(binary.BigEndian.AppendUint16(d, uint16(first)), fd)
+	}
+	d = binary.BigEndian.AppendUint16(d, 0xffff)
+	c := &cffFont{data: append([]byte{0}, d...), charStrings: make([][]byte, 0xffff)}
+	c.readCIDPrivates(map[int][]float64{key12(37): {1}}, false)
+	for _, g := range []int{0, 0x8000, 0xfffe} {
+		if c.fdSelect[g] != 1 {
+			t.Errorf("glyph %d is in font dict %d, want the first range's 1", g, c.fdSelect[g])
+		}
+	}
+
+	c = &cffFont{charset: []uint16{0, 5, 7, 5}, charStrings: make([][]byte, 4)}
+	for cid, want := range map[int]int{0: 0, 5: 1, 7: 2, 3: 3, 9: 0} {
+		if got := c.gidForCID(cid); got != want {
+			t.Errorf("CID %d is glyph %d, want %d", cid, got, want)
+		}
 	}
 }
 
@@ -862,6 +907,53 @@ func TestMultipleSubBound(t *testing.T) {
 	}
 }
 
+// TestContextBudget runs a context lookup that applies itself sixty-four times.
+func TestContextBudget(t *testing.T) {
+	put := func(b []byte, vs ...int) []byte {
+		for _, v := range vs {
+			b = binary.BigEndian.AppendUint16(b, uint16(v))
+		}
+		return b
+	}
+	const k = 64
+	d := put(nil, 1, 0, 10, 12, 14, 0, 0, 1, 4, gsubContext, 0, 1, 8, 3, 1, k, 8+4*k)
+	for range k {
+		d = put(d, 0, 0)
+	}
+	d = put(d, 1, 1, 5)
+	f := &Font{gsub: readLayout(d)}
+	b := &buffer{f: f, items: []item{{gid: 5, mask: 1}, {gid: 5, mask: 1}}, maxLen: maxLenMin, ops: maxOpsMin}
+	b.applySub(f.gsub.lookup(0), 1, 0)
+	if b.ops >= 0 {
+		t.Errorf("%d nested lookups left, want the budget spent", b.ops)
+	}
+}
+
+// TestKernTables reads the one horizontal subtable among sixty thousand vertical ones.
+func TestKernTables(t *testing.T) {
+	put := func(b []byte, vs ...int) []byte {
+		for _, v := range vs {
+			b = binary.BigEndian.AppendUint16(b, uint16(v))
+		}
+		return b
+	}
+	const n = 60000
+	d := put(nil, 0, n)
+	for range n - 1 {
+		d = put(d, 0, 6, 0x0002)
+	}
+	d = put(d, 0, 20, 0x0001, 1, 6, 0, 0, 1, 2, 0xffce)
+	f := &Font{kern: kernTables(d)}
+	for range 20000 {
+		if v := f.kernPairs(1, 2); v != -50 {
+			t.Fatalf("the pair kerns by %d, want -50", v)
+		}
+	}
+	if v := f.kernPairs(2, 1); v != 0 {
+		t.Errorf("an absent pair kerns by %d", v)
+	}
+}
+
 // TestMarkOrder covers the order the marks of one cluster are put in.
 func TestMarkOrder(t *testing.T) {
 	// A shin dot is written after a qamats and drawn before it.
@@ -1103,6 +1195,15 @@ var bidiSample = map[string]rune{
 	"S": '\t', "WS": ' ', "ON": '!', "LRE": 0x202a, "RLE": 0x202b,
 	"PDF": 0x202c, "LRO": 0x202d, "RLO": 0x202e, "LRI": 0x2066,
 	"RLI": 0x2067, "FSI": 0x2068, "PDI": 0x2069,
+}
+
+// TestBidiIsolates resolves a paragraph of a hundred thousand isolates.
+func TestBidiIsolates(t *testing.T) {
+	text := []rune(strings.Repeat("\u2068a\u05d0", 50000) + strings.Repeat("\u2069", 50000))
+	b := bidiResolve(text, -1)
+	if len(b.levels) != len(text) {
+		t.Fatalf("%d levels for %d characters", len(b.levels), len(text))
+	}
 }
 
 // TestBidiConformance runs the Unicode bidirectional class test.

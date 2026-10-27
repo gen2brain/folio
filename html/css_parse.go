@@ -2,6 +2,7 @@ package html
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	xhtml "golang.org/x/net/html"
@@ -25,17 +26,14 @@ type Stylesheet struct {
 	// Faces are the fonts the sheet's @font-face rules bring with them.
 	Faces  []FontFace
 	Origin Origin
-	// Errors are what the sheet dropped: a selector that did not parse, a
-	// declaration with no colon.
+	// Errors are the selectors and declarations the sheet dropped.
 	Errors []error
 }
 
-// FontFace is what an @font-face rule describes: a family the book brings
-// with it, and where in the container the program is.
+// FontFace is an @font-face rule: a family the book brings and where its program is.
 type FontFace struct {
 	Family string
-	// Src are the parts the rule names, in the order it names them, already
-	// resolved against the sheet they were written in.
+	// Src are the parts the rule names, in order, resolved against the sheet.
 	Src    []string
 	Weight int
 	Italic bool
@@ -43,7 +41,7 @@ type FontFace struct {
 
 // Import is what an @import rule asks for.
 type Import struct {
-	// Path is the reference as written, which Resolve turns into a part.
+	// Path is the reference as written, before Resolve.
 	Path  string
 	Media MediaList
 }
@@ -65,15 +63,15 @@ type Declaration struct {
 	value     []cssToken
 }
 
-// MediaList is the comma separated list of a media rule, which matches when
-// any one of its queries does. An empty list matches everything.
+// MediaList is the comma separated query list of a media rule.
+// It matches when any query does, and always when empty.
 type MediaList []MediaQuery
 
 // MediaQuery is one query of a media list.
 type MediaQuery struct {
 	not  bool
 	kind string
-	// bad marks a query that did not parse, which matches nothing.
+	// bad marks a query that did not parse and matches nothing.
 	bad   bool
 	feats []mediaFeature
 }
@@ -83,8 +81,7 @@ type mediaFeature struct {
 	value []cssToken
 }
 
-// Media is what a media query is asked about: the viewport, in CSS pixels,
-// and the font size a relative length in a query resolves against.
+// Media is the viewport in CSS pixels and the font size relative lengths in a query resolve against.
 type Media struct {
 	Width, Height float32
 	FontSize      float32
@@ -183,8 +180,7 @@ func orDefault(v, alt float32) float32 {
 	return alt
 }
 
-// ParseCSS reads a stylesheet. It never fails: what it cannot read
-// it records in Errors and drops.
+// ParseCSS reads a stylesheet. It never fails; anything it cannot read goes in Errors.
 func ParseCSS(b []byte, origin Origin) *Stylesheet {
 	p := &cssParser{l: newCSSLexer(string(b)), sheet: &Stylesheet{Origin: origin}}
 	p.rules(nil, false)
@@ -196,7 +192,7 @@ type cssParser struct {
 	saved cssToken
 	has   bool
 	sheet *Stylesheet
-	// depth bounds the nesting of at-rules, which a hostile sheet never ends.
+	// depth bounds the nesting of at-rules.
 	depth int
 }
 
@@ -218,8 +214,7 @@ func (p *cssParser) fail(format string, a ...any) {
 	}
 }
 
-// rules reads a list of rules, stopping at the end of the input or, when
-// nested, at the closing brace of the block it is in.
+// rules reads a list of rules up to the end of input or, when nested, the closing brace.
 func (p *cssParser) rules(media []MediaList, nested bool) {
 	for {
 		switch t := p.next(); t.kind {
@@ -348,9 +343,7 @@ func fontFace(decls []Declaration) (FontFace, bool) {
 	return f, f.Family != "" && len(f.Src) > 0
 }
 
-// fontSrc reads the src of an @font-face rule, which is a list of places the
-// program may be. A local face is skipped: what a book brings with it is what
-// it means, and the machine's own fonts are found by name anyway.
+// fontSrc reads the src list of an @font-face rule, skipping local faces.
 func fontSrc(toks []cssToken) []string {
 	var out []string
 	for _, part := range splitCommas(toks) {
@@ -374,8 +367,7 @@ func fontSrc(toks []cssToken) []string {
 	return out
 }
 
-// prelude reads what comes before a block, and reports whether a block
-// followed rather than a semicolon or the end of the input.
+// prelude reads the tokens before a block and reports whether a block followed.
 func (p *cssParser) prelude() ([]cssToken, bool) {
 	var out []cssToken
 	depth := 0
@@ -402,7 +394,7 @@ func (p *cssParser) prelude() ([]cssToken, bool) {
 	}
 }
 
-// declarations reads a declaration block, which the cursor is inside of.
+// declarations reads a declaration block from inside its brace.
 func (p *cssParser) declarations() []Declaration {
 	var out []Declaration
 	for {
@@ -428,8 +420,7 @@ func (p *cssParser) declarations() []Declaration {
 	}
 }
 
-// values reads what a declaration is worth, up to the semicolon or the brace
-// that ends it, leaving the brace for the caller.
+// values reads a declaration value up to its semicolon or closing brace, leaving the brace.
 func (p *cssParser) values() []cssToken {
 	var out []cssToken
 	depth := 0
@@ -640,7 +631,7 @@ func (s *Stylesheet) Coverage() (read, ignored int) {
 	return read, ignored
 }
 
-// maxImportDepth bounds an @import chain, which a damaged book cycles.
+// maxImportDepth bounds an @import chain.
 const maxImportDepth = 8
 
 // Stylesheets returns the sheets that style one part, in cascade order: the
@@ -689,21 +680,42 @@ func (d *Document) importSheet(out []*Stylesheet, path string, media []MediaList
 		return out
 	}
 	seen[path] = true
-	b, err := d.Read(path)
-	if err != nil {
+	s := d.sheet(path)
+	if s == nil {
 		return out
 	}
-	s := ParseCSS(b, OriginAuthor)
-	under(s, media)
-	resolveURLs(s, path)
+	if len(media) > 0 {
+		c := *s
+		c.Rules = slices.Clone(s.Rules)
+		s = &c
+		under(s, media)
+	}
 	for _, imp := range s.Imports {
 		out = d.importSheet(out, Resolve(path, imp.Path), nestMedia(media, imp.Media), seen, depth+1)
 	}
 	return append(out, s)
 }
 
-// resolveURLs turns every address a sheet names into the path it means, which
-// is relative to the sheet and not to the part that links it.
+// sheet is the stylesheet at a path, read and resolved once, nil when there is none.
+func (d *Document) sheet(path string) *Stylesheet {
+	d.sheetMu.Lock()
+	defer d.sheetMu.Unlock()
+	if s, ok := d.sheets[path]; ok {
+		return s
+	}
+	var s *Stylesheet
+	if b, err := d.Read(path); err == nil {
+		s = ParseCSS(b, OriginAuthor)
+		resolveURLs(s, path)
+	}
+	if d.sheets == nil {
+		d.sheets = map[string]*Stylesheet{}
+	}
+	d.sheets[path] = s
+	return s
+}
+
+// resolveURLs resolves every url in a sheet against the sheet's own path.
 func resolveURLs(s *Stylesheet, base string) {
 	resolveFaces(s, base)
 	for i := range s.Rules {
@@ -726,8 +738,7 @@ func resolveURLs(s *Stylesheet, base string) {
 	}
 }
 
-// resolveFaces turns the places an @font-face names into the paths the
-// container knows its parts by.
+// resolveFaces resolves the @font-face sources of a sheet against base.
 func resolveFaces(s *Stylesheet, base string) {
 	for i := range s.Faces {
 		for j, src := range s.Faces[i].Src {
@@ -770,7 +781,7 @@ func isStylesheetLink(n *Node) bool {
 	return false
 }
 
-// tokensOf tokenizes a fragment on its own, an attribute rather than a sheet.
+// tokensOf tokenizes a fragment such as a style attribute.
 func tokensOf(s string) []cssToken {
 	l := newCSSLexer(s)
 	var out []cssToken

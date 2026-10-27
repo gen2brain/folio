@@ -1,11 +1,5 @@
-// Package svg renders an SVG drawing. It is a document the way the other
-// formats of this module are: a file opens, it has one page, and the page
-// runs onto the same gfx.Device a PDF page draws through.
-//
-// What is drawn is the static picture: shapes and paths, transforms and
-// viewports, the three paint servers, clips, masks, markers, filters, and
-// text on a path or down the page, shaped and reordered. Scripting, animation
-// and interaction are not a picture and are not read.
+// Package svg renders an SVG drawing as a single page onto a gfx.Device.
+// It draws the static picture; scripting, animation and interaction are not read.
 package svg
 
 import (
@@ -59,7 +53,9 @@ type Document struct {
 	align         string
 	slice         bool
 	// rules are the style element rules, least specific first.
-	rules  []rule
+	rules []rule
+	// keyed indexes rules by the id, class or name their last compound needs.
+	keyed  map[string][]int32
 	faces  []faceRule
 	fontMu sync.Mutex
 	fonts  map[string]*font.Font

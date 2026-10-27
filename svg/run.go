@@ -1,6 +1,7 @@
 package svg
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gen2brain/folio/font"
@@ -49,7 +50,7 @@ type state struct {
 	letter, word float32
 	preserve     bool
 	decoration   string
-	// markStart, markMid and markEnd are what a path puts at its vertices.
+	// markStart, markMid and markEnd name the markers at a path's vertices.
 	markStart, markMid, markEnd string
 	// vw and vh are the viewport a percentage length is a percentage of.
 	vw, vh float32
@@ -78,7 +79,8 @@ type runner struct {
 	errs []error
 	// depth counts how deep a use has reached, bounding a self-referring file.
 	depth int
-	ops   int
+	// work is the budget a drawing shares with the drawings it nests.
+	work *int64
 	// faces and pics cache resolved fonts and decoded pictures.
 	faces map[faceKey]*font.Font
 	pics  map[string]gfx.Image
@@ -91,20 +93,46 @@ type runner struct {
 	fbs map[fallbackKey]*font.Font
 	// open is the elements being drawn, outermost first.
 	open []*node
+	// cands are the candidate rules of candOf.
+	cands  []int32
+	candOf *node
 }
 
-// maxOps bounds the elements one drawing may draw.
-const maxOps = 1 << 20
+// The work one drawing may do in samples written, with what the rest costs in them.
+const (
+	workBase    = 1 << 28
+	workPages   = 64
+	elementWork = 512
+	boundsWork  = 64
+	segmentWork = 16
+	lengthWork  = 16
+	glyphWork   = 256
+	ruleWork    = 16
+)
 
 // Run draws the page onto a device under ctm.
-func (p *Page) Run(dev Device, ctm raster.Matrix) error { return p.run(dev, ctm, 0) }
+func (p *Page) Run(dev Device, ctm raster.Matrix) error { return p.run(dev, ctm, 0, nil) }
 
-// run is Run at a nesting depth.
-func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
+// Budget is the work drawings may still do, shared by the runs handed it.
+type Budget struct{ left int64 }
+
+// NewBudget returns the work one Run onto dev may do.
+func NewBudget(dev Device) *Budget { return &Budget{left: workFor(dev)} }
+
+// RunWithin is Run spending the work b holds, or a budget of its own when b is nil.
+func (p *Page) RunWithin(dev Device, ctm raster.Matrix, b *Budget) error {
+	if b == nil {
+		return p.Run(dev, ctm)
+	}
+	return p.run(dev, ctm, 0, &b.left)
+}
+
+// run is Run at a nesting depth, spending work.
+func (p *Page) run(dev Device, ctm raster.Matrix, depth int, work *int64) error {
 	if depth >= maxNesting {
 		return nil
 	}
-	r := &runner{doc: p.doc, dev: dev, depth: depth}
+	r := newRunner(p.doc, dev, depth, work)
 	d := p.doc
 	m := ctm
 	if d.box != nil {
@@ -130,11 +158,12 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 		defer r.dev.PopClip()
 	}
 	if !r.filterWith(d.root, m, st, alpha, r.children) {
-		if alpha < 1 {
+		grouped := alpha < 1 && r.spend(reach(r.dev, raster.InfiniteRect))
+		if grouped {
 			r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)
 		}
 		r.children(d.root, m, st)
-		if alpha < 1 {
+		if grouped {
 			r.dev.EndGroup()
 		}
 	}
@@ -144,12 +173,113 @@ func (p *Page) run(dev Device, ctm raster.Matrix, depth int) error {
 	return nil
 }
 
-// fail logs what went wrong while drawing rather than stopping on it.
+// newRunner draws d onto dev, spending work or a budget of its own when nil.
+func newRunner(d *Document, dev Device, depth int, work *int64) *runner {
+	if work == nil {
+		w := workFor(dev)
+		work = &w
+	}
+	return &runner{doc: d, dev: dev, depth: depth, work: work}
+}
+
+func workFor(dev Device) int64 { return workBase + workPages*reach(dev, raster.InfiniteRect) }
+
+// fail records an error and lets drawing continue.
 func (r *runner) fail(err error) {
 	if len(r.errs) < 64 {
 		r.errs = append(r.errs, err)
 	}
 }
+
+// spend takes n from the work the drawing has left and reports whether it had it.
+func (r *runner) spend(n int64) bool {
+	if *r.work < n {
+		if *r.work >= 0 {
+			*r.work = -1
+			r.fail(fmt.Errorf("%w: the drawing is past its work budget", ErrUnsupported))
+		}
+		return false
+	}
+	*r.work -= n
+	return true
+}
+
+// clipOf is the area of device space a device writes, and false for one that writes no samples.
+func clipOf(dev Device) (raster.Rect, bool) {
+	c, ok := dev.(interface{ Clip() raster.Rect })
+	if !ok {
+		return raster.Rect{}, false
+	}
+	return c.Clip(), true
+}
+
+// reach is the samples a device may write inside a box of device space.
+func reach(dev Device, box raster.Rect) int64 {
+	c, ok := clipOf(dev)
+	if !ok {
+		return 0
+	}
+	return area(box.Intersect(c))
+}
+
+func area(b raster.Rect) int64 {
+	if b.IsEmpty() {
+		return 0
+	}
+	return int64(min(float64(b.X1-b.X0)*float64(b.Y1-b.Y0), 1<<40))
+}
+
+// pathWork returns the cost of p under ctm, filled, and stroked by s when not nil.
+func (r *runner) pathWork(p *raster.Path, fill bool, s *raster.Stroke, ctm raster.Matrix) int64 {
+	n := segmentWork * int64(p.Len())
+	c, ok := clipOf(r.dev)
+	if !ok {
+		return n
+	}
+	t := travel{m: ctm, clip: c}
+	p.Walk(&t)
+	l := int64(min(t.n, 1<<40))
+	if fill {
+		n += lengthWork*l + area(p.Bounds(ctm).Intersect(c))
+	}
+	if s != nil {
+		n += 2*lengthWork*l + area(p.StrokeBounds(s, ctm).Intersect(c))
+	}
+	return n
+}
+
+// travel sums the distance across and down the segments of a path run inside a clip.
+type travel struct {
+	m         raster.Matrix
+	clip      raster.Rect
+	at, start raster.Point
+	n         float64
+}
+
+func (t *travel) to(p raster.Point) {
+	c := t.clip
+	x0, x1 := max(min(t.at.X, p.X), c.X0), min(max(t.at.X, p.X), c.X1)
+	y0, y1 := max(min(t.at.Y, p.Y), c.Y0), min(max(t.at.Y, p.Y), c.Y1)
+	if x0 <= x1 && y0 <= y1 {
+		t.n += float64(x1-x0) + float64(y1-y0)
+	}
+	t.at = p
+}
+
+func (t *travel) MoveTo(x, y float32) {
+	t.at = t.m.Apply(raster.Point{X: x, Y: y})
+	t.start = t.at
+}
+
+func (t *travel) LineTo(x, y float32) { t.to(t.m.Apply(raster.Point{X: x, Y: y})) }
+
+func (t *travel) CurveTo(x1, y1, x2, y2, x3, y3 float32) {
+	t.to(t.m.Apply(raster.Point{X: x1, Y: y1}))
+	t.to(t.m.Apply(raster.Point{X: x2, Y: y2}))
+	t.to(t.m.Apply(raster.Point{X: x3, Y: y3}))
+}
+
+func (t *travel) Close() { t.to(t.start) }
 
 func (r *runner) children(n *node, ctm raster.Matrix, st state) {
 	for _, k := range n.kids {
@@ -158,7 +288,7 @@ func (r *runner) children(n *node, ctm raster.Matrix, st state) {
 }
 
 func (r *runner) element(n *node, ctm raster.Matrix, st state) {
-	if r.ops++; r.ops > maxOps {
+	if !r.spend(elementWork) {
 		return
 	}
 	r.open = append(r.open, n)
@@ -187,6 +317,9 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	b, blend := blendMode(r.cssProp(n, "mix-blend-mode"))
 	iso := strings.TrimSpace(r.cssProp(n, "isolation")) == "isolate"
 	if blend || iso {
+		if !r.spend(reach(r.dev, raster.InfiniteRect)) {
+			return
+		}
 		r.dev.BeginGroup(raster.InfiniteRect, nil, iso, false, b, 1)
 		defer r.dev.EndGroup()
 	}
@@ -199,6 +332,9 @@ func (r *runner) element(n *node, ctm raster.Matrix, st state) {
 	}
 	if alpha < 1 {
 		if isGroup(n.name) {
+			if !r.spend(reach(r.dev, raster.InfiniteRect)) {
+				return
+			}
 			r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)
 			defer r.dev.EndGroup()
 		} else {
@@ -359,6 +495,9 @@ func (r *runner) viewportClip(n *node, x, y, w, h float32, ctm raster.Matrix) bo
 	}
 	var box raster.Path
 	box.Rect(x, y, w, h)
+	if !r.spend(r.pathWork(&box, true, nil, ctm)) {
+		return false
+	}
 	r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
 	return true
 }
@@ -424,9 +563,17 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 	if p == nil || p.IsEmpty() || st.invisible {
 		return
 	}
+	fill := !st.fill.none || st.fillServer != ""
+	var s *raster.Stroke
+	if (!st.stroke.none || st.strokeServer != "") && st.width > 0 {
+		s = r.strokeOf(st)
+	}
+	if !r.spend(r.pathWork(p, fill, s, ctm)) {
+		return
+	}
 	fillAlpha := st.fillOpacity * st.fill.alpha
 	strokeAlpha := st.strokeOpacity * st.stroke.alpha
-	if !st.fill.none || st.fillServer != "" {
+	if fill {
 		box, at := paintSpace(st.fillCtx, p.Bounds(raster.Identity), ctm, st)
 		g, empty := r.server(st.fillServer, box, st)
 		switch {
@@ -444,8 +591,7 @@ func (r *runner) shape(p *raster.Path, ctm raster.Matrix, st state) {
 			r.dev.FillPath(p, st.fillEvenOdd, ctm, gfx.DeviceRGB, c[:], fillAlpha, gfx.ColorParams{})
 		}
 	}
-	if (!st.stroke.none || st.strokeServer != "") && st.width > 0 {
-		s := r.strokeOf(st)
+	if s != nil {
 		box, at := paintSpace(st.strokeCtx, p.Bounds(raster.Identity), ctm, st)
 		g, empty := r.server(st.strokeServer, box, st)
 		switch {
@@ -484,7 +630,7 @@ func (r *runner) tiled(server string, p *raster.Path, even bool, box raster.Rect
 
 // faded draws through a transparency group when the paint is not opaque.
 func (r *runner) faded(alpha float32, draw func() bool) bool {
-	if alpha >= 1 {
+	if alpha >= 1 || !r.spend(reach(r.dev, raster.InfiniteRect)) {
 		return draw()
 	}
 	r.dev.BeginGroup(raster.InfiniteRect, nil, true, false, gfx.BlendNormal, alpha)

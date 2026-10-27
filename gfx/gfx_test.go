@@ -9,8 +9,12 @@ import (
 	"image/color"
 	pngenc "image/png"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
+	"weak"
 
 	"github.com/gen2brain/folio/font"
 	"github.com/gen2brain/folio/raster"
@@ -520,5 +524,27 @@ func TestNaturalDPI(t *testing.T) {
 		if w*h > NaturalPixels || w*h < NaturalPixels*0.97 {
 			t.Errorf("limit %d: %v dpi is %vx%v, want just under %d pixels", lim, dpi, w, h, NaturalPixels)
 		}
+	}
+}
+
+// TestFontOfReleases wraps a program twice and lets it go.
+func TestFontOfReleases(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "testdata", "mini.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := font.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if FontOf(prog) != FontOf(prog) {
+		t.Error("two wrappers of one program differ")
+	}
+	w := weak.Make(prog)
+	prog = nil
+	runtime.GC()
+	runtime.GC()
+	if w.Value() != nil {
+		t.Error("the program outlived its last reference")
 	}
 }

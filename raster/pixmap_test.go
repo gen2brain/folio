@@ -211,8 +211,7 @@ func TestMulMask(t *testing.T) {
 	}
 }
 
-// rampShader paints a gray ramp along x, and nothing at all past a column,
-// so that a shader's alpha is exercised as well as its color.
+// rampShader paints a gray ramp along x and nothing past a column.
 type rampShader struct{ n, stop int }
 
 func (s rampShader) Shade(x, y, w int, span []uint8) {
@@ -278,9 +277,7 @@ func TestFillTriangleInterpolates(t *testing.T) {
 	}
 }
 
-// TestFillTriangleSeam checks that two triangles sharing an edge leave no
-// pixel of the square they make up unpainted, which is why they are not
-// anti-aliased.
+// TestFillTriangleSeam checks that two triangles sharing an edge leave no pixel unpainted.
 func TestFillTriangleSeam(t *testing.T) {
 	p := NewPixmap(ModelGray, 8, 8, true)
 	c := [4]uint8{200}
@@ -304,10 +301,7 @@ func pixelAt(p *Pixmap, x, y int) []uint8 {
 	return p.Samples[y*p.Stride+x*n : y*p.Stride+x*n+n]
 }
 
-// TestShrinkerMatchesSubsample holds the streaming reduction to the one built
-// from the whole pixmap. The two have to agree byte for byte, because the
-// point of the streaming one is that nothing downstream can tell which built
-// the image.
+// TestShrinkerMatchesSubsample holds the streaming reduction to the whole-pixmap one, byte for byte.
 func TestShrinkerMatchesSubsample(t *testing.T) {
 	for _, size := range [][2]int{
 		{1, 1}, {1, 8}, {8, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 7}, {7, 5},
@@ -359,8 +353,7 @@ func TestShrinkerMatchesSubsample(t *testing.T) {
 	}
 }
 
-// TestShrinkerShortRow checks that a row the caller does not fill reads as
-// zero, which is what writing into a fresh pixmap did.
+// TestShrinkerShortRow checks that a row the caller does not fill reads as zero.
 func TestShrinkerShortRow(t *testing.T) {
 	s := NewMaskShrinker(8, 8, 1)
 	for y := 0; y < 8; y++ {
@@ -381,9 +374,7 @@ func TestShrinkerShortRow(t *testing.T) {
 	}
 }
 
-// TestBilinearRowMatchesGeneral holds the column blend to the four product
-// form it regroups, over every scale that picks one path or the other and
-// both directions along the row.
+// TestBilinearRowMatchesGeneral holds the column blend to the four product form, both paths and directions.
 func TestBilinearRowMatchesGeneral(t *testing.T) {
 	const sw, sh = 23, 17
 	for _, n := range []int{1, 3, 4} {
@@ -419,9 +410,7 @@ func TestBilinearRowMatchesGeneral(t *testing.T) {
 	}
 }
 
-// TestGradientRowMatchesSpan holds the row form of a gradient to the span form
-// it exists to skip, over both kinds, both extends and a destination with and
-// without an alpha channel.
+// TestGradientRowMatchesSpan holds the row form of a gradient to the span form.
 func TestGradientRowMatchesSpan(t *testing.T) {
 	lut := make([]uint8, 256*3)
 	for i := range 256 {
@@ -472,10 +461,7 @@ func TestGradientRowMatchesSpan(t *testing.T) {
 	}
 }
 
-// TestBlurBoxWidths holds the two things the width of the boxes decides: how
-// far a deviation spreads, and that three of them are what SVG 1.1 15.17
-// asks for. The variance of the cascade is what a Gaussian of that deviation
-// would have, to within the coarseness of an integer box.
+// TestBlurBoxWidths checks the spread of the box widths and the variance of the three boxes of SVG 1.1 15.17.
 func TestBlurBoxWidths(t *testing.T) {
 	for _, c := range []struct {
 		sigma float32
@@ -503,13 +489,9 @@ func TestBlurBoxWidths(t *testing.T) {
 	}
 }
 
-// TestBlurEdge blurs a step and checks that the result is what a Gaussian
-// does to one: it conserves the whole, it is symmetric about the edge, and
-// nothing reaches further than the kernel.
+// TestBlurEdge blurs a step: the whole is conserved, symmetric, and no wider than the kernel.
 func TestBlurEdge(t *testing.T) {
 	for _, sigma := range []float32{0.8, 1.5, 3, 6} {
-		// Wide enough that the far side of the step is saturated well before
-		// the edge of the pixmap, which the blur erodes.
 		const w, h = 128, 3
 		p := NewPixmap(ModelRGB, w, h, true)
 		for y := range h {
@@ -540,8 +522,7 @@ func TestBlurEdge(t *testing.T) {
 	}
 }
 
-// TestBlurFlat covers what must not change: a deviation of zero, and a field
-// with nothing in it to spread.
+// TestBlurFlat covers a deviation of zero and a flat field.
 func TestBlurFlat(t *testing.T) {
 	p := NewPixmap(ModelRGB, 64, 64, true)
 	for i := range p.Samples {
@@ -562,8 +543,21 @@ func TestBlurFlat(t *testing.T) {
 	}
 }
 
-// TestGradientAlphaTable covers a ramp whose stops differ in opacity, which
-// is the one case the color table alone cannot carry.
+// TestBlurWide blurs short lines by boxes far wider than they are.
+func TestBlurWide(t *testing.T) {
+	p := NewPixmap(ModelRGB, 4096, 2, true)
+	for i := range p.Samples {
+		p.Samples[i] = 255
+	}
+	Blur(p, 0, 1e6)
+	for i, v := range p.Samples {
+		if v != 0 {
+			t.Fatalf("sample %d is %d, want the line spread to nothing", i, v)
+		}
+	}
+}
+
+// TestGradientAlphaTable covers a ramp whose stops differ in opacity.
 func TestGradientAlphaTable(t *testing.T) {
 	lut := make([]uint8, 256*3)
 	a := make([]uint8, 256)

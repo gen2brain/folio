@@ -11,7 +11,7 @@ func (ip *interp) doShading(n Name) {
 		return
 	}
 	sh := ip.doc.shade(obj, ip.res)
-	if sh == nil || ip.hidden > 0 {
+	if sh == nil || ip.hidden > 0 || !ip.spendShade(sh) {
 		return
 	}
 	bbox := ip.scissor
@@ -21,7 +21,43 @@ func (ip *interp) doShading(n Name) {
 	d := ip.beginDraw(bbox)
 	ip.dev.FillShade(sh, ip.gs.ctm, ip.gs.fillAlpha, ip.gs.params)
 	ip.endDraw(d)
+	ip.chargeShade(sh)
 }
+
+// spendShade charges the page an operation for every meshOpBytes of a shading's mesh.
+func (ip *interp) spendShade(sh *Shade) bool {
+	if sh.stream == nil {
+		return true
+	}
+	data, err := sh.stream.Data()
+	if err != nil {
+		return true
+	}
+	return ip.spend(int64(len(data) / meshOpBytes))
+}
+
+// spend charges the page n operations, logs the charge that runs out, and reports whether there were enough.
+func (ip *interp) spend(n int64) bool {
+	before := *ip.ops
+	if *ip.ops += n; *ip.ops > maxOperations {
+		if before <= maxOperations {
+			ip.errorf("page exceeds %d operations", maxOperations)
+		}
+		return false
+	}
+	return true
+}
+
+// chargeShade charges the page an operation for every meshOpSamples its meshes filled.
+func (ip *interp) chargeShade(sh *Shade) {
+	ip.spend(sh.spent.Swap(0) / meshOpSamples)
+}
+
+// The mesh data and the mesh samples filled counted as one operation.
+const (
+	meshOpBytes   = 8
+	meshOpSamples = 64
+)
 
 // fillWithPattern paints a path with a tiling or shading pattern.
 func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
@@ -42,8 +78,7 @@ func (ip *interp) fillWithPattern(path *raster.Path, evenOdd, stroke bool) {
 	})
 }
 
-// textWithPattern paints a text object with a tiling or shading pattern,
-// which is a clip to the glyphs and the pattern over it.
+// textWithPattern paints a text object with a tiling or shading pattern through a glyph clip.
 func (ip *interp) textWithPattern(t *Text, ctm raster.Matrix, stroke bool) {
 	c, alpha := &ip.gs.fill, ip.gs.fillAlpha
 	if stroke {
@@ -58,9 +93,7 @@ func (ip *interp) textWithPattern(t *Text, ctm raster.Matrix, stroke bool) {
 	})
 }
 
-// paintPattern fills whatever clip pushes with the pattern a color names.
-// shape is the device space box of what is being painted, which is what
-// bounds the repetitions of a tiling pattern.
+// paintPattern fills whatever clip pushes with the pattern a color names, over the device box shape.
 func (ip *interp) paintPattern(c *color, alpha float32, shape raster.Rect, clip func()) {
 	if c.pattern == nil || ip.depth >= maxNesting || alpha == 0 {
 		return
@@ -76,13 +109,14 @@ func (ip *interp) paintPattern(c *color, alpha float32, shape raster.Rect, clip 
 	switch f.GetInt(dict["PatternType"], 0) {
 	case 2:
 		sh := ip.doc.shade(dict["Shading"], ip.res)
-		if sh == nil {
+		if sh == nil || !ip.spendShade(sh) {
 			return
 		}
 		sh.Matrix = pm
 		clip()
 		ip.dev.FillShade(sh, c.patternCTM, alpha, ip.gs.params)
 		ip.dev.PopClip()
+		ip.chargeShade(sh)
 
 	case 1:
 		st := f.GetStream(c.pattern)
@@ -100,8 +134,7 @@ func (ip *interp) paintPattern(c *color, alpha float32, shape raster.Rect, clip 
 	}
 }
 
-// runTile draws one tiling pattern over the area a path covers. shape is the
-// bounding box of that path in device space.
+// runTile draws one tiling pattern over shape, the device space box of a path.
 func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alpha float32) {
 	f := ip.doc.f
 	b := f.GetFloats(st.Dict["BBox"])
@@ -159,8 +192,12 @@ func (ip *interp) runTile(st *Stream, ptm raster.Matrix, shape raster.Rect, alph
 	}
 	var cell raster.Path
 	cell.Rect(view.X0, view.Y0, view.X1-view.X0, view.Y1-view.Y0)
+tiles:
 	for y := y0; y < y1; y++ {
 		for x := x0; x < x1; x++ {
+			if !ip.spend(1) {
+				break tiles
+			}
 			ip.gs.ctm = raster.Concat(raster.Translate(float32(x)*xstep, float32(y)*ystep), ptm)
 			ip.base = ip.gs.ctm
 			ip.gs.clipDepth = 0

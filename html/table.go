@@ -2,8 +2,7 @@ package html
 
 import "strconv"
 
-// The bounds a table grid is built inside, which a document may ask to
-// exceed and which nothing real needs.
+// Bounds on a table grid.
 const (
 	maxTableSpan  = 1000
 	maxTableCols  = 512
@@ -11,8 +10,7 @@ const (
 	maxTableSlots = 1 << 18
 )
 
-// cell is one cell of a table, with the place in the grid it takes and how
-// wide its content wants to be.
+// cell is one cell of a table, its slot in the grid and its content widths.
 type cell struct {
 	box      *box
 	row, col int
@@ -20,13 +18,11 @@ type cell struct {
 	cols     int
 	min, max float32
 	x, w     float32
-	// content is how tall what the cell holds came out, and base how far the
-	// first baseline in it sits below the top of the cell.
+	// content is the height of what the cell holds, base its first baseline below the cell top.
 	content, base float32
 }
 
-// tableRows collects the rows of a table, through the row groups a document
-// writes them in, and the group each row came out of.
+// tableRows collects the rows of a table through its row groups, and the group of each.
 func tableRows(t *box) ([]*box, []*box) {
 	var out, groups []*box
 	var walk func(b, group *box)
@@ -47,8 +43,7 @@ func tableRows(t *box) ([]*box, []*box) {
 	return out, groups
 }
 
-// buildGrid gives every cell a row and a column, stepping over the slots the
-// cells above and beside it span into.
+// buildGrid gives every cell a row and a column, skipping slots spanned from above.
 func buildGrid(rows []*box) ([]*cell, int) {
 	taken := map[[2]int]bool{}
 	var cells []*cell
@@ -96,8 +91,7 @@ func spanOf(b *box, name string) int {
 	return n
 }
 
-// table lays a table out: the columns from what the cells want, then the rows
-// from what the cells become once they have their width.
+// table lays out a table: column widths first, then row heights.
 func (l *layout) table(b *box, x, avail float32) {
 	rows, _ := tableRows(b)
 	cells, ncols := buildGrid(rows)
@@ -124,7 +118,6 @@ func (l *layout) table(b *box, x, avail float32) {
 		c.w = edge[min(c.col+c.cols, ncols)] - c.x - sx
 	}
 
-	// A caption is a block of its own above the rows.
 	for _, k := range b.kids {
 		if k.style.Display == DisplayTableCaption {
 			l.block(k, x, avail)
@@ -143,8 +136,7 @@ func (l *layout) table(b *box, x, avail float32) {
 		h := float32(0)
 		for _, c := range byRow[r] {
 			sub := l.sub(rowTop[r])
-			// CSS 2.1 17.5.3 leaves a percentage height inside a cell
-			// undefined, and a row has no height of its own to give it yet.
+			// CSS 2.1 17.5.3.
 			sub.cbh = -1
 			sub.block(c.box, x+c.x, c.w)
 			sub.apply()
@@ -158,8 +150,6 @@ func (l *layout) table(b *box, x, avail float32) {
 		rowTop[r+1] = rowTop[r] + h + sy
 	}
 
-	// A cell that spans rows may be taller than the rows it spans, which
-	// pushes every row below it down.
 	for _, c := range cells {
 		if c.rows == 1 {
 			continue
@@ -179,8 +169,6 @@ func (l *layout) table(b *box, x, avail float32) {
 
 	alignCells(cells, byRow, rowTop, sy, len(rows))
 
-	// Every cell fills the height of the rows it spans: its border and its
-	// background reach the ones beside it.
 	for _, c := range cells {
 		c.box.h = max(rowTop[min(c.row+c.rows, len(rows))]-c.box.y, c.box.h)
 	}
@@ -200,9 +188,7 @@ func (l *layout) table(b *box, x, avail float32) {
 	l.y = rowTop[len(rows)]
 }
 
-// columnWidths works out how wide each column is: what its cells need at
-// their narrowest, what they would take if nothing wrapped, and where between
-// the two the table has room to put them.
+// columnWidths is the width of each column from its cells' minimum and maximum widths.
 func (l *layout) columnWidths(t *box, cells []*cell, ncols int, avail float32) []float32 {
 	lo := make([]float32, ncols)
 	hi := make([]float32, ncols)
@@ -259,7 +245,7 @@ func (l *layout) columnWidths(t *box, cells []*cell, ncols int, avail float32) [
 	return out
 }
 
-// spread raises a run of columns until they hold a cell that spans them all.
+// spread widens a run of columns until they hold a cell spanning them all.
 func spread(cols []float32, want float32) {
 	have := float32(0)
 	for _, c := range cols {
@@ -274,20 +260,18 @@ func spread(cols []float32, want float32) {
 	}
 }
 
-// contentWidths is what a cell takes when every break is used and when none
-// is, which the column widths are worked out from.
+// contentWidths is a cell's minimum and maximum content widths.
 func (l *layout) contentWidths(b *box) (float32, float32) {
 	mn := l.probe(b, 0)
 	mx := l.probe(b, maxContentWidth)
 	return mn, max(mx, mn)
 }
 
-// maxContentWidth is the width a cell is measured at to find out what it
-// takes when nothing wraps.
+// maxContentWidth is the width a cell is laid out at to measure its maximum content width.
 const maxContentWidth = 1 << 16
 
 func (l *layout) probe(b *box, avail float32) float32 {
-	if !l.spend() {
+	if !l.spend(b) {
 		return 0
 	}
 	p := l.sub(0)
@@ -297,14 +281,13 @@ func (l *layout) probe(b *box, avail float32) float32 {
 	return w
 }
 
-// frameWidth is what the padding and the border of a box add to its content.
+// frameWidth is the horizontal padding and border of a box.
 func frameWidth(s *Style) float32 {
 	return s.PaddingLeft.Resolve(0) + s.PaddingRight.Resolve(0) +
 		s.BorderLeft.Thickness() + s.BorderRight.Thickness()
 }
 
-// boxFrame is frameWidth for a box, which in a collapsed table gives its
-// borders half the room a cell beside it gives the same edge.
+// boxFrame is frameWidth for a box, with half-width borders in a collapsed table.
 func boxFrame(b *box) float32 {
 	if b.inset == nil {
 		return frameWidth(b.style)
@@ -313,10 +296,7 @@ func boxFrame(b *box) float32 {
 		b.inset[3] + b.inset[1]
 }
 
-// alignCells places what each cell holds inside the height its rows came to,
-// which is what vertical-align means on a table cell. Its initial value lines
-// the first baseline of every cell in a row up with the lowest of them, and
-// that is what a table with no style of its own gets.
+// alignCells applies vertical-align to the cells of a table, CSS 2.1 17.5.4.
 func alignCells(cells []*cell, byRow [][]*cell, rowTop []float32, sy float32, nrows int) {
 	base := make([]float32, len(byRow))
 	for r, row := range byRow {
@@ -343,8 +323,7 @@ func alignCells(cells []*cell, byRow [][]*cell, rowTop []float32, sy float32, nr
 	}
 }
 
-// cellAlign is the alignment a cell asks for, where the four a table cell
-// takes are not the ones an inline box takes: everything else is its top.
+// cellAlign is a cell's vertical alignment; anything but middle, bottom or baseline is top.
 func cellAlign(c *cell) VerticalAlign {
 	switch v := c.box.style.VerticalAlign; v {
 	case AlignBaseline, AlignMiddle, AlignBottom:
@@ -353,8 +332,7 @@ func cellAlign(c *cell) VerticalAlign {
 	return AlignTop
 }
 
-// firstBaseline is where the first line of a subtree sits. A cell with no line
-// has no baseline, and CSS 2.1 17.5.4 puts it at the bottom of what it holds.
+// firstBaseline is the first baseline of a subtree, or its bottom when it has no line, CSS 2.1 17.5.4.
 func firstBaseline(b *box) float32 {
 	if v, ok := lineBaseline(b); ok {
 		return v
@@ -374,8 +352,7 @@ func lineBaseline(b *box) (float32, bool) {
 	return 0, false
 }
 
-// shiftContent moves what a box holds without moving the box, which is how a
-// cell's border and background stay where the row put them.
+// shiftContent moves the contents of a box but not the box.
 func shiftContent(b *box, dy float32) {
 	for i := range b.lines {
 		b.lines[i].y += dy

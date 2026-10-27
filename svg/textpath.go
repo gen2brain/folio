@@ -6,8 +6,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// pathWalk is a path flattened to line segments with the distance along it at
-// each one, which is what puts a character somewhere on it.
+// pathWalk is a path flattened to segments with the distance along it at each.
 type pathWalk struct {
 	segs  []pathSeg
 	total float32
@@ -21,8 +20,7 @@ type pathSeg struct {
 // pathFlatness is how far a character's polyline may stray from the curve.
 const pathFlatness = 0.1
 
-// flattenPath measures a path into segments. A jump from one subpath to the
-// next adds no length: the text carries on where the next one starts.
+// flattenPath flattens a path under m; a jump between subpaths adds no length.
 func flattenPath(p *raster.Path, m raster.Matrix) *pathWalk {
 	w := &pathWalk{}
 	f := &pathMeasure{w: w}
@@ -71,8 +69,7 @@ func (w *pathWalk) add(p0, p1 raster.Point) {
 	w.total += n
 }
 
-// at is the point a distance along the path and the direction of travel
-// there, and false for a distance that is not on it.
+// at is the point a distance s along the path and the direction there, false off the path.
 func (w *pathWalk) at(s float32) (raster.Point, float32, bool) {
 	if s < 0 || s > w.total {
 		return raster.Point{}, 0, false
@@ -94,7 +91,6 @@ func (w *pathWalk) at(s float32) (raster.Point, float32, bool) {
 }
 
 // textPath lays a run of characters along the path it names, SVG 1.1 10.13.
-// A reference that resolves to no path draws nothing at all.
 func (r *runner) textPath(n *node, st state, c *textCursor, depth int) {
 	st = r.style(n, st)
 	if st.hidden {
@@ -112,8 +108,6 @@ func (r *runner) textPath(n *node, st state, c *textCursor, depth int) {
 	if v, ok := length(r.prop(n, "startOffset"), w.total, st.em); ok {
 		c.setX = v
 	}
-	// The characters of a textPath run along it: x and y on the element
-	// itself say nothing, and a tspan inside it measures along the path.
 	face := r.face(st)
 	i := 0
 	for _, k := range n.kids {
@@ -127,8 +121,7 @@ func (r *runner) textPath(n *node, st state, c *textCursor, depth int) {
 	c.path = was
 }
 
-// pathOf is the path a textPath draws along: the one it refers to, under
-// whatever that element was transformed by.
+// pathOf is the path a textPath refers to, under that element's transform.
 func (r *runner) pathOf(n *node, st state) *pathWalk {
 	t := r.doc.byID[fragment(n.attr["href"])]
 	if t == nil || t.name != "path" {
@@ -138,13 +131,16 @@ func (r *runner) pathOf(n *node, st state) *pathWalk {
 	if p == nil || p.IsEmpty() {
 		return nil
 	}
-	return flattenPath(p, atOrigin(transform(t.attr["transform"]),
-		r.prop(t, "transform-origin"), st.vw, st.vh, st.em))
+	m := atOrigin(transform(t.attr["transform"]), r.prop(t, "transform-origin"), st.vw, st.vh, st.em)
+	l := travel{m: m, clip: raster.InfiniteRect}
+	p.Walk(&l)
+	if !r.spend(segmentWork*int64(p.Len()) + lengthWork*int64(min(l.n, 1<<40))) {
+		return nil
+	}
+	return flattenPath(p, m)
 }
 
-// onPath moves the characters laid along a path onto it: each one sits where
-// its middle falls and turns with the direction of travel there, and one that
-// falls off either end is not drawn at all.
+// onPath moves glyphs laid along a path onto it, dropping those off either end.
 func onPath(g []glyph) []glyph {
 	out := g[:0]
 	for _, one := range g {

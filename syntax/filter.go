@@ -59,21 +59,32 @@ func (s *Stream) ImageDataLimit(limit int) ([]byte, Name, Dict, error) {
 
 func (s *Stream) decode() ([]byte, Name, Dict, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.decoded {
-		return s.dec, s.imgFilter, s.imgParms, s.err
+		dec, filter, parms, err := s.dec, s.imgFilter, s.imgParms, s.err
+		s.mu.Unlock()
+		if dec != nil {
+			s.doc.touch(s)
+		}
+		return dec, filter, parms, err
 	}
 	data, err := s.Raw()
 	if err != nil {
+		s.mu.Unlock()
 		return nil, "", nil, err
 	}
 	data, s.imgFilter, s.imgParms, s.err = s.doc.decodeImageData(s.Dict, data, s.Ref, maxDecoded)
 	s.decoded = true
 	if s.err != nil {
-		return nil, "", nil, s.err
+		err := s.err
+		s.mu.Unlock()
+		return nil, "", nil, err
 	}
 	s.dec = data
-	return s.dec, s.imgFilter, s.imgParms, nil
+	s.gen++
+	gen, filter, parms := s.gen, s.imgFilter, s.imgParms
+	s.mu.Unlock()
+	s.doc.keep(s, len(data), gen)
+	return data, filter, parms, nil
 }
 
 // DecodeImageData applies the byte filters dict names to data and returns the

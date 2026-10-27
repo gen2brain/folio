@@ -2,6 +2,7 @@ package font
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/gen2brain/folio/raster"
 )
@@ -15,8 +16,10 @@ type cffFont struct {
 	localSubrs  [][]byte
 	strings     [][]byte
 
-	// charset maps a glyph to its name identifier, or its CID in a CID font.
+	// charset maps a glyph to its SID or CID, byCID back with -1 for none.
 	charset []uint16
+	cidOnce sync.Once
+	byCID   []int32
 	enc     *[256]string
 
 	defaultWidth float32
@@ -476,13 +479,15 @@ func (c *cffFont) readCIDPrivates(top map[int][]float64, topMatrix bool) {
 	case 3:
 		n := be16(b, off+1)
 		at := off + 3
+		done := 0
 		for i := 0; i < n && at+5 <= len(b); i++ {
-			first := be16(b, at)
+			first := max(be16(b, at), done)
 			fd := b[at+2]
-			next := be16(b, at+3)
-			for g := first; g < next && g < len(c.fdSelect); g++ {
+			next := min(be16(b, at+3), len(c.fdSelect))
+			for g := first; g < next; g++ {
 				c.fdSelect[g] = fd
 			}
+			done = max(done, next)
 			at += 3
 		}
 	}
@@ -506,10 +511,17 @@ func (c *cffFont) glyphName(gid int) string {
 }
 
 func (c *cffFont) gidForCID(cid int) int {
-	for gid, v := range c.charset {
-		if int(v) == cid {
-			return gid
+	c.cidOnce.Do(func() {
+		c.byCID = make([]int32, 1<<16)
+		for i := range c.byCID {
+			c.byCID[i] = -1
 		}
+		for gid := len(c.charset) - 1; gid >= 0; gid-- {
+			c.byCID[c.charset[gid]] = int32(gid)
+		}
+	})
+	if cid >= 0 && cid < len(c.byCID) && c.byCID[cid] >= 0 {
+		return int(c.byCID[cid])
 	}
 	if cid < len(c.charStrings) {
 		return cid

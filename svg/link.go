@@ -16,14 +16,13 @@ type Link struct {
 	Fragment string
 }
 
-// Links returns the links the drawing carries, one for every anchor element
-// that covers something, in the order they are written.
+// Links returns the drawing's links, one per anchor that covers something, in document order.
 func (p *Page) Links() []Link {
 	d := p.doc
 	if d == nil || d.root == nil {
 		return nil
 	}
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	m := raster.Identity
 	st := initialState(d.width, d.height)
 	if d.box != nil {
@@ -35,8 +34,7 @@ func (p *Page) Links() []Link {
 	return out
 }
 
-// anchors walks the drawing for the anchors in it, carrying the transform and
-// the viewport each one is written under.
+// anchors collects the anchors under n with their transform and viewport.
 func (r *runner) anchors(n *node, st state, ctm raster.Matrix, out *[]Link, depth int) {
 	if depth > maxNesting || len(*out) > maxLinks {
 		return

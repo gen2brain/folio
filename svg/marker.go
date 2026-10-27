@@ -7,8 +7,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// markers draws what marker-start, marker-mid and marker-end put at the
-// vertices of a path, which is what an arrow head on a diagram is.
+// markers draws marker-start, marker-mid and marker-end at the vertices of a path.
 func (r *runner) markers(p *raster.Path, ctm raster.Matrix, st state) {
 	if st.markStart == "" && st.markMid == "" && st.markEnd == "" {
 		return
@@ -32,16 +31,14 @@ func (r *runner) markers(p *raster.Path, ctm raster.Matrix, st state) {
 	}
 }
 
-// vertex is a point of the path and the direction the outline is going there,
-// which is what a marker turns to face.
+// vertex is a point of the path with the direction of the outline into and out of it.
 type vertex struct {
 	at          raster.Point
 	in, out     raster.Point
 	hasIn, out2 bool
 }
 
-// vertices walks a path for the points a marker sits on, with the direction
-// of the segment either side of each.
+// vertices walks a path for the points a marker sits on.
 func vertices(p *raster.Path) []vertex {
 	w := &vertexWalker{}
 	p.Walk(w)
@@ -79,8 +76,6 @@ func (w *vertexWalker) LineTo(x, y float32) {
 
 func (w *vertexWalker) CurveTo(x1, y1, x2, y2, x3, y3 float32) {
 	to := raster.Point{X: x3, Y: y3}
-	// The direction at each end of a cubic is toward its own control point,
-	// and toward the far end when that point sits on the end.
 	in := raster.Point{X: x1 - w.last.X, Y: y1 - w.last.Y}
 	if in.X == 0 && in.Y == 0 {
 		in = raster.Point{X: x3 - w.last.X, Y: y3 - w.last.Y}
@@ -105,11 +100,15 @@ func (r *runner) marker(value string, v vertex, ctm raster.Matrix, st state) {
 		return
 	}
 	m := r.doc.byID[id]
-	if m == nil || m.name != "marker" || r.depth >= maxNesting {
+	if m == nil || m.name != "marker" || r.depth >= maxNesting || r.active[m] {
 		return
 	}
 	r.depth++
-	defer func() { r.depth-- }()
+	if r.active == nil {
+		r.active = map[*node]bool{}
+	}
+	r.active[m] = true
+	defer func() { r.depth--; delete(r.active, m) }()
 
 	w, wok := length(r.inherited(m, "markerWidth", 0), st.vw, st.em)
 	h, hok := length(r.inherited(m, "markerHeight", 0), st.vh, st.em)
@@ -144,8 +143,6 @@ func (r *runner) marker(value string, v vertex, ctm raster.Matrix, st state) {
 	sub.ctxFill, sub.ctxFillServer = st.fill, st.fillServer
 	sub.ctxStroke, sub.ctxStrokeServer = st.stroke, st.strokeServer
 	sub.ctxCTM = ctm
-	// The marker's viewport is w by h with refX,refY of it sitting on the
-	// vertex, so the frame is the viewport moved back by that point.
 	ref := raster.Point{X: refX, Y: refY}
 	inner := at
 	if vb := numbers(r.inherited(m, "viewBox", 0)); len(vb) == 4 && vb[2] > 0 && vb[3] > 0 {
@@ -161,11 +158,13 @@ func (r *runner) marker(value string, v vertex, ctm raster.Matrix, st state) {
 		inner = at
 	}
 
-	// A marker clips to its viewport unless it says not to.
 	clipped := strings.TrimSpace(r.inherited(m, "overflow", 0)) != "visible"
 	if clipped {
 		var edge raster.Path
 		edge.Rect(0, 0, w, h)
+		if !r.spend(r.pathWork(&edge, true, nil, at)) {
+			return
+		}
 		r.dev.ClipPath(&edge, false, at, raster.InfiniteRect)
 	}
 	r.children(m, inner, sub)
@@ -174,8 +173,7 @@ func (r *runner) marker(value string, v vertex, ctm raster.Matrix, st state) {
 	}
 }
 
-// markerAngle is how far a marker is turned: what orient asks for, or the way
-// the path runs through the vertex.
+// markerAngle is the rotation of a marker: orient, or the direction of the path at the vertex.
 func markerAngle(m *node, v vertex, r *runner) float32 {
 	o := strings.TrimSpace(r.inherited(m, "orient", 0))
 	switch o {
@@ -186,7 +184,6 @@ func markerAngle(m *node, v vertex, r *runner) float32 {
 		if !v.hasIn {
 			dir = v.out
 		} else if v.out2 {
-			// A vertex with a segment either side faces halfway between them.
 			dir = raster.Point{X: norm(v.in).X + norm(v.out).X, Y: norm(v.in).Y + norm(v.out).Y}
 		}
 		if dir.X == 0 && dir.Y == 0 {

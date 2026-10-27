@@ -50,15 +50,21 @@ func (r *runner) image(n *node, ctm raster.Matrix, st state) {
 		E: x + fit.X0, F: y + fit.Y0,
 	}, ctm)
 
-	pushed := false
-	if al != "none" && sl {
-		var box raster.Path
-		box.Rect(x, y, w, h)
+	var box raster.Path
+	box.Rect(x, y, w, h)
+	clipped := al != "none" && sl
+	cost := reach(r.dev, m.ApplyRect(raster.Rect{X1: 1, Y1: 1}))
+	if clipped {
+		cost += r.pathWork(&box, true, nil, ctm)
+	}
+	if !r.spend(cost) {
+		return
+	}
+	if clipped {
 		r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
-		pushed = true
 	}
 	r.dev.FillImage(pic, m, st.fillOpacity, gfx.ColorParams{})
-	if pushed {
+	if clipped {
 		r.dev.PopClip()
 	}
 }
@@ -86,8 +92,11 @@ func (r *runner) drawn(n *node, art *Page, ctm raster.Matrix, st state) {
 
 	var box raster.Path
 	box.Rect(x, y, w, h)
+	if !r.spend(r.pathWork(&box, true, nil, ctm)) {
+		return
+	}
 	r.dev.ClipPath(&box, false, ctm, raster.InfiniteRect)
-	if err := art.run(r.dev, m, r.depth+1); err != nil {
+	if err := art.run(r.dev, m, r.depth+1, r.work); err != nil {
 		r.fail(err)
 	}
 	r.dev.PopClip()

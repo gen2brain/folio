@@ -1,22 +1,22 @@
 package html
 
 import (
+	"math"
+
 	"github.com/gen2brain/folio/font"
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
+	"github.com/gen2brain/folio/svg"
 )
 
-// painter draws a laid out tree through a device. Everything it hands over is
-// in CSS pixels; ctm is what takes those to the device.
+// painter draws a laid out tree, in CSS pixels, through a device under ctm.
 type painter struct {
-	dev gfx.Device
-	ctm raster.Matrix
-	// top and bottom bound the part of the column the page shows.
+	dev         gfx.Device
+	ctm         raster.Matrix
 	top, bottom float32
 	path        raster.Path
-	// vertical is a page whose lines run down it.
-	vertical bool
-	errs     []error
+	vertical    bool
+	errs        []error
 }
 
 func (p *painter) walk(b *box) {
@@ -48,9 +48,6 @@ func (p *painter) walk(b *box) {
 	for i := range b.lines {
 		p.line(&b.lines[i])
 	}
-	// The children of a block with lines are the inline boxes the lines were
-	// made of and draw nothing of their own, except a float, which was laid
-	// out as a block beside them.
 	for _, k := range b.kids {
 		p.walk(k)
 	}
@@ -78,15 +75,14 @@ func (p *painter) line(ln *lineBox) {
 	for i := range ln.frags {
 		f := &ln.frags[i]
 		if f.vis != nil {
-			p.visual(f.vis, f.x, base-f.dy-f.h, f.w, f.h)
+			p.visual(f.vis, f.x, base-f.dy-f.h, f.w, f.h, nil)
 			continue
 		}
 		p.text(f.text, f.face, f.style, f.x, base-f.dy, mid, f.extra, f.rtl)
 	}
 }
 
-// marker draws what a list item carries before its first line, hanging in the
-// padding the user agent sheet leaves for it.
+// marker draws a list item's marker beside its first line.
 func (p *painter) marker(b *box, ln *lineBox) {
 	f := b.markerFace
 	if f.prog == nil {
@@ -96,8 +92,7 @@ func (p *painter) marker(b *box, ln *lineBox) {
 	p.text(b.marker, f, b.style, b.x-w-f.size*0.4, ln.y+ln.baseline, ln.y+ln.h/2, 0, false)
 }
 
-// visualText is a run in the order its characters are drawn: one that runs
-// right to left is mirrored, rule L4, and reversed, rule L2.
+// visualText is a run in drawing order, UAX #9 rules L4 and L2.
 func visualText(s string, rtl bool) string {
 	if !rtl {
 		return s
@@ -112,8 +107,7 @@ func visualText(s string, rtl bool) string {
 	return string(r)
 }
 
-// mirrorText is a run with rule L4 applied and nothing else, which is what
-// the shaper is handed: it puts the glyphs in drawing order itself.
+// mirrorText is a run with UAX #9 rule L4 alone applied.
 func mirrorText(s string, rtl bool) string {
 	if !rtl {
 		return s
@@ -209,9 +203,7 @@ func (p *painter) decorate(st *Style, f face, x0, x1, y float32) {
 	}
 }
 
-// borders paints the four edges of a box: a ring when a corner is rounded,
-// and otherwise rectangles that overlap at the corners rather than mitred,
-// which shows only where two edges of different colours meet.
+// borders paints the four edges of a box.
 func (p *painter) borders(b *box) {
 	if len(b.edges) > 0 {
 		for _, e := range b.edges {
@@ -281,12 +273,10 @@ func (p *painter) dashedEdge(e Border, x, y, w, h float32, horizontal bool) {
 	p.dev.StrokePath(&p.path, &st, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
 }
 
-// radius is one corner of a border box in CSS pixels, once it is resolved.
+// radius is one resolved corner of a border box in CSS pixels.
 type radius struct{ X, Y float32 }
 
-// radii resolves the four corner radii against a box and scales them down so
-// that no edge is asked for more than its length, which is the rule of CSS
-// backgrounds and borders. It reports whether any corner is rounded at all.
+// radii resolves and scales the corner radii of a box, CSS Backgrounds 5.5, and reports whether any is rounded.
 func radii(s *Style, w, h float32) ([4]radius, bool) {
 	var out [4]radius
 	round := false
@@ -318,8 +308,7 @@ func radii(s *Style, w, h float32) ([4]radius, bool) {
 	return out, true
 }
 
-// plainBorder reports the borders a rounded ring can be drawn for: every side
-// solid or absent, which is what a book that rounds a corner writes.
+// plainBorder reports whether every side is solid or absent.
 func plainBorder(s *Style) bool {
 	for _, e := range [4]Border{s.BorderTop, s.BorderRight, s.BorderBottom, s.BorderLeft} {
 		switch e.Style {
@@ -331,7 +320,7 @@ func plainBorder(s *Style) bool {
 	return true
 }
 
-// The distance along a tangent that turns a cubic into a quarter ellipse.
+// The cubic control distance of a quarter ellipse.
 const kappa = 0.5522847498307936
 
 // roundRect adds a rounded rectangle to a path, clockwise from top left.
@@ -365,9 +354,7 @@ func (p *painter) fillRound(x, y, w, h float32, r [4]radius, c Color) {
 	p.dev.FillPath(&p.path, false, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
 }
 
-// roundBorder draws the ring between the border box and the padding box. Each
-// side is clipped to the quadrilateral that runs between its two corners, so
-// that four colours meet on the diagonals the way a browser draws them.
+// roundBorder draws the ring between the border box and the padding box.
 func (p *painter) roundBorder(b *box, r [4]radius) {
 	s := b.style
 	t, rt := s.BorderTop.Thickness(), s.BorderRight.Thickness()
@@ -437,8 +424,7 @@ func (p *painter) rect(x, y, w, h float32, c Color) {
 	p.dev.FillPath(&p.path, false, p.ctm, gfx.DeviceRGB, col, alpha, gfx.ColorParams{})
 }
 
-// backdrop paints the picture behind a box, tiled the way the style asks and
-// clipped to the box itself.
+// backdrop paints the background picture of a box.
 func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 	s := b.style
 	iw, ih := b.back.w, b.back.h
@@ -456,25 +442,20 @@ func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 		h = s.BackgroundH.Resolve(b.h)
 		w = iw * h / ih
 	}
-	if w <= 0 || h <= 0 {
+	if !(w > 0 && h > 0) {
 		return
 	}
 	x := b.x + s.BackgroundX.Resolve(b.w-w)
 	y := b.y + s.BackgroundY.Resolve(b.h-h)
 	nx, ny := 1, 1
+	ok := true
 	if s.BackgroundRepeat == RepeatBoth || s.BackgroundRepeat == RepeatX {
-		for x > b.x {
-			x -= w
-		}
-		nx = int((b.x+b.w-x)/w) + 1
+		x, nx, ok = tile(x, b.x, b.w, w)
 	}
-	if s.BackgroundRepeat == RepeatBoth || s.BackgroundRepeat == RepeatY {
-		for y > b.y {
-			y -= h
-		}
-		ny = int((b.y+b.h-y)/h) + 1
+	if ok && (s.BackgroundRepeat == RepeatBoth || s.BackgroundRepeat == RepeatY) {
+		y, ny, ok = tile(y, b.y, b.h, h)
 	}
-	if nx*ny > maxTiles || nx <= 0 || ny <= 0 {
+	if !ok || nx*ny > maxTiles {
 		return
 	}
 
@@ -485,22 +466,38 @@ func (p *painter) backdrop(b *box, r [4]radius, round bool) {
 		p.path.Rect(b.x, b.y, b.w, b.h)
 	}
 	p.dev.ClipPath(&p.path, false, p.ctm, raster.InfiniteRect)
+	var work *svg.Budget
+	if b.back.art != nil {
+		work = svg.NewBudget(p.dev)
+	}
 	for i := range ny {
 		for j := range nx {
-			p.visual(b.back, x+float32(j)*w, y+float32(i)*h, w, h)
+			p.visual(b.back, x+float32(j)*w, y+float32(i)*h, w, h, work)
 		}
 	}
 	p.dev.PopClip()
 }
 
-// maxTiles is how many copies of a picture one background may be painted
-// with, which a picture a fraction of a pixel wide would otherwise run to.
 const maxTiles = 1 << 14
 
-// visual draws a picture or a drawing into a rectangle of the page. A
-// drawing runs onto the device under a matrix that fits it to the rectangle,
-// so it stays a drawing all the way down rather than becoming pixels here.
-func (p *painter) visual(v *visual, x, y, w, h float32) {
+// tile moves a tile at to the last step at or before lo and counts the tiles to lo+span.
+func tile(at, lo, span, step float32) (float32, int, bool) {
+	r := math.Mod(float64(at)-float64(lo), float64(step))
+	if math.IsNaN(r) {
+		return 0, 0, false
+	}
+	if r > 0 {
+		r -= float64(step)
+	}
+	n := (float64(span)-r)/float64(step) + 1
+	if !(n >= 1 && n <= maxTiles) {
+		return 0, 0, false
+	}
+	return lo + float32(r), int(n), true
+}
+
+// visual draws a picture or a drawing into a rectangle of the page.
+func (p *painter) visual(v *visual, x, y, w, h float32, work *svg.Budget) {
 	if w <= 0 || h <= 0 {
 		return
 	}
@@ -510,7 +507,7 @@ func (p *painter) visual(v *visual, x, y, w, h float32) {
 		}
 		m := raster.Concat(raster.Matrix{A: w / v.w, D: h / v.h, E: x, F: y}, p.ctm)
 		p.dev.ClipPath(p.box(x, y, w, h), false, p.ctm, raster.InfiniteRect)
-		p.err(v.art.Run(p.dev, m))
+		p.err(v.art.RunWithin(p.dev, m, work))
 		p.dev.PopClip()
 		return
 	}
@@ -521,8 +518,7 @@ func (p *painter) visual(v *visual, x, y, w, h float32) {
 	p.dev.FillImage(v.pic, m, 1, gfx.ColorParams{})
 }
 
-// box is a rectangle of the page as a path, reusing the painter's own so a
-// clip costs no allocation.
+// box is a rectangle of the page as the painter's path.
 func (p *painter) box(x, y, w, h float32) *raster.Path {
 	p.path.Reset()
 	p.path.Rect(x, y, w, h)
@@ -539,8 +535,7 @@ func colorOf(c Color) ([]float32, float32) {
 	return []float32{float32(c.R) / 255, float32(c.G) / 255, float32(c.B) / 255}, float32(c.A) / 255
 }
 
-// subst is a font program a device draws glyphs from, which is all a
-// substitute face needs to be.
+// subst is a font program a device draws glyphs from.
 
 // substFont is gfx.FontOf, wrapping a program as a font a device can draw.
 func substFont(prog *font.Font) gfx.Font { return gfx.FontOf(prog) }

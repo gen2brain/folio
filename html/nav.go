@@ -9,8 +9,7 @@ import (
 // maxNavDepth bounds a table of contents that nests forever.
 const maxNavDepth = 32
 
-// readNav reads the table of contents, preferring the EPUB 3 navigation
-// document to the EPUB 2 NCX.
+// readNav reads the table of contents, preferring the EPUB 3 nav document to the NCX.
 func (d *Document) readNav() {
 	for _, item := range d.manifest {
 		if hasProperty(item, "nav") {
@@ -62,15 +61,19 @@ type inner struct {
 }
 
 func (t inner) String() string {
-	s := t.Own
-	for _, c := range t.Children {
-		s += c.String()
-	}
-	return s
+	var b strings.Builder
+	t.write(&b)
+	return b.String()
 }
 
-// readNavDoc reads the EPUB 3 navigation document. The nav element may be
-// anywhere in the body, so the token stream is scanned for it.
+func (t inner) write(b *strings.Builder) {
+	b.WriteString(t.Own)
+	for _, c := range t.Children {
+		c.write(b)
+	}
+}
+
+// readNavDoc reads the EPUB 3 navigation document.
 func (d *Document) readNavDoc(p string) []Outline {
 	b, err := d.Read(p)
 	if err != nil {

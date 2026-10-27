@@ -7,19 +7,17 @@ import (
 	xhtml "golang.org/x/net/html"
 )
 
-// Specificity is CSS 2.1's (a, b, c) triple packed so that it compares as one
-// number: identifiers, then classes and attributes, then element names.
+// Specificity is the CSS 2.1 (a, b, c) triple packed into one comparable number.
 type Specificity uint32
 
-// maxSpecificity is what the style attribute carries, above any selector.
+// maxSpecificity is the specificity of a style attribute, above any selector.
 const maxSpecificity = Specificity(1<<30 - 1)
 
 func specificity(a, b, c int) Specificity {
 	return Specificity(min(a, 1023)<<20 | min(b, 1023)<<10 | min(c, 1023))
 }
 
-// Selector is one complex selector. Its compounds are held right to left,
-// subject first: the order it matches in.
+// Selector is one complex selector, its compounds held right to left, subject first.
 type Selector struct {
 	parts []compound
 	spec  Specificity
@@ -29,8 +27,7 @@ type Selector struct {
 // Spec returns the specificity of the selector.
 func (s Selector) Spec() Specificity { return s.spec }
 
-// compound is a run of simple selectors with no combinator between them, and
-// comb is how it relates to the compound to its right in the source.
+// compound is a run of simple selectors; comb relates it to the compound to its right.
 type compound struct {
 	comb    byte
 	tag     string
@@ -38,18 +35,15 @@ type compound struct {
 	classes []string
 	attrs   []attrSel
 	pseudo  []pseudoSel
-	// elem is the pseudo-element the compound names, which only the subject
-	// of a selector may carry.
+	// elem is the pseudo-element, only ever on the subject.
 	elem PseudoElement
-	// never marks a compound nothing matches: a pseudo-element layout has no
-	// notion of, or a pseudo class about a state a book reader is never in.
+	// never marks a compound that matches nothing.
 	never bool
 }
 
 type attrSel struct {
 	name string
-	// ns is the namespace prefix written before the name, which an XHTML
-	// document parsed as HTML keeps in the attribute name itself.
+	// ns is the namespace prefix written before the name.
 	ns string
 	// op is 0 for a bare presence test, otherwise one of = ~ | ^ $ *.
 	op   byte
@@ -71,8 +65,7 @@ const (
 	combLater      = '~'
 )
 
-// parseSelectors reads a comma separated selector list. It returns nothing
-// when one of them fails: a rule with a selector this cannot read is dropped.
+// parseSelectors reads a comma separated selector list, failing if any selector fails.
 func parseSelectors(toks []cssToken) ([]Selector, bool) {
 	if len(toks) == 0 {
 		return nil, false
@@ -200,8 +193,7 @@ func parseCompound(toks []cssToken, a, b, c *int) (compound, []cssToken, bool) {
 	return cur, toks, n > 0
 }
 
-// parseQualified reads a name and the namespace prefix a sheet with an
-// @namespace writes before it, and returns empty for the universal selector.
+// parseQualified reads a name and its @namespace prefix, empty for the universal selector.
 func parseQualified(toks []cssToken) (string, string, []cssToken, bool) {
 	name := ""
 	if toks[0].kind == cssIdent {
@@ -269,8 +261,7 @@ func parseAttr(toks []cssToken) (attrSel, []cssToken, bool) {
 	return at, toks[1:], true
 }
 
-// parsePseudo reads a pseudo class or a pseudo element. A pseudo element and
-// every state a book reader has no notion of make the compound unmatchable.
+// parsePseudo reads a pseudo class or a pseudo element.
 func parsePseudo(toks []cssToken, cur *compound, a, b, c *int) ([]cssToken, bool) {
 	toks = toks[1:]
 	double := false
@@ -388,8 +379,7 @@ func splitCommas(toks []cssToken) [][]cssToken {
 	return append(out, toks[start:])
 }
 
-// parseNth reads the an+b of an nth-child argument back out of the tokens it
-// was split into, which depends on where the signs fell.
+// parseNth reads the an+b of an nth-child argument from its tokens.
 func parseNth(toks []cssToken) (int, int, bool) {
 	var b strings.Builder
 	for _, t := range skipSpace(toks) {
@@ -457,18 +447,27 @@ func skipSpace(toks []cssToken) []cssToken {
 	return toks
 }
 
-// Match reports whether an element matches the selector. A selector that
-// names a pseudo-element matches no element: what it styles is a box the
-// element generates, which Pseudo names.
+// Match reports whether an element matches the selector; one naming a pseudo-element matches none.
 func (s Selector) Match(n *Node) bool {
-	return s.elem == PseudoNone && matchParts(s.parts, n)
+	return s.elem == PseudoNone && matchParts(s.parts, n, &matchCtx{})
 }
 
 // Pseudo is the pseudo-element the selector styles, if it names one.
 func (s Selector) Pseudo() PseudoElement { return s.elem }
 
-func matchParts(parts []compound, n *Node) bool {
-	if !matchCompound(&parts[0], n) {
+// matchCtx caches the selector suffixes that failed at a node since the last reset, and sibling positions.
+type matchCtx struct {
+	fail map[failKey]bool
+	pos  map[*Node][4]int
+}
+
+type failKey struct {
+	c *compound
+	n *Node
+}
+
+func matchParts(parts []compound, n *Node, m *matchCtx) bool {
+	if !matchCompound(&parts[0], n, m) {
 		return false
 	}
 	if len(parts) == 1 {
@@ -478,19 +477,19 @@ func matchParts(parts []compound, n *Node) bool {
 	switch parts[0].comb {
 	case combChild:
 		p := parentElement(n)
-		return p != nil && matchParts(rest, p)
+		return p != nil && m.sub(rest, p)
 	case combDescendant:
 		for p := parentElement(n); p != nil; p = parentElement(p) {
-			if matchParts(rest, p) {
+			if m.sub(rest, p) {
 				return true
 			}
 		}
 	case combNext:
 		p := prevElement(n)
-		return p != nil && matchParts(rest, p)
+		return p != nil && m.sub(rest, p)
 	case combLater:
 		for p := prevElement(n); p != nil; p = prevElement(p) {
-			if matchParts(rest, p) {
+			if m.sub(rest, p) {
 				return true
 			}
 		}
@@ -498,7 +497,26 @@ func matchParts(parts []compound, n *Node) bool {
 	return false
 }
 
-func matchCompound(c *compound, n *Node) bool {
+// sub matches the rest of a selector at p, remembering where it failed.
+func (m *matchCtx) sub(rest []compound, p *Node) bool {
+	if len(rest) < 2 {
+		return matchParts(rest, p, m)
+	}
+	k := failKey{&rest[0], p}
+	if m.fail[k] {
+		return false
+	}
+	if matchParts(rest, p, m) {
+		return true
+	}
+	if m.fail == nil {
+		m.fail = map[failKey]bool{}
+	}
+	m.fail[k] = true
+	return false
+}
+
+func matchCompound(c *compound, n *Node, m *matchCtx) bool {
 	if c.never || n.Type != xhtml.ElementNode {
 		return false
 	}
@@ -519,7 +537,7 @@ func matchCompound(c *compound, n *Node) bool {
 		}
 	}
 	for i := range c.pseudo {
-		if !matchPseudo(&c.pseudo[i], n) {
+		if !matchPseudo(&c.pseudo[i], n, m) {
 			return false
 		}
 	}
@@ -582,11 +600,11 @@ func matchAttr(a *attrSel, n *Node) bool {
 	return false
 }
 
-func matchPseudo(p *pseudoSel, n *Node) bool {
+func matchPseudo(p *pseudoSel, n *Node, m *matchCtx) bool {
 	switch p.name {
 	case "not":
 		for i := range p.not {
-			if matchCompound(&p.not[i], n) {
+			if matchCompound(&p.not[i], n, m) {
 				return false
 			}
 		}
@@ -610,41 +628,65 @@ func matchPseudo(p *pseudoSel, n *Node) bool {
 	case "only-child":
 		return prevElement(n) == nil && nextElement(n) == nil
 	case "first-of-type":
-		return countOfType(n, false) == 1
+		return m.index(n, false, true) == 1
 	case "last-of-type":
-		return countOfType(n, true) == 1
+		return m.index(n, true, true) == 1
 	case "only-of-type":
-		return countOfType(n, false) == 1 && countOfType(n, true) == 1
+		return m.index(n, false, true) == 1 && m.index(n, true, true) == 1
 	case "nth-child":
-		return nthMatch(p.a, p.b, index(n, false, false))
+		return nthMatch(p.a, p.b, m.index(n, false, false))
 	case "nth-last-child":
-		return nthMatch(p.a, p.b, index(n, true, false))
+		return nthMatch(p.a, p.b, m.index(n, true, false))
 	case "nth-of-type":
-		return nthMatch(p.a, p.b, index(n, false, true))
+		return nthMatch(p.a, p.b, m.index(n, false, true))
 	case "nth-last-of-type":
-		return nthMatch(p.a, p.b, index(n, true, true))
+		return nthMatch(p.a, p.b, m.index(n, true, true))
 	}
 	return false
 }
 
-// index is what an nth-child argument counts against: the element's position
-// among its siblings, from one, from either end and either of every element
-// or of those with its own name.
-func index(n *Node, last, typed bool) int {
-	i := 1
-	step := prevElement
+// index is the 1-based position of n among its sibling elements, from the end when last, among its name when typed.
+func (m *matchCtx) index(n *Node, last, typed bool) int {
+	k := 0
 	if last {
-		step = nextElement
+		k |= 1
 	}
-	for s := step(n); s != nil; s = step(s) {
-		if !typed || strings.EqualFold(s.Data, n.Data) {
-			i++
-		}
+	if typed {
+		k |= 2
 	}
-	return i
+	if v, ok := m.pos[n]; ok {
+		return v[k]
+	}
+	if m.pos == nil {
+		m.pos = map[*Node][4]int{}
+	}
+	first := n
+	for s := prevElement(n); s != nil; s = prevElement(s) {
+		first = s
+	}
+	var all []*Node
+	for s := first; s != nil; s = nextElement(s) {
+		all = append(all, s)
+	}
+	seen := map[string]int{}
+	for i, s := range all {
+		t := foldKey(s.Data)
+		seen[t]++
+		v := m.pos[s]
+		v[0], v[2] = i+1, seen[t]
+		m.pos[s] = v
+	}
+	clear(seen)
+	for i := len(all) - 1; i >= 0; i-- {
+		s := all[i]
+		t := foldKey(s.Data)
+		seen[t]++
+		v := m.pos[s]
+		v[1], v[3] = len(all)-i, seen[t]
+		m.pos[s] = v
+	}
+	return m.pos[n][k]
 }
-
-func countOfType(n *Node, last bool) int { return index(n, last, true) }
 
 func nthMatch(a, b, i int) bool {
 	if a == 0 {

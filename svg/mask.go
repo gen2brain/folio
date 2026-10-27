@@ -7,15 +7,15 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// mask draws what a mask element paints into a soft mask and reports whether
-// one was opened, which the caller has to close.
+// mask draws a mask element into a soft mask and reports whether the caller must close it.
 func (r *runner) mask(n *node, ctm raster.Matrix, st state) bool {
 	id := serverID(r.prop(n, "mask"))
 	if id == "" {
 		return false
 	}
 	m := r.doc.byID[id]
-	if m == nil || m.name != "mask" || r.depth >= maxNesting || r.active[m] {
+	if m == nil || m.name != "mask" || r.depth >= maxNesting || r.active[m] ||
+		!r.spend(reach(r.dev, raster.InfiniteRect)) {
 		return false
 	}
 	r.depth++
@@ -25,8 +25,6 @@ func (r *runner) mask(n *node, ctm raster.Matrix, st state) bool {
 	r.active[m] = true
 	defer func() { r.depth--; delete(r.active, m) }()
 
-	// A mask is the luminance of what it draws, or its alpha where SVG 2's
-	// mask-type asks, and is what BeginMask composites the next drawing with.
 	lum := strings.TrimSpace(r.prop(m, "mask-type")) != "alpha"
 	r.dev.BeginMask(raster.InfiniteRect, lum, gfx.DeviceGray, []float32{0}, gfx.ColorParams{})
 	sub := initialState(st.vw, st.vh)
@@ -41,7 +39,7 @@ func (r *runner) mask(n *node, ctm raster.Matrix, st state) bool {
 	if r.maskRegion(m, box, ctm, st) {
 		pops++
 	}
-	// A mask of its own is drawn through the one it names, SVG 1.1 14.4.
+	// SVG 1.1 14.4.
 	if r.mask(m, inner, sub) {
 		pops++
 	}
@@ -53,8 +51,7 @@ func (r *runner) mask(n *node, ctm raster.Matrix, st state) bool {
 	return true
 }
 
-// maskRegion clips a mask to the box it declares, which is a fraction of the
-// masked element's own unless maskUnits says otherwise.
+// maskRegion clips a mask to the region it declares in maskUnits.
 func (r *runner) maskRegion(m *node, box raster.Rect, ctm raster.Matrix, st state) bool {
 	obj := strings.TrimSpace(r.inherited(m, "maskUnits", 0)) != "userSpaceOnUse"
 	var reg raster.Rect
@@ -86,6 +83,9 @@ func (r *runner) maskRegion(m *node, box raster.Rect, ctm raster.Matrix, st stat
 	}
 	var p raster.Path
 	p.Rect(reg.X0, reg.Y0, reg.X1-reg.X0, reg.Y1-reg.Y0)
+	if !r.spend(r.pathWork(&p, true, nil, ctm)) {
+		return false
+	}
 	r.dev.ClipPath(&p, false, ctm, raster.InfiniteRect)
 	return true
 }

@@ -9,8 +9,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// glyph is one character placed by a text element, with the face it came out
-// of and how far the pen moves after it.
+// glyph is one character placed by a text element, with its face and advance.
 type glyph struct {
 	r    rune
 	gid  int
@@ -18,34 +17,25 @@ type glyph struct {
 	size float32
 	adv  float32
 	x, y float32
-	// chunk is which run of text the glyph belongs to, which is what
-	// text-anchor moves as a whole. A new one starts wherever an absolute
-	// position is given, SVG 1.1 10.5.
+	// chunk is the anchored chunk the glyph belongs to, SVG 1.1 10.5.
 	chunk int
-	// turn is how far the rotate attribute turns the character, in degrees
-	// clockwise about where it sits.
+	// turn is the rotate attribute's angle, in degrees clockwise.
 	turn float32
-	// path is the one a textPath lays the character along, on which x is the
-	// distance travelled and y the offset from it.
+	// path is the textPath the glyph lies along; x is the distance along it, y the offset.
 	path *pathWalk
-	// vert says the character was placed down the page rather than across it.
+	// vert says the glyph was placed in vertical writing.
 	vert bool
-	// at is which character of the element the glyph came out of, which is
-	// what textLength is measured over.
+	// at is the index of the character the glyph came from.
 	at int
 	st state
 }
 
-// char is one character of a text element before its glyphs are known: what
-// it is, the style it is drawn in, and where the element asked for it. The
-// glyphs come later, because a script that joins is shaped a run at a time
-// and the bidirectional algorithm orders a whole chunk at once.
+// char is one character of a text element before shaping: its rune, style and requested position.
 type char struct {
 	r    rune
 	st   state
 	face *font.Font
-	// ax and ay are an absolute position, which is where the character
-	// starts, and dx and dy a move from wherever the pen had reached.
+	// ax and ay are an absolute position, dx and dy a relative move.
 	ax, ay     float32
 	hasX, hasY bool
 	dx, dy     float32
@@ -54,13 +44,11 @@ type char struct {
 	path       *pathWalk
 }
 
-// textCursor is what the walk over a text element collects: the characters in
-// the order they were written, and the position the next one takes.
+// textCursor collects the characters of a text element in written order and the next position.
 type textCursor struct {
 	chars []char
 	chunk int
-	// setX and setY are a position the next character starts at, which an x
-	// or a y attribute and a textPath's start offset give it.
+	// setX and setY are the position the next character starts at.
 	setX, setY float32
 	hasX, hasY bool
 	// path is the textPath the characters are being laid along, if any.
@@ -68,9 +56,7 @@ type textCursor struct {
 	// space says a collapsible space is owed before the next character.
 	space bool
 	begun bool
-	// rotate is the list a text element may turn each of its characters by,
-	// and rotateAt how many of them have been used. The last one stands for
-	// every character after it, SVG 1.1 10.4.
+	// rotate is the rotate list and rotateAt how many are used; the last repeats, SVG 1.1 10.4.
 	rotate   []float32
 	rotateAt int
 	// fits are the ranges of characters a textLength was written for.
@@ -89,8 +75,6 @@ func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 		return
 	}
 	c := &textCursor{}
-	// The element's own style is already in st: applying it again would read
-	// a relative font size twice.
 	r.textRun(n, st, c, 0, true)
 	g := r.laidOut(c)
 	if len(g) == 0 {
@@ -100,18 +84,23 @@ func (r *runner) text(n *node, ctm raster.Matrix, st state) {
 	r.decorate(g, ctm)
 }
 
-// laidOut turns what the walk collected into the glyphs that draw it, in the
-// order they are drawn and where they belong.
+// laidOut turns the collected characters into glyphs in drawing order.
 func (r *runner) laidOut(c *textCursor) []glyph {
 	c.chars = trimTrailing(c.chars)
 	if len(c.chars) == 0 {
 		return nil
 	}
 	g := r.layout(c.chars)
-	for _, f := range c.fits {
-		lo, hi := glyphRange(g, f.from, f.to)
-		if lo < hi {
-			fitLength(g[lo:hi], f.want)
+	if len(c.fits) > 0 {
+		first, last := glyphsOf(g, len(c.chars))
+		for _, f := range c.fits {
+			lo, hi := len(g), 0
+			for i := max(f.from, 0); i < min(f.to, len(c.chars)); i++ {
+				lo, hi = min(lo, first[i]), max(hi, last[i])
+			}
+			if lo < hi {
+				fitLength(g[lo:hi], f.want)
+			}
 		}
 	}
 	r.anchorChunks(g)
@@ -119,20 +108,21 @@ func (r *runner) laidOut(c *textCursor) []glyph {
 	return onPath(g)
 }
 
-// glyphRange is the glyphs a range of characters produced. Ordering a chunk
-// keeps the characters of one element together, so the range is contiguous.
-func glyphRange(g []glyph, from, to int) (int, int) {
-	lo, hi := len(g), 0
+// glyphsOf is the first and the past-last glyph each of n characters produced.
+func glyphsOf(g []glyph, n int) ([]int, []int) {
+	first, last := make([]int, n), make([]int, n)
+	for i := range first {
+		first[i] = len(g)
+	}
 	for i := range g {
-		if g[i].at >= from && g[i].at < to {
-			lo, hi = min(lo, i), max(hi, i+1)
+		if a := g[i].at; a >= 0 && a < n {
+			first[a], last[a] = min(first[a], i), max(last[a], i+1)
 		}
 	}
-	return lo, hi
+	return first, last
 }
 
-// trimTrailing drops the space a text element ends with, which SVG 1.1 10.15
-// removes and the eager collapse below has left with nothing after it.
+// trimTrailing drops the trailing space of a text element, SVG 1.1 10.15.
 func trimTrailing(cs []char) []char {
 	for len(cs) > 0 {
 		last := cs[len(cs)-1]
@@ -155,7 +145,6 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 			return
 		}
 	}
-	// An absolute position starts a chunk, a relative one only moves the pen.
 	xs := lengths(r.prop(n, "x"), st.vw, st.em)
 	ys := lengths(r.prop(n, "y"), st.vh, st.em)
 	dxs := lengths(r.prop(n, "dx"), st.vw, st.em)
@@ -187,22 +176,18 @@ func (r *runner) textRun(n *node, st state, c *textCursor, depth int, styled boo
 			r.textPath(k, st, c, depth+1)
 		}
 	}
-	// textLength stretches what the element itself holds, so a tspan with one
-	// of its own is fitted before the text around it is.
 	if v, ok := length(r.prop(n, "textLength"), st.vw, st.em); ok && v > 0 {
 		c.fits = append(c.fits, fit{first, len(c.chars), v})
 	}
 }
 
-// place records one run of characters, taking the per character positions the
-// element carried lists of. i is how many of those have been used.
+// place records one run of characters from position list index i and returns the next index.
 func (r *runner) place(c *textCursor, s string, st state, face *font.Font, xs, ys, dxs, dys []float32, i int) int {
 	if face == nil {
 		return i
 	}
 	for _, ch := range collapse(s, st.preserve, &c.space, &c.begun) {
-		// A character given a position of its own starts a chunk, whichever
-		// of the two axes it was given, SVG 1.1 10.5.
+		// SVG 1.1 10.5.
 		if i < len(xs) || i < len(ys) {
 			if i < len(xs) {
 				c.setX, c.hasX = xs[i], true
@@ -231,10 +216,7 @@ func (r *runner) place(c *textCursor, s string, st state, face *font.Font, xs, y
 	return i
 }
 
-// emBaseline is how far below the top of the em box the baseline sits, which
-// is what puts an upright character in the middle of the line it runs down.
-// A face whose ascent and descent reach past the em, as a CJK face does, must
-// not push the character out of its box.
+// emBaseline is the baseline's share of the em box from the top, ascent over ascent minus descent.
 func emBaseline(f *font.Font) float32 {
 	h := f.Ascent - f.Descent
 	if h <= 0 {
@@ -243,14 +225,7 @@ func emBaseline(f *font.Font) float32 {
 	return f.Ascent / h
 }
 
-// collapse turns the white space of a text element into the single spaces
-// xml:space default asks for, SVG 1.1 10.15. Preserved white space keeps
-// every character, with the ones that are not a space becoming one.
-//
-// The space a run of white space collapses to belongs to the run it was
-// written in, not to whatever comes next. Between two tspans that is the text
-// element itself, and a space held over until the next one would take the
-// first of the positions that tspan lists for its own characters.
+// collapse applies xml:space to the white space of a text element, SVG 1.1 10.15.
 func collapse(s string, preserve bool, space, begun *bool) []rune {
 	var out []rune
 	for _, r := range s {
@@ -276,8 +251,7 @@ func collapse(s string, preserve bool, space, begun *bool) []rune {
 	return out
 }
 
-// anchorChunks moves each run of text so that the point it was given sits
-// where text-anchor says: at its start, its middle or its end.
+// anchorChunks moves each chunk to where text-anchor puts it.
 func (r *runner) anchorChunks(g []glyph) {
 	for i := 0; i < len(g); {
 		j := i
@@ -306,10 +280,7 @@ func (r *runner) anchorChunks(g []glyph) {
 	}
 }
 
-// fitLength spreads or squeezes a run so that it measures what textLength
-// asks for. Only the spacing between the glyphs is adjusted, which is what
-// lengthAdjust asks for by default; the other value stretches the glyphs
-// themselves and gets the spacing instead.
+// fitLength adjusts the spacing between glyphs to measure want.
 func fitLength(g []glyph, want float32) {
 	if len(g) == 0 {
 		return
@@ -318,8 +289,6 @@ func fitLength(g []glyph, want float32) {
 	for _, v := range g {
 		have += v.adv
 	}
-	// The length is measured to the end of the last glyph, so what is spread
-	// is the gaps between them.
 	if len(g) < 2 || have <= 0 {
 		return
 	}
@@ -332,8 +301,7 @@ func fitLength(g []glyph, want float32) {
 	}
 }
 
-// decorate draws the line text-decoration asks for under or through a run,
-// which the glyphs themselves carry no mark for.
+// decorate draws the text-decoration lines of a run.
 func (r *runner) decorate(g []glyph, ctm raster.Matrix) {
 	for i := 0; i < len(g); {
 		j := i
@@ -347,8 +315,6 @@ func (r *runner) decorate(g []glyph, ctm raster.Matrix) {
 		if kind == "" || kind == "none" || len(run) == 0 {
 			continue
 		}
-		// A line drawn under a run that goes down the page or along a path
-		// would have to follow it, which this does not do.
 		if run[0].vert || run[0].path != nil {
 			continue
 		}
@@ -368,15 +334,14 @@ func (r *runner) decorate(g []glyph, ctm raster.Matrix) {
 		var p raster.Path
 		p.Rect(x0, y, x1-x0, max(size*0.06, 0.5))
 		c := st.fill.color
-		if st.fill.none {
+		if st.fill.none || !r.spend(r.pathWork(&p, true, nil, ctm)) {
 			continue
 		}
 		r.dev.FillPath(&p, false, ctm, gfx.DeviceRGB, c[:], st.fillOpacity, gfx.ColorParams{})
 	}
 }
 
-// shiftBaseline moves a glyph off the baseline the way dominant-baseline
-// asks, which is what centers a label on the point it was given.
+// shiftBaseline moves glyphs off the baseline by dominant-baseline.
 func shiftBaseline(g []glyph) {
 	for i := range g {
 		f := g[i].face
@@ -398,8 +363,7 @@ func shiftBaseline(g []glyph) {
 	}
 }
 
-// xHeight is how tall a lower case x is in the program, and half the em for
-// one that does not say.
+// xHeight is the height of a lower case x in the font, half the em when unknown.
 func xHeight(f *font.Font) float32 {
 	if f.XHeight > 0 {
 		return f.XHeight
@@ -407,8 +371,7 @@ func xHeight(f *font.Font) float32 {
 	return 0.5
 }
 
-// drawGlyphs hands the placed characters to the device, one span per face and
-// size, and fills and strokes them the way a shape is.
+// drawGlyphs hands the glyphs to the device, one span per face and size.
 func (r *runner) drawGlyphs(g []glyph, ctm raster.Matrix) {
 	for i := 0; i < len(g); {
 		j := i
@@ -439,6 +402,9 @@ func (r *runner) drawGlyphs(g []glyph, ctm raster.Matrix) {
 		}
 		t := &gfx.Text{Spans: []gfx.TextSpan{span}}
 		box := textBounds(run)
+		if !r.spend(glyphWork*int64(len(span.Items)) + reach(r.dev, ctm.ApplyRect(box))) {
+			return
+		}
 		if !st.fill.none {
 			at, m := paintSpace(st.fillCtx, box, ctm, st)
 			sh, empty := r.server(st.fillServer, at, st)
@@ -471,9 +437,7 @@ func (r *runner) drawGlyphs(g []glyph, ctm raster.Matrix) {
 	}
 }
 
-// textBounds is the box a run of glyphs covers, which is what a gradient in
-// the units of the object is a fraction of. The em box stands for the height,
-// because measuring every outline to paint one gradient is not worth it.
+// textBounds is the box a run of glyphs covers, with the em box for the height.
 func textBounds(g []glyph) raster.Rect {
 	if len(g) == 0 {
 		return raster.Rect{}
@@ -490,8 +454,7 @@ func textBounds(g []glyph) raster.Rect {
 	return out
 }
 
-// face is the program a style asks for: the first family the machine has, and
-// whatever it has for the script otherwise.
+// face is the font a style asks for: the first family available, else one for the script.
 func (r *runner) face(st state) *font.Font {
 	key := faceKey{families: st.family, bold: st.bold, italic: st.italic}
 	if f, ok := r.faces[key]; ok {
@@ -506,8 +469,6 @@ func (r *runner) face(st state) *font.Font {
 		case "serif", "sans-serif", "monospace", "cursive", "fantasy":
 			f = font.SystemFont(generic(name), st.bold, st.italic)
 		default:
-			// A face the drawing brings with it comes before one the
-			// machine has under the same name.
 			if f = r.doc.embedded(name, st.bold, st.italic); f == nil {
 				f = font.SystemFont(name, st.bold, st.italic)
 			}
@@ -529,8 +490,7 @@ func (r *runner) face(st state) *font.Font {
 	return f
 }
 
-// svgBase14 is the substitute a drawing gets when neither it nor the machine
-// brings a face, the same fourteen a PDF and a book fall back to.
+// svgBase14 is the base-14 substitute for a style when no face is found.
 func svgBase14(st state) string {
 	name := "Helvetica"
 	switch {
@@ -544,9 +504,7 @@ func svgBase14(st state) string {
 	return name
 }
 
-// fallback is a face the machine has that can draw a character the one the
-// drawing asked for cannot, which is what keeps a word whole when a book
-// brings a font that covers only part of it.
+// fallback is a machine face that can draw ch when the requested one cannot.
 func (r *runner) fallback(ch rune, st state) (*font.Font, int) {
 	if ch == ' ' || ch < 0x20 {
 		return nil, 0
@@ -577,8 +535,7 @@ type fallbackKey struct {
 	bold, italic bool
 }
 
-// generic is a face the machine is likely to have for one of the five family
-// names every document may use.
+// generic is a likely machine face for a CSS generic family name.
 func generic(name string) string {
 	switch name {
 	case "serif":
@@ -594,10 +551,7 @@ type faceKey struct {
 	bold, italic bool
 }
 
-// layout turns the characters of a text element into the glyphs that draw
-// them. Each chunk is ordered on its own by the bidirectional algorithm of
-// UAX #9, the runs it falls into are shaped by the font that draws them, and
-// the pen walks them in the order they are drawn.
+// layout turns the characters of a text element into glyphs, UAX #9 per chunk.
 func (r *runner) layout(cs []char) []glyph {
 	for i := range cs {
 		if f := cs[i].face; f != nil && f.GIDForRune(cs[i].r) <= 0 {
@@ -614,8 +568,6 @@ func (r *runner) layout(cs []char) []glyph {
 		for j < len(cs) && cs[j].chunk == cs[i].chunk {
 			j++
 		}
-		// The characters a textPath holds are measured along it, so the pen
-		// the text element had reached is put back when the path ends.
 		if here := cs[i].path != nil; here != along {
 			if here {
 				saved, pen = pen, raster.Point{}
@@ -630,9 +582,7 @@ func (r *runner) layout(cs []char) []glyph {
 	return out
 }
 
-// chunk lays out one run of text that text-anchor moves as a whole. Only its
-// first character carries a position of its own, because one is what starts a
-// chunk; the axis it says nothing about carries on from where the pen was.
+// chunk lays out one text-anchor chunk.
 func (r *runner) chunk(cs []char, pen *raster.Point, base int, out []glyph) []glyph {
 	if cs[0].hasX {
 		pen.X = cs[0].ax
@@ -665,9 +615,7 @@ func (r *runner) chunk(cs []char, pen *raster.Point, base int, out []glyph) []gl
 	return out
 }
 
-// chunkLevels is the embedding level of every character of a chunk. A run
-// that says so is laid out in the direction it names whatever it holds, which
-// is what unicode-bidi asks for.
+// chunkLevels is the UAX #9 embedding level of every character of a chunk.
 func chunkLevels(cs []char) []byte {
 	rtl := cs[0].st.rtl
 	text := make([]rune, len(cs))
@@ -699,24 +647,20 @@ func boolInt(v bool) int {
 	return 0
 }
 
-// sameRun reports two characters one call to the shaper may cover: the same
-// program at the same size, drawn the same way along the same line.
+// sameRun reports whether one shaper call may cover a and b.
 func sameRun(a, b char) bool {
 	return a.face == b.face && a.st.em == b.st.em && a.st.vertical == b.st.vertical &&
 		a.st.letter == b.st.letter && a.st.word == b.st.word && a.path == b.path
 }
 
-// placed is one glyph on its way out of the shaper: which character of the
-// run it came from, and its advance and offsets in text space.
+// placed is one shaped glyph: its character in the run, advance and offsets in text space.
 type placed struct {
 	gid, at    int
 	adv        float32
 	xoff, yoff float32
 }
 
-// shaped turns one run into glyphs and places them. The shaper hands back the
-// glyphs of a right to left run in the order they are drawn, and a run it has
-// nothing to say about is one glyph per character.
+// shaped shapes one run and places its glyphs.
 func (r *runner) shaped(cs []char, rtl bool, pen *raster.Point, base int, out []glyph) []glyph {
 	f, st := cs[0].face, cs[0].st
 	if f == nil {
@@ -769,10 +713,6 @@ func (r *runner) shaped(cs []char, rtl bool, pen *raster.Point, base int, out []
 			st: c.st, at: base + at,
 		}
 		if st.vertical {
-			// A line running down the page advances by the em where the
-			// character stands upright and by the character's own width
-			// where it turns with the line. Either way the em box is
-			// centered on the line, SVG 1.1 10.7.
 			if font.Upright(c.r) {
 				g.x -= adv / 2
 				g.y += emBaseline(f) * st.em

@@ -12,12 +12,11 @@ const (
 	annotNoView
 )
 
-// RunAnnotations draws the appearance streams of the page annotations. The
-// widgets come last, after everything else on the page, which is the order
-// MuPDF draws them in and the one a form on top of its own background needs.
+// RunAnnotations draws the appearance streams of the page annotations, widgets last as MuPDF does.
 func (p *Page) RunAnnotations(dev Device, ctm raster.Matrix) {
 	f := p.doc.f
 	var widgets []Dict
+	var ops int64
 	for _, a := range f.GetArray(p.dict["Annots"]) {
 		dict := f.GetDict(a)
 		if dict == nil {
@@ -30,17 +29,15 @@ func (p *Page) RunAnnotations(dev Device, ctm raster.Matrix) {
 			widgets = append(widgets, dict)
 			continue
 		}
-		p.runAnnotation(dev, ctm, dict)
+		p.runAnnotation(dev, ctm, dict, &ops)
 	}
 	for _, dict := range widgets {
-		p.runAnnotation(dev, ctm, dict)
+		p.runAnnotation(dev, ctm, dict, &ops)
 	}
 }
 
 // runAnnotation draws one annotation's appearance, fitted to its rectangle.
-// The device is told the page's default color spaces first whether or not
-// anything is then drawn, which is where MuPDF tells it.
-func (p *Page) runAnnotation(dev Device, ctm raster.Matrix, dict Dict) {
+func (p *Page) runAnnotation(dev Device, ctm raster.Matrix, dict Dict, ops *int64) {
 	dev.SetDefaultColorSpaces(p.defaultSpaces())
 
 	ap := p.appearance(dict)
@@ -71,13 +68,13 @@ func (p *Page) runAnnotation(dev Device, ctm raster.Matrix, dict Dict) {
 	}
 
 	ip := p.newInterp(dev, raster.Concat(fit, ctm))
+	ip.ops = ops
 	ip.defaults = p.defaultSpaces()
 	ip.runForm(ap, false)
 	ip.finish()
 }
 
-// appearance returns the normal appearance stream of an annotation, or nil
-// when it has none or must not be drawn.
+// appearance returns the normal appearance stream of an annotation, or nil when it is not drawn.
 func (p *Page) appearance(dict Dict) *Stream {
 	f := p.doc.f
 	flags := int(f.GetInt(dict["F"], 0))

@@ -13,9 +13,8 @@
 // lot onto pages of a size. [Document.Text] and [Document.Markdown] read the
 // parts rather than the pages and need no layout.
 //
-// A page is measured in CSS pixels, 96 to the inch, and [Page.Bounds] returns
-// points so that a page of a book measures the way a page of a PDF does.
-// [Page.Run] draws through the same gfx.Device a PDF page draws through.
+// A page is laid out in CSS pixels, 96 to the inch; [Page.Bounds] returns
+// points, as a PDF page does. [Page.Run] draws through gfx.Device.
 //
 // A face comes from the document when an @font-face rule brings one, from the
 // machine when it has one for a family the document names, and from the base
@@ -154,6 +153,11 @@ type Document struct {
 	obfuscated map[string][]byte
 	tocID      string
 	headings   sync.Once
+	// types holds the media type of each manifest path, sheets the stylesheets read by path.
+	typesOnce sync.Once
+	types     map[string]string
+	sheetMu   sync.Mutex
+	sheets    map[string]*Stylesheet
 	// filepos are the byte offsets of each part a MOBI names places by.
 	filepos map[string][]int
 	// chmHome is the page a CHM opens at.
@@ -161,9 +165,10 @@ type Document struct {
 	// natural is the page size the document asks for.
 	natural LayoutOptions
 
-	// fontMu guards the font programs the book carries, read once each.
-	fontMu sync.Mutex
-	fonts  map[string]*font.Font
+	// fontMu guards the font programs the book carries, read once each, and their metrics.
+	fontMu  sync.Mutex
+	fonts   map[string]*font.Font
+	metrics map[*font.Font]*faceMetrics
 
 	// layoutMu guards what Layout produced; autoMu serializes an unsized layout.
 	layoutMu sync.Mutex

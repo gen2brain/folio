@@ -3,6 +3,7 @@ package pdf
 import (
 	"cmp"
 	"compress/flate"
+	"container/heap"
 	"io"
 	"slices"
 	"strconv"
@@ -24,27 +25,23 @@ type cidRange struct {
 	cid       uint32
 }
 
-// CMap maps byte codes to CIDs, ISO 32000-1 9.7.5. The same syntax is used by
-// a ToUnicode CMap, where the values are Unicode rather than CIDs.
+// CMap maps byte codes to CIDs, or for a ToUnicode CMap to text, ISO 32000-1 9.7.5.
 type CMap struct {
 	Name   string
 	WMode  int
 	spaces []codespace
 	ranges []cidRange
 	single map[uint32]uint32
-	// text holds the destinations of a ToUnicode CMap, which map a code to a
-	// string rather than a number: a ligature is one code, several characters.
+	// text holds the string destinations of a ToUnicode CMap.
 	text     map[uint32]string
 	usecmap  *CMap
 	identity bool
 	entries  int
-	// sorted reports that ranges is ordered by low and no two overlap, which
-	// is what lets a lookup bisect them.
+	// sorted reports that ranges is ordered by low and no two overlap.
 	sorted bool
 }
 
-// identityCMap is Identity-H and Identity-V: two byte codes, CID equal to the
-// code, which is what most files use.
+// identityCMap is Identity-H and Identity-V: two byte codes, CID equal to the code.
 func identityCMap(wmode int) *CMap {
 	return &CMap{
 		Name:     "Identity",
@@ -54,8 +51,7 @@ func identityCMap(wmode int) *CMap {
 	}
 }
 
-// Next reads the code at the start of s and returns it, the number of bytes it
-// used, and the CID it maps to.
+// Next returns the code at the start of s, its length in bytes, and its CID.
 func (c *CMap) Next(s []byte) (code uint32, n int, cid uint32) {
 	if len(s) == 0 {
 		return 0, 0, 0
@@ -183,8 +179,7 @@ func (d *Document) parseCMap(data []byte, depth int) *CMap {
 	return c
 }
 
-// cmapArity is how many operands one entry of a CMap section takes, and zero
-// for a keyword that opens no section.
+// cmapArity is the operand count of one entry of a CMap section, zero for any other keyword.
 func cmapArity(kw syntax.Keyword) int {
 	switch kw {
 	case "begincodespacerange", "begincidchar", "beginbfchar":
@@ -195,8 +190,7 @@ func cmapArity(kw syntax.Keyword) int {
 	return 0
 }
 
-// maxCMapEntries bounds what one CMap may record, over all its sections,
-// counting a range that expands to one destination per code as its length.
+// maxCMapEntries bounds the entries of one CMap, a range of per-code destinations counting as its length.
 const maxCMapEntries = 1 << 20
 
 // addEntry records one entry of a CMap section from its operands.
@@ -255,18 +249,77 @@ func (c *CMap) addEntry(section syntax.Keyword, ops []Object) {
 	}
 }
 
-// sortRanges orders the ranges so that a lookup may bisect them, which it can
-// only do when none of them overlap: where two do, the first written wins and
-// only a scan in that order finds it.
+// sortRanges orders the ranges for bisection, the first written winning where two overlap.
 func (c *CMap) sortRanges() {
 	r := slices.Clone(c.ranges)
 	slices.SortFunc(r, func(a, b cidRange) int { return cmp.Compare(a.low, b.low) })
 	for i := range r {
 		if r[i].high < r[i].low || (i > 0 && r[i].low <= r[i-1].high) {
+			c.ranges, c.sorted = disjoint(c.ranges), true
 			return
 		}
 	}
 	c.ranges, c.sorted = r, true
+}
+
+// disjoint cuts ranges into sorted disjoint ones, the first written winning each point.
+func disjoint(ranges []cidRange) []cidRange {
+	type event struct {
+		at    uint64
+		i     int
+		start bool
+	}
+	var ev []event
+	for i, r := range ranges {
+		if r.low <= r.high {
+			ev = append(ev, event{uint64(r.low), i, true}, event{uint64(r.high) + 1, i, false})
+		}
+	}
+	slices.SortFunc(ev, func(a, b event) int { return cmp.Compare(a.at, b.at) })
+	var active writtenHeap
+	gone := make([]bool, len(ranges))
+	var out []cidRange
+	last := -1
+	for k := 0; k < len(ev); {
+		at := ev[k].at
+		for ; k < len(ev) && ev[k].at == at; k++ {
+			if ev[k].start {
+				heap.Push(&active, ev[k].i)
+			} else {
+				gone[ev[k].i] = true
+			}
+		}
+		for active.Len() > 0 && gone[active[0]] {
+			heap.Pop(&active)
+		}
+		if active.Len() == 0 || k == len(ev) {
+			last = -1
+			continue
+		}
+		w, end := active[0], uint32(ev[k].at-1)
+		if w == last {
+			out[len(out)-1].high = end
+			continue
+		}
+		r := ranges[w]
+		out = append(out, cidRange{uint32(at), end, r.cid + (uint32(at) - r.low)})
+		last = w
+	}
+	return out
+}
+
+// writtenHeap orders range indexes, the first written on top.
+type writtenHeap []int
+
+func (h writtenHeap) Len() int           { return len(h) }
+func (h writtenHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h writtenHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *writtenHeap) Push(x any)        { *h = append(*h, x.(int)) }
+func (h *writtenHeap) Pop() any {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
 }
 
 // setText records a ToUnicode destination, which is UTF-16BE.
@@ -359,8 +412,6 @@ func beCode(s String) uint32 {
 }
 
 // predefinedCMap resolves one of the CMaps named in ISO 32000-1 table 118.
-// The byte encodings are built in; the Unicode ones are not, and a two byte
-// code is the better guess for those.
 func (d *Document) predefinedCMap(name Name, depth int) *CMap {
 	switch name {
 	case "Identity-H":
@@ -386,9 +437,7 @@ var (
 	builtinCache = map[string]*CMap{}
 )
 
-// builtinCMap parses one of the generated tables. The parsed form is kept for
-// the life of the process, because the predefined CMaps are the same for every
-// file and several may be open at once.
+// builtinCMap parses one of the generated tables, cached for the life of the process.
 func builtinCMap(name string) (*CMap, bool) {
 	builtinMu.Lock()
 	defer builtinMu.Unlock()
@@ -452,8 +501,7 @@ var (
 	uniTables   = map[string][]uniRun{}
 )
 
-// cidUnicode returns what every CID of a character collection stands for,
-// decoding the table the first time the collection is used.
+// cidUnicode returns the Unicode runs of a character collection, decoded on first use.
 func cidUnicode(ordering string) []uniRun {
 	uniTablesMu.Lock()
 	defer uniTablesMu.Unlock()
@@ -465,8 +513,7 @@ func cidUnicode(ordering string) []uniRun {
 	return t
 }
 
-// decodeCIDUnicode reads the runs back: three varints each, the gap, the
-// length, and the signed step from the character before.
+// decodeCIDUnicode reads runs of three varints: the gap, the length and the signed step.
 func decodeCIDUnicode(enc string) []uniRun {
 	if enc == "" {
 		return nil
@@ -528,8 +575,7 @@ func unzigzag(v int) int {
 	return -(v >> 1) - 1
 }
 
-// uniRuneOf returns the character a CID stands for, and zero when the
-// collection does not say.
+// uniRuneOf returns the character a CID stands for, or zero.
 func uniRuneOf(t []uniRun, cid uint32) rune {
 	if cid > 0xffff {
 		return 0

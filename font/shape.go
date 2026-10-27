@@ -115,18 +115,26 @@ type buffer struct {
 	rtl   bool
 	// maxLen bounds how many glyphs substitution may grow the run to.
 	maxLen int
+	// ops counts the nested lookups the run may still apply.
+	ops int
+	// bases is the last glyph before each that is not a mark, -1 for none.
+	bases []int
 }
 
-// maxLenFactor and maxLenMin bound the glyphs a run may grow to, as HarfBuzz does.
+// maxLenFactor, maxLenMin and maxOps bound run growth and nested lookups, as HarfBuzz does.
 const (
 	maxLenFactor = 64
 	maxLenMin    = 16384
+	maxOpsFactor = 1024
+	maxOpsMin    = 16384
+	maxOps       = 1 << 29
 )
 
 // Shape turns a run of one script and one direction into the glyphs that draw it,
 // in drawing order.
 func (f *Font) Shape(text []rune, rtl bool) []Glyph {
-	b := &buffer{f: f, rtl: rtl, maxLen: max(len(text)*maxLenFactor, maxLenMin)}
+	b := &buffer{f: f, rtl: rtl, maxLen: max(len(text)*maxLenFactor, maxLenMin),
+		ops: max(min(len(text), maxOps/maxOpsFactor)*maxOpsFactor, maxOpsMin)}
 	cluster := 0
 	var runes []rune
 	var clusters []int
@@ -184,22 +192,34 @@ func (b *buffer) positions() {
 	}
 }
 
-// sortMarks puts the marks after a character into combining class order.
+// sortMarks orders marks by combining class up to maxMarks, as HarfBuzz does.
 func sortMarks(runes []rune, clusters []int) {
-	for i := 1; i < len(runes); i++ {
-		c, _ := markOf(runes[i])
-		if c == 0 {
-			continue
-		}
-		for k := i; k > 0; k-- {
-			if p, _ := markOf(runes[k-1]); p == 0 || p <= c {
+	for i := 0; i < len(runes); {
+		end := i
+		for end < len(runes) {
+			if c, _ := markOf(runes[end]); c == 0 {
 				break
 			}
-			runes[k-1], runes[k] = runes[k], runes[k-1]
-			clusters[k-1], clusters[k] = clusters[k], clusters[k-1]
+			end++
 		}
+		if end-i > 1 && end-i <= maxMarks {
+			for j := i + 1; j < end; j++ {
+				c, _ := markOf(runes[j])
+				for k := j; k > i; k-- {
+					if p, _ := markOf(runes[k-1]); p <= c {
+						break
+					}
+					runes[k-1], runes[k] = runes[k], runes[k-1]
+					clusters[k-1], clusters[k] = clusters[k], clusters[k-1]
+				}
+			}
+		}
+		i = max(end, i+1)
 	}
 }
+
+// maxMarks is HB_OT_SHAPE_MAX_COMBINING_MARKS.
+const maxMarks = 32
 
 // gidOf is the glyph a character maps to, and notdef when there is none.
 func (f *Font) gidOf(r rune) int {

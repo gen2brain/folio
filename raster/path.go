@@ -1,8 +1,6 @@
 package raster
 
-// Path is a sequence of subpaths built from lines and cubic curves. The
-// commands and the points are kept in two slices, which is compact and lets a
-// path be reused across fills without reallocating.
+// Path is a sequence of subpaths built from lines and cubic curves.
 type Path struct {
 	cmds []byte
 	pts  []Point
@@ -31,6 +29,9 @@ func (p *Path) Reset() {
 // IsEmpty reports whether nothing has been added.
 func (p *Path) IsEmpty() bool { return len(p.cmds) == 0 }
 
+// Len returns the number of segments, a move and a close included.
+func (p *Path) Len() int { return len(p.cmds) }
+
 // Current returns the current point.
 func (p *Path) Current() Point { return p.cur }
 
@@ -46,10 +47,8 @@ func (p *Path) MoveTo(x, y float32) {
 	p.pts = append(p.pts, p.cur)
 }
 
-// LineTo adds a straight segment. A path that begins with a line has an
-// implicit move to its first point. A line to the point the path is already
-// at is dropped unless a move put it there, where it is a subpath of its own
-// that a round or a square cap paints as a dot.
+// LineTo adds a straight segment, with an implicit move on an empty path. A line
+// to the current point is dropped unless it follows a move.
 func (p *Path) LineTo(x, y float32) {
 	if !p.started {
 		p.MoveTo(x, y)
@@ -64,9 +63,7 @@ func (p *Path) LineTo(x, y float32) {
 	p.pts = append(p.pts, p.cur)
 }
 
-// CurveTo adds a cubic Bezier segment. A cubic whose control points sit on
-// its ends is a straight line and is added as one; one that collapses onto a
-// single point is nothing at all.
+// CurveTo adds a cubic Bezier segment; a degenerate one becomes a line or nothing.
 func (p *Path) CurveTo(x1, y1, x2, y2, x3, y3 float32) {
 	if !p.started {
 		p.MoveTo(x1, y1)
@@ -94,8 +91,7 @@ func (p *Path) CurveToY(x1, y1, x3, y3 float32) {
 	p.CurveTo(x1, y1, x3, y3, x3, y3)
 }
 
-// Close closes the current subpath. Closing an already closed subpath, or one
-// that has not begun, does nothing.
+// Close closes the current subpath; it does nothing when none is open.
 func (p *Path) Close() {
 	if !p.started || len(p.cmds) == 0 || p.cmds[len(p.cmds)-1] == cmdClose {
 		return
@@ -179,9 +175,7 @@ func (p *Path) Append(q *Path) {
 	p.cur, p.start, p.started = q.cur, q.start, q.started
 }
 
-// Bounds returns the bounding box of the path under m. Control points are
-// included rather than the curve solved: the result is conservative, which is
-// what every caller of a bounding box wants.
+// Bounds returns the bounding box of the path and its control points under m.
 func (p *Path) Bounds(m Matrix) Rect {
 	out := EmptyRect
 	for _, pt := range p.pts {
@@ -190,8 +184,7 @@ func (p *Path) Bounds(m Matrix) Rect {
 	return out
 }
 
-// StrokeBounds returns the bounding box of the path when stroked, padded by
-// the line width and enough for a miter join.
+// StrokeBounds returns the bounding box of the stroked path, padded for width and miter.
 func (p *Path) StrokeBounds(s *Stroke, m Matrix) Rect {
 	r := p.Bounds(m)
 	if r.IsEmpty() {
@@ -208,8 +201,7 @@ func (p *Path) StrokeBounds(s *Stroke, m Matrix) Rect {
 }
 
 // AsRect reports whether the path is one subpath that maps to an axis aligned
-// rectangle under m, and returns it. Clipping to a rectangle is exact and
-// costs nothing, so the caller wants to know.
+// rectangle under m, and returns it.
 func (p *Path) AsRect(m Matrix) (Rect, bool) {
 	n := len(p.cmds)
 	if n > 0 && p.cmds[n-1] == cmdClose {

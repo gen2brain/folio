@@ -1,6 +1,9 @@
 package syntax
 
 import (
+	"bytes"
+	"compress/zlib"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,6 +70,100 @@ func TestXrefStream(t *testing.T) {
 	checkMinimal(t, f)
 	if errs := f.Err(); len(errs) != 0 {
 		t.Errorf("errors: %v", errs)
+	}
+}
+
+// TestStreamCache decodes ten streams of a megabyte each under a four megabyte bound.
+func TestStreamCache(t *testing.T) {
+	var z bytes.Buffer
+	w := zlib.NewWriter(&z)
+	w.Write(make([]byte, 1<<20))
+	w.Close()
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.7\n")
+	offs := []int{0}
+	add := func(body string) {
+		offs = append(offs, b.Len())
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", len(offs)-1, body)
+	}
+	add("<< /Type /Catalog /Pages 2 0 R >>")
+	add("<< /Type /Pages /Kids [] /Count 0 >>")
+	for range 10 {
+		add(fmt.Sprintf("<< /Filter /FlateDecode /Length %d >>\nstream\n%s\nendstream", z.Len(), z.String()))
+	}
+	start := b.Len()
+	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(offs))
+	for _, o := range offs[1:] {
+		fmt.Fprintf(&b, "%010d 00000 n \n", o)
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(offs), start)
+	f, err := Load(b.Bytes(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.StreamCacheBytes = 4 << 20
+	var first *Stream
+	for n := uint32(3); n < 13; n++ {
+		st := f.GetStream(Ref{Num: n})
+		if n == 3 {
+			first = st
+		}
+		if data, err := st.Data(); err != nil || len(data) != 1<<20 {
+			t.Fatalf("stream %d: %d bytes, %v", n, len(data), err)
+		}
+	}
+	if f.decHeld > 4<<20 {
+		t.Errorf("%d decoded bytes kept, over the bound", f.decHeld)
+	}
+	first.mu.Lock()
+	kept := first.dec != nil
+	first.mu.Unlock()
+	if kept {
+		t.Error("the first stream is still held")
+	}
+	if data, err := first.Data(); err != nil || len(data) != 1<<20 {
+		t.Errorf("the first stream decoded again to %d bytes, %v", len(data), err)
+	}
+}
+
+// TestRepairTrailers repairs files of a hundred thousand trailers that never close.
+func TestRepairTrailers(t *testing.T) {
+	f, err := Load([]byte("%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"+
+		"2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj\n"+
+		"trailer << /Size 3 >>trailer << /ID [<01> <02>] >>\n"), "")
+	if err != nil {
+		t.Fatalf("two trailers back to back: %v", err)
+	}
+	if f.Trailer()["ID"] == nil {
+		t.Error("the second of two trailers back to back was skipped")
+	}
+	f.Close()
+	for _, s := range []string{"trailer [ ", "trailer << /A ", "trailer <"} {
+		f, err := Load([]byte("%PDF-1.7\n"+strings.Repeat(s, 100000)), "")
+		if err == nil {
+			f.Close()
+			t.Errorf("%q: a file with no catalog opened", s)
+		}
+	}
+}
+
+// TestParseEntries reads an array and a dictionary past the entries one may hold.
+func TestParseEntries(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("[" + strings.Repeat("1 ", maxEntries+10) + "] << ")
+	for i := range maxEntries + 10 {
+		src.WriteString("/K" + strconv.Itoa(i) + " 1 ")
+	}
+	src.WriteString(">> 7")
+	p := NewParser(NewLexer([]byte(src.String())), nil)
+	if a, _ := p.Object(); len(a.(Array)) != maxEntries {
+		t.Errorf("an array of %d entries", len(a.(Array)))
+	}
+	if d, _ := p.Object(); len(d.(Dict)) != maxEntries {
+		t.Errorf("a dictionary of %d entries", len(d.(Dict)))
+	}
+	if o, _ := p.Object(); o != Integer(7) {
+		t.Errorf("the object after them is %v", o)
 	}
 }
 

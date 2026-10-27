@@ -2,8 +2,7 @@ package syntax
 
 import "fmt"
 
-// Parser turns tokens into objects. It keeps two tokens of lookahead, which is
-// what "3 0 R" and "<< >> stream" need.
+// Parser turns tokens into objects with two tokens of lookahead.
 type Parser struct {
 	lex *Lexer
 	doc *File
@@ -12,13 +11,10 @@ type Parser struct {
 	ok    [2]bool
 	start [2]int
 
-	// allowStreams is false inside object streams and content streams, where
-	// the stream keyword cannot appear.
 	allowStreams bool
 	// crypt decrypts strings and stream data for the object being read.
 	crypt *cryptFilter
-	// fetch is how many objects deep this parse already is, which bounds a
-	// stream whose /Length is an indirect reference back to itself.
+	// fetch is the object nesting depth of this parse.
 	fetch int
 	depth int
 	// last is where the token most recently returned begins.
@@ -28,20 +24,17 @@ type Parser struct {
 // Lexer returns the scanner the Parser reads from.
 func (p *Parser) Lexer() *Lexer { return p.lex }
 
-// AllowStreams sets whether a stream keyword may follow a dictionary. It is
-// false inside object and content streams, where a stream cannot appear.
+// AllowStreams sets whether a stream keyword may follow a dictionary.
 func (p *Parser) AllowStreams(ok bool) { p.allowStreams = ok }
 
-// NewParser reads objects from a lexer. The file is what an indirect
-// reference resolves against, and may be nil for objects that refer to none.
+// NewParser reads objects from a lexer, resolving references against f, which may be nil.
 func NewParser(l *Lexer, f *File) *Parser {
 	p := &Parser{lex: l, doc: f, allowStreams: true}
 	p.refill()
 	return p
 }
 
-// Refill reloads both lookahead slots after the scanner position was moved by
-// hand, which is what stepping over the data of an inline image needs.
+// Refill reloads both lookahead slots after the scanner position was moved by hand.
 func (p *Parser) Refill() { p.refill() }
 
 // refill reloads both lookahead slots after the scanner position was moved.
@@ -52,9 +45,7 @@ func (p *Parser) refill() {
 	p.start[1] = p.lex.tokStart
 }
 
-// Pos returns where the token Object returned last begins. The content
-// interpreter needs it because the data of an inline image starts one white
-// space byte after the ID keyword, and the parser reads two tokens ahead.
+// Pos returns where the token Object returned last begins.
 func (p *Parser) Pos() int { return p.last }
 
 func (p *Parser) shift() (Object, bool) {
@@ -74,9 +65,7 @@ func (p *Parser) shiftOperand() (Operand, bool) {
 	return o, ok
 }
 
-// Operand reads one item of a content stream's operand list. A number comes
-// back unboxed; anything else is read as a whole object, so an array or a
-// dictionary operand still arrives complete.
+// Operand reads one item of a content stream's operand list, a number unboxed.
 func (p *Parser) Operand() (Operand, bool) {
 	if p.ok[0] && p.buf[0].IsNum {
 		return p.shiftOperand()
@@ -145,6 +134,7 @@ func (p *Parser) array() Array {
 	defer func() { p.depth-- }()
 
 	arr := Array{}
+	over := false
 	for {
 		if !p.ok[0] {
 			p.errorf("end of file inside array")
@@ -162,7 +152,13 @@ func (p *Parser) array() Array {
 		if !ok {
 			return arr
 		}
-		arr = append(arr, o)
+		switch {
+		case len(arr) < maxEntries:
+			arr = append(arr, o)
+		case !over:
+			over = true
+			p.errorf("array past %d entries", maxEntries)
+		}
 	}
 }
 
@@ -175,6 +171,7 @@ func (p *Parser) dictOrStream() Object {
 	defer func() { p.depth-- }()
 
 	dict := Dict{}
+	over := false
 	for {
 		if !p.ok[0] {
 			p.errorf("end of file inside dictionary")
@@ -202,7 +199,12 @@ func (p *Parser) dictOrStream() Object {
 		if !ok {
 			return dict
 		}
-		dict[key] = v
+		if _, have := dict[key]; have || len(dict) < maxEntries {
+			dict[key] = v
+		} else if !over {
+			over = true
+			p.errorf("dictionary past %d entries", maxEntries)
+		}
 	}
 
 	if p.allowStreams && p.isKeyword(0, "stream") {
@@ -253,8 +255,7 @@ func (p *Parser) stream(dict Dict) Object {
 	return &Stream{Dict: dict, doc: p.doc, crypt: p.crypt, raw: p.lex.buf[start:end]}
 }
 
-// endstreamAt reports whether the endstream keyword follows position i, with
-// the end of line the spec requires before it and that writers often omit.
+// endstreamAt reports whether the endstream keyword follows position i, with or without the end of line before it.
 func (p *Parser) endstreamAt(i int) bool {
 	b := p.lex.buf
 	for i < len(b) && isSpace[b[i]] {
@@ -263,8 +264,7 @@ func (p *Parser) endstreamAt(i int) bool {
 	return i+9 <= len(b) && string(b[i:i+9]) == "endstream"
 }
 
-// findEndstream scans for the end of a stream whose length was wrong. Writers
-// misspell the keyword, so accept the truncations pdf.js accepts.
+// findEndstream scans for the end of a stream whose length was wrong, accepting the truncations pdf.js accepts.
 func (p *Parser) findEndstream(start int) int {
 	b := p.lex.buf
 	for i := start; i+3 <= len(b); i++ {
@@ -298,8 +298,10 @@ func hasPrefix(b []byte, s string) bool {
 
 const maxNestDepth = 64
 
-// indirect reads "num gen obj ... endobj" at the current position, requiring
-// it to be the object want names.
+// maxEntries bounds the entries of one array or dictionary.
+const maxEntries = 1 << 20
+
+// indirect reads "num gen obj ... endobj" at the current position, requiring it to be want.
 func (p *Parser) indirect(want Ref) (Object, error) {
 	obj, got, err := p.indirectHeader()
 	if err != nil {
@@ -311,8 +313,7 @@ func (p *Parser) indirect(want Ref) (Object, error) {
 	return obj, nil
 }
 
-// indirectAny reads an indirect object whose number is not known in advance,
-// which is how an xref stream and the repair scan find them.
+// indirectAny reads an indirect object whose number is not known in advance.
 func (p *Parser) indirectAny() (Object, error) {
 	obj, _, err := p.indirectHeader()
 	return obj, err

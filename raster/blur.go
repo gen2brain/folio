@@ -2,16 +2,14 @@ package raster
 
 import "math"
 
-// blurBox is 3*sqrt(2*pi)/4, the factor SVG 1.1 15.17 turns a deviation into
-// a box width with, and blurExact where that section stops allowing it.
+// blurBox is 3*sqrt(2*pi)/4 of SVG 1.1 15.17 and blurExact the deviation from which boxes replace the kernel.
 const (
 	blurBox   = 1.8799712059732503
 	blurExact = 2
 )
 
-// Blur blurs a premultiplied pixmap by a Gaussian of the given standard
-// deviations, in pixels. Below two it convolves the kernel and from two up it
-// is the three box blurs of SVG 1.1 15.17. Outside the pixmap is transparent.
+// Blur blurs a premultiplied pixmap by a Gaussian of the given deviations in pixels,
+// SVG 1.1 15.17. Outside the pixmap is transparent.
 func Blur(p *Pixmap, sigmaX, sigmaY float32) {
 	if p == nil || p.W <= 0 || p.H <= 0 {
 		return
@@ -92,9 +90,7 @@ func boxWidth(sigma float32) int {
 	return int(d)
 }
 
-// boxPasses is the lead and the trail of each of the three passes. An odd
-// width centers all three on the pixel; an even one puts the first two on the
-// boundaries either side and widens the third.
+// boxPasses is the lead and trail of each of the three box passes for width d.
 func boxPasses(d int) [3][2]int {
 	if d <= 1 {
 		return [3][2]int{}
@@ -126,7 +122,7 @@ func boxLine(dst, src []uint8, n, stride, comps, lead, trail int) {
 			sum[c] += sign * int32(s[c])
 		}
 	}
-	for i := -lead; i <= trail; i++ {
+	for i := max(-lead, 0); i <= min(trail, n-1); i++ {
 		step(i, 1)
 	}
 	for x := 0; x < n; x++ {

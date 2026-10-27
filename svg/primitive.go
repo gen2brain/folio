@@ -33,11 +33,13 @@ type pipe struct {
 	held   int
 }
 
-// run applies every primitive in turn and hands back the last result in sRGB,
-// or nil for a filter with nothing in it.
+// run applies every primitive and returns the last result in sRGB, nil for none.
 func (p *pipe) run(kids []*node) *raster.Pixmap {
 	var last *fimage
 	for _, k := range kids {
+		if !p.r.spend(int64(p.full.x1) * int64(p.full.y1)) {
+			break
+		}
 		lin := p.space(k)
 		var out *fimage
 		switch k.name {
@@ -113,8 +115,7 @@ func (p *pipe) run(kids []*node) *raster.Pixmap {
 	return last.px
 }
 
-// primitives are the fe elements a filter draws through, taken from the
-// filter it refers to when it declares none of its own.
+// primitives are the fe elements of a filter, or of the one it refers to when it has none.
 func (r *runner) primitives(f *node, depth int) []*node {
 	var out []*node
 	for _, k := range f.kids {
@@ -206,8 +207,7 @@ func (p *pipe) plen(k *node, name string) (float32, bool) {
 	return length(s, ref, p.st.em)
 }
 
-// input returns the image a primitive reads: the previous result when it names
-// none, and the element's own rendering when there is no previous one.
+// input is the image a primitive reads: in, else the previous result, else the source.
 func (p *pipe) input(k *node, attr string) *fimage {
 	return p.named(strings.TrimSpace(k.attr[attr]))
 }
@@ -270,8 +270,7 @@ func (p *pipe) flood(k *node) *fimage {
 	return out
 }
 
-// current returns currentColor inside a filter: the colour on the primitive,
-// then on the filter element.
+// current is currentColor inside a filter: from the primitive, then the filter element.
 func (p *pipe) current(k *node) paint {
 	for _, n := range []*node{k, p.f} {
 		if n == nil {
@@ -296,8 +295,7 @@ func (p *pipe) floodOf(k *node) ([3]float32, float32) {
 	return c.color, a
 }
 
-// inherit reads a property off a primitive, and off the filter around it when
-// the primitive asks for what it inherits.
+// inherit reads a property off a primitive, or off its filter when the value is inherit.
 func (p *pipe) inherit(k *node, name string) string {
 	v := strings.TrimSpace(p.r.prop(k, name))
 	if v == "inherit" && p.f != nil {
@@ -330,8 +328,7 @@ func (p *pipe) offset(k *node) *fimage {
 	return out
 }
 
-// shift is a dx and dy pair in samples, which primitiveUnits may make a
-// fraction of the element's box.
+// shift is a dx and dy pair in samples, scaled by primitiveUnits.
 func (p *pipe) shift(k *node, def float32) (float32, float32) {
 	dx, dy := number(k.attr["dx"], def), number(k.attr["dy"], def)
 	bx, by := p.unit()
@@ -551,8 +548,7 @@ func init() {
 	}
 }
 
-// convertSpace moves a premultiplied pixmap into linear light or back, with
-// the transfer function applied outside the multiply.
+// convertSpace moves a premultiplied pixmap to or from linear light, unpremultiplied.
 func convertSpace(px *raster.Pixmap, lin bool) {
 	tab := &srgbOf
 	if lin {
@@ -608,8 +604,7 @@ func (p *pipe) composite(k *node, lin bool) *fimage {
 	return &fimage{px: over, lin: lin, sub: p.full}
 }
 
-// porter composites src onto dst by one of the Porter-Duff operators and
-// leaves the answer in src. Both are premultiplied.
+// porter composites src onto dst by a Porter-Duff operator into src; both premultiplied.
 func porter(src, dst *raster.Pixmap, op int) {
 	s, d := src.Samples, dst.Samples
 	for i := 0; i+4 <= len(s) && i+4 <= len(d); i += 4 {
@@ -631,8 +626,7 @@ func porter(src, dst *raster.Pixmap, op int) {
 	}
 }
 
-// arithmetic is feComposite's own operator: every channel of the two
-// premultiplied inputs through k1*i1*i2 + k2*i1 + k3*i2 + k4.
+// arithmetic is the feComposite operator k1*i1*i2 + k2*i1 + k3*i2 + k4 over premultiplied inputs.
 func arithmetic(src, dst *raster.Pixmap, k1, k2, k3, k4 float32) {
 	s, d := src.Samples, dst.Samples
 	calc := func(i1, i2 uint8, hi float32) float32 {
@@ -685,8 +679,7 @@ func (p *pipe) colorMatrix(k *node, lin bool) *fimage {
 	return &fimage{px: px, lin: lin, sub: p.full}
 }
 
-// colorMatrixOf is the twenty numbers a feColorMatrix stands for, in any of
-// the four ways it is written.
+// colorMatrixOf is the 20 coefficients of a feColorMatrix, from any of its four types.
 func colorMatrixOf(k *node) ([20]float32, bool) {
 	var m [20]float32
 	v := numberList(k.attr["values"])
@@ -825,45 +818,57 @@ func transferTable(c *node) *[256]uint8 {
 
 // morph is feMorphology: a sample becomes the extreme of the box around it.
 func morph(px *raster.Pixmap, rx, ry float32, erode bool) {
-	cols := min(int(math.Ceil(float64(rx)))*2, px.W)
-	rows := min(int(math.Ceil(float64(ry)))*2, px.H)
+	cols := int(min(math.Ceil(float64(rx))*2, float64(px.W)))
+	rows := int(min(math.Ceil(float64(ry))*2, float64(px.H)))
 	if cols <= 0 || rows <= 0 {
 		return
 	}
-	tx, ty := cols/2, rows/2
-	out := make([]uint8, len(px.Samples))
-	for y := 0; y < px.H; y++ {
-		dst := out[y*px.Stride:]
-		for x := 0; x < px.W; x++ {
-			var v [4]uint8
-			if erode {
-				v = [4]uint8{255, 255, 255, 255}
-			}
-			for oy := 0; oy < rows; oy++ {
-				sy := y - ty + oy
-				if sy < 0 || sy >= px.H {
-					continue
-				}
-				row := px.Samples[sy*px.Stride:]
-				for ox := 0; ox < cols; ox++ {
-					sx := x - tx + ox
-					if sx < 0 || sx >= px.W {
-						continue
-					}
-					s := row[sx*4:]
-					for c := range 4 {
-						if erode {
-							v[c] = min(v[c], s[c])
-						} else {
-							v[c] = max(v[c], s[c])
-						}
-					}
-				}
-			}
-			copy(dst[x*4:x*4+4], v[:])
+	n := max(px.W+cols, px.H+rows)
+	buf := make([]uint8, 3*n)
+	for y := range px.H {
+		for c := range 4 {
+			slide(px.Samples, y*px.Stride+c, 4, px.W, cols, buf, erode)
 		}
 	}
-	copy(px.Samples, out)
+	for x := range px.W {
+		for c := range 4 {
+			slide(px.Samples, x*4+c, px.Stride, px.H, rows, buf, erode)
+		}
+	}
+}
+
+// slide is the van Herk/Gil-Werman min or max over windows of k of n samples step apart.
+func slide(s []uint8, off, step, n, k int, buf []uint8, erode bool) {
+	t := k / 2
+	l := n + k - 1
+	e, g, h := buf[:l], buf[l:2*l], buf[2*l:3*l]
+	pad, op := uint8(0), func(a, b uint8) uint8 { return max(a, b) }
+	if erode {
+		pad, op = 255, func(a, b uint8) uint8 { return min(a, b) }
+	}
+	for j := range l {
+		e[j] = pad
+		if i := j - t; i >= 0 && i < n {
+			e[j] = s[off+i*step]
+		}
+	}
+	for j := range l {
+		if j%k == 0 {
+			g[j] = e[j]
+		} else {
+			g[j] = op(g[j-1], e[j])
+		}
+	}
+	for j := l - 1; j >= 0; j-- {
+		if j == l-1 || (j+1)%k == 0 {
+			h[j] = e[j]
+		} else {
+			h[j] = op(h[j+1], e[j])
+		}
+	}
+	for x := range n {
+		s[off+x*step] = op(h[x], g[x+k-1])
+	}
 }
 
 func (p *pipe) turbulence(k *node, lin bool) *fimage {
@@ -874,6 +879,9 @@ func (p *pipe) turbulence(k *node, lin bool) *fimage {
 	fx, fy := pair(k.attr["baseFrequency"])
 	oct := int(number(k.attr["numOctaves"], 1) + 0.5)
 	if fx < 0 || fy < 0 || oct <= 0 || p.sx == 0 || p.sy == 0 {
+		return out
+	}
+	if !p.r.spend(int64(out.px.W) * int64(out.px.H) * int64(4*min(oct, maxOctav))) {
 		return out
 	}
 	n := newNoise(int(number(k.attr["seed"], 0)))
@@ -906,14 +914,18 @@ func (p *pipe) turbulence(k *node, lin bool) *fimage {
 }
 
 func (p *pipe) convolve(k *node, lin bool) *fimage {
-	cols, rows := 3, 3
-	if v := numberList(k.attr["order"]); len(v) == 1 {
-		cols, rows = int(v[0]), int(v[0])
-	} else if len(v) == 2 {
-		cols, rows = int(v[0]), int(v[1])
-	}
 	m := numberList(k.attr["kernelMatrix"])
-	if cols < 1 || rows < 1 || cols*rows != len(m) {
+	ox, oy := float32(3), float32(3)
+	if v := numberList(k.attr["order"]); len(v) == 1 {
+		ox, oy = v[0], v[0]
+	} else if len(v) == 2 {
+		ox, oy = v[0], v[1]
+	}
+	if !(ox >= 1 && oy >= 1 && ox <= float32(len(m)) && oy <= float32(len(m))) {
+		return p.blank(lin)
+	}
+	cols, rows := int(ox), int(oy)
+	if len(m)%rows != 0 || cols != len(m)/rows {
 		return p.blank(lin)
 	}
 	sum := float64(0)
@@ -948,11 +960,14 @@ func (p *pipe) convolve(k *node, lin bool) *fimage {
 	}
 
 	px := p.input(k, "in").take(lin)
+	w, h := px.W, px.H
+	if !p.r.spend(int64(w) * int64(h) * int64(len(m))) {
+		return p.blank(lin)
+	}
 	if keep {
 		unpremultiply(px)
 	}
 	out := clonePixmap(px)
-	w, h := px.W, px.H
 	at := func(x, y int) []uint8 {
 		switch edge {
 		case "none":
@@ -1046,8 +1061,7 @@ func channelOf(s string) int {
 	return 3
 }
 
-// feImage draws what it refers to into its own subregion: an element of the
-// drawing, or a picture beside it.
+// feImage draws its reference into its subregion: an element of the drawing or a picture.
 func (p *pipe) feImage(k *node, sub irect) *fimage {
 	out := p.blank(false)
 	if out == nil || sub.x0 >= sub.x1 || sub.y0 >= sub.y1 {

@@ -234,6 +234,9 @@ func (b *buffer) ligate(gid int, idx []int) {
 }
 
 func (b *buffer) contextSub(d []byte, l *otLookup, off, at, depth int, chain bool) int {
+	if depth >= maxLookupNesting {
+		return 0
+	}
 	var recs []subRecord
 	var n int
 	var ok bool
@@ -266,6 +269,9 @@ func (b *buffer) contextSub(d []byte, l *otLookup, off, at, depth int, chain boo
 		p := idx[r.at]
 		if p >= len(b.items) {
 			continue
+		}
+		if b.ops--; b.ops < 0 {
+			break
 		}
 		for _, s := range sub.subs {
 			if b.subAt(b.f.gsub, sub, s, p, depth+1) != 0 {

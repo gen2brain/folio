@@ -1,14 +1,16 @@
 package pdf
 
-import "github.com/gen2brain/folio/raster"
+import (
+	"sync/atomic"
 
-// Shade is a shading dictionary: the sh operator paints one directly, and a
-// shading pattern paints one through a path.
+	"github.com/gen2brain/folio/raster"
+)
+
+// Shade is a shading dictionary, painted by the sh operator or a shading pattern.
 type Shade struct {
 	Type int // 1 function, 2 axial, 3 radial, 4-7 mesh
 	CS   *ColorSpace
-	// Matrix is the pattern matrix when the shading came from a pattern, and
-	// the identity when it came from sh.
+	// Matrix is the pattern matrix, the identity for sh.
 	Matrix raster.Matrix
 	// BBox is the shading's bounding box in its own space, empty for none.
 	BBox       raster.Rect
@@ -18,18 +20,18 @@ type Shade struct {
 	Extend     [2]bool
 	Function   []*Function
 
-	// FuncMatrix, XDivs and YDivs describe a type 1 shading, whose function
-	// is sampled over a rectangle of its own space.
+	// FuncMatrix, XDivs and YDivs describe a type 1 shading.
 	FuncMatrix   raster.Matrix
 	XDivs, YDivs int
 
 	doc    *Document
 	dict   Dict
 	stream *Stream
+	// spent is the samples its meshes have filled.
+	spent atomic.Int64
 }
 
-// Transform returns the pattern matrix, which maps the shading's own space
-// into the space the ctm a device is given starts from.
+// Transform returns the pattern matrix, from the shading's space to the space the device ctm starts from.
 func (s *Shade) Transform() raster.Matrix { return s.Matrix }
 
 // Bounds returns the shading's own bounding box, empty when it has none.
@@ -58,10 +60,7 @@ func (s *Shade) Shader(model raster.Model, ctm raster.Matrix, box raster.Rect) r
 	return nil
 }
 
-// functionShader evaluates a type 1 shading over a grid of its domain, sized
-// to how much of the plane the domain covers. The size deliberately does not
-// depend on the clip: a shading drawn in two halves has to sample the same
-// grid in both, or the halves do not meet.
+// functionShader evaluates a type 1 shading over a grid of its domain, sized by the domain alone.
 func (s *Shade) functionShader(model raster.Model, m raster.Matrix, box raster.Rect) *pixmapShader {
 	if len(s.Function) == 0 {
 		return nil
@@ -82,6 +81,13 @@ func (s *Shade) functionShader(model raster.Model, m raster.Matrix, box raster.R
 	}
 	w := clampInt(int(on.X1-on.X0)+1, 1, maxShadeGrid)
 	h := clampInt(int(on.Y1-on.Y0)+1, 1, maxShadeGrid)
+	cost := 0
+	for _, f := range s.Function {
+		cost += f.cost()
+	}
+	for int64(w)*int64(h)*int64(cost) > maxShadeWork && (w > 1 || h > 1) {
+		w, h = max(w/2, 1), max(h/2, 1)
+	}
 	px := raster.NewPixmap(model, w, h, true)
 	if px == nil {
 		return nil
@@ -106,9 +112,7 @@ func (s *Shade) functionShader(model raster.Model, m raster.Matrix, box raster.R
 	return &pixmapShader{px: px, inv: raster.Concat(inv, grid), n: model.Components()}
 }
 
-// meshShader paints a type 4 to 7 shading into a pixmap of the part of the
-// page it covers. The triangles meet without anti-aliasing, so that the mesh
-// is smooth inside and its own edge is the only one the rasterizer sees.
+// meshShader paints a type 4 to 7 shading, unantialiased, into a pixmap of the page area it covers.
 func (s *Shade) meshShader(model raster.Model, m raster.Matrix, box raster.Rect) *pixmapShader {
 	x0, y0, x1, y1 := box.Outer()
 	if x1 <= x0 || y1 <= y0 {
@@ -126,8 +130,7 @@ func (s *Shade) meshShader(model raster.Model, m raster.Matrix, box raster.Rect)
 	}
 }
 
-// Coord6 returns the /Coords of an axial or radial shading, padded to the six
-// numbers those two types use.
+// Coord6 returns the /Coords of an axial or radial shading, padded to six numbers.
 func (s *Shade) Coord6() [6]float32 {
 	var out [6]float32
 	if s.Type == 2 {
@@ -211,8 +214,10 @@ func (s *Shade) Dict() Dict { return s.dict }
 // maxShadeGrid bounds the sample grid a type 1 shading is evaluated into.
 const maxShadeGrid = 1024
 
-// shadeColor evaluates the functions of a shading into a color of its own
-// space. One function gives every component, several give one each.
+// maxShadeWork bounds the function steps one function shading's grid takes.
+const maxShadeWork = 1 << 28
+
+// shadeColor evaluates the functions of a shading into a color of its own space.
 func shadeColor(sh *Shade, out []float32, in ...float64) []float32 {
 	var buf [64]float64
 	if len(sh.Function) == 1 {
@@ -244,8 +249,7 @@ func shadeComps(sh *Shade) int {
 	return sh.CS.N
 }
 
-// shadeLUT evaluates a shading over its parametric domain into 256 colors of
-// the destination's components.
+// shadeLUT evaluates a shading over its parametric domain into 256 destination colors.
 func shadeLUT(sh *Shade, n int) []uint8 {
 	t0, t1 := 0.0, 1.0
 	if len(sh.Domain) >= 2 {
@@ -260,9 +264,7 @@ func shadeLUT(sh *Shade, n int) []uint8 {
 	return lut
 }
 
-// newGradient prepares a type 2 or 3 shading for drawing under m, which maps
-// the shading's own space to the device. Everything after the table is
-// geometry an SVG gradient has too, so it lives in raster.
+// newGradient prepares a type 2 or 3 shading for drawing under m, shading space to device.
 func newGradient(sh *Shade, m raster.Matrix, n int) *raster.Gradient {
 	if len(sh.Function) == 0 {
 		return nil
@@ -282,10 +284,7 @@ func newGradient(sh *Shade, m raster.Matrix, n int) *raster.Gradient {
 	})
 }
 
-// pixmapShader reads destination colors from a pixmap sampled through an
-// inverse transform, and is transparent outside it. It is how a type 1
-// shading, evaluated over a grid of its domain, and a mesh, painted in device
-// space, both reach the rasterizer.
+// pixmapShader reads destination colors from a pixmap through an inverse transform, transparent outside it.
 type pixmapShader struct {
 	px  *raster.Pixmap
 	inv raster.Matrix

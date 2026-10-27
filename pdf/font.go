@@ -578,7 +578,10 @@ func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, 
 	}
 
 	ctm := raster.Concat(ft.FontMatrix, m)
-	var ops int64
+	ops := new(int64)
+	if g, ok := dev.(interface{ GlyphOps() *int64 }); ok {
+		ops = g.GlyphOps()
+	}
 	ip := &interp{
 		doc:      d,
 		dev:      dev,
@@ -587,7 +590,7 @@ func (ft *Font) RunGlyph(dev Device, code int, m raster.Matrix, cs *ColorSpace, 
 		res:      res,
 		defaults: &DefaultColorSpaces{},
 		scissor:  raster.InfiniteRect,
-		ops:      &ops,
+		ops:      ops,
 		depth:    depth,
 	}
 	ip.gs.fill.cs = cs

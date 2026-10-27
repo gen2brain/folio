@@ -32,12 +32,15 @@ func (d *Document) ParsePart(path string) (*Node, error) {
 
 // typeOf is the media type the container declares for a part.
 func (d *Document) typeOf(path string) string {
-	for _, it := range d.manifest {
-		if it.Path == path {
-			return it.Type
+	d.typesOnce.Do(func() {
+		d.types = make(map[string]string, len(d.manifest))
+		for _, it := range d.manifest {
+			if _, ok := d.types[it.Path]; !ok {
+				d.types[it.Path] = it.Type
+			}
 		}
-	}
-	return ""
+	})
+	return d.types[path]
 }
 
 // plainMarkup wraps a text part in a pre element.
@@ -45,8 +48,7 @@ func plainMarkup(b []byte) []byte {
 	return []byte("<html><body><pre>" + xhtml.EscapeString(string(b)) + "</pre></body></html>")
 }
 
-// Text returns the text of every part of the spine in order, a blank line
-// between blocks.
+// Text returns the text of every part of the spine in order, a blank line between blocks.
 func (d *Document) Text() (string, error) {
 	var b strings.Builder
 	var first error
@@ -228,8 +230,7 @@ func Attr(n *Node, name string) string {
 	return ""
 }
 
-// Walk calls fn for every node of a tree, depth first, and stops descending
-// where fn returns false.
+// Walk calls fn for every node depth first, not descending where fn returns false.
 func Walk(n *Node, fn func(*Node) bool) {
 	if n == nil || !fn(n) {
 		return

@@ -18,16 +18,14 @@ const maxFilterHeld = 8 * 4 * maxFilterArea
 // irect is a rectangle of samples inside a filter region.
 type irect struct{ x0, y0, x1, y1 int }
 
-// fimage is one primitive's result over the whole filter region; sub is the
-// part of px that holds anything.
+// fimage is a primitive result over the region; sub bounds the part of px with content.
 type fimage struct {
 	px  *raster.Pixmap
 	lin bool
 	sub irect
 }
 
-// filtered draws n through the filters it names and reports whether it dealt
-// with n; a reference to nothing hides it, SVG 1.1 15.7.
+// filtered draws n through its filters and reports whether it handled n, SVG 1.1 15.7.
 func (r *runner) filtered(n *node, ctm raster.Matrix, st state, alpha float32) bool {
 	return r.filterWith(n, ctm, st, alpha, r.paint)
 }
@@ -60,8 +58,11 @@ func (r *runner) filterWith(n *node, ctm raster.Matrix, st state, alpha float32,
 	if w <= 0 || h <= 0 {
 		return true
 	}
-	if w*h > maxFilterArea {
+	if int64(w)*int64(h) > maxFilterArea {
 		return false
+	}
+	if !r.spend(int64(w) * int64(h)) {
+		return true
 	}
 	src := raster.NewPixmap(gfx.DeviceRGB.Model(), w, h, true)
 	if src == nil {
@@ -91,8 +92,7 @@ func (r *runner) filterWith(n *node, ctm raster.Matrix, st state, alpha float32,
 	return true
 }
 
-// filterSpace splits a transform into the scale the filter's samples are laid
-// out on and the rotation and skew left over.
+// filterSpace splits ctm into the scale the samples are laid on and the rotation and skew left.
 func filterSpace(ctm raster.Matrix) (inner, back raster.Matrix) {
 	if ctm.B == 0 && ctm.C == 0 {
 		return ctm, raster.Identity
@@ -109,8 +109,7 @@ func filterSpace(ctm raster.Matrix) (inner, back raster.Matrix) {
 	return scale, raster.Concat(inv, ctm)
 }
 
-// link is one entry of a filter property: a filter element, or the primitives
-// one of the shorthand functions stands for.
+// link is one filter property entry: a filter element or a shorthand function's primitives.
 type link struct {
 	f     *node
 	prims []*node
@@ -118,8 +117,7 @@ type link struct {
 	pobj  bool
 }
 
-// chain reads the filter property: false for a reference that names nothing,
-// and an empty chain for a value that is no filter at all.
+// chain reads the filter property: false for a dangling reference, empty for no filter.
 func (r *runner) chain(v string, box raster.Rect, st state) ([]link, bool) {
 	var out []link
 	bad := false
@@ -199,8 +197,7 @@ func absf32(v float32) float32 {
 	return v
 }
 
-// filterEntries splits a filter property into the references and the
-// functions it lists, keeping each one's parentheses whole.
+// filterEntries splits a filter property into its references and functions.
 func filterEntries(v string) []string {
 	var out []string
 	depth, start := 0, 0
@@ -250,8 +247,7 @@ func (r *runner) filterRegion(f *node, box raster.Rect, obj bool, st state) (ras
 	return raster.Rect{X0: x, Y0: y, X1: x + w, Y1: y + h}, true
 }
 
-// fattr reads an attribute off a filter, following href to the filter it was
-// written as a variation of, SVG 1.1 15.7.2.
+// fattr reads a filter attribute, following href, SVG 1.1 15.7.2.
 func (r *runner) fattr(n *node, name string, depth int) (string, bool) {
 	if n == nil {
 		return "", false
@@ -283,8 +279,7 @@ func scaleOf(m raster.Matrix) (float32, float32) {
 		float32(math.Hypot(float64(m.C), float64(m.D)))
 }
 
-// filterFuncs turns the shorthand of Filter Effects 1 4.1 into the primitives
-// each function stands for. They chain, and they work in sRGB.
+// filterFuncs expands the shorthand of Filter Effects 1 4.1 into primitives in sRGB.
 func filterFuncs(v string, st state) []*node {
 	var out []*node
 	for _, e := range filterEntries(v) {
@@ -362,8 +357,7 @@ func filterFunc(name, args string, st state) *node {
 	return nil
 }
 
-// grayMatrix and sepiaMatrix are interpolated towards the identity by the
-// amount the function asks for.
+// grayMatrix and sepiaMatrix are interpolated toward the identity by the amount.
 var (
 	grayMatrix = [3][4]float32{
 		{0.2126, 0.7152, 0.0722, 0.7874},
@@ -431,8 +425,7 @@ func dropShadowFunc(args string, st state) *node {
 	return &node{name: "feDropShadow", attr: a}
 }
 
-// amount reads a number or a percentage, clamped above at one for the
-// functions that say so. No argument means one.
+// amount reads a number or a percentage, clamped to one when unit is set; empty is one.
 func amount(s string, unit bool) float32 {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -463,8 +456,7 @@ func badAmount(s string) bool {
 	return err != nil || v < 0
 }
 
-// angle reads the four forms CSS writes a rotation in, in degrees. Only zero
-// may be written without a unit.
+// angle reads a CSS angle in degrees; only zero may omit the unit.
 func angle(s string) (float32, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -490,8 +482,7 @@ func angle(s string) (float32, bool) {
 	return float32(v) * scale, true
 }
 
-// splitArgs breaks arguments at the spaces and commas between them, leaving a
-// colour written as a function of its own whole.
+// splitArgs splits arguments at spaces and commas, keeping a color function whole.
 func splitArgs(v string) []string {
 	var out []string
 	depth, start := 0, 0

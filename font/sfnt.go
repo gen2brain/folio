@@ -142,7 +142,7 @@ func (f *Font) readLayout(s *sfnt) {
 	f.gsub = readLayout(s.tables["GSUB"])
 	f.gpos = readLayout(s.tables["GPOS"])
 	f.gdef = readGDEF(s.tables["GDEF"])
-	f.kern = s.tables["kern"]
+	f.kern = kernTables(s.tables["kern"])
 }
 
 // readVertical reads the em box out of hhea, or the OS/2 typo metrics.
@@ -166,9 +166,7 @@ func (f *Font) readVertical(s *sfnt) {
 	f.Ascent, f.Descent = float32(asc)/upem, float32(desc)/upem
 }
 
-// readScripts reads what OS/2 says about the size of a lower case x and about
-// where a subscript and a superscript sit, which is what CSS leaves to the
-// reader and every font states for itself.
+// readScripts reads the OS/2 x-height and subscript and superscript offsets.
 func (f *Font) readScripts(s *sfnt) {
 	upem := float32(s.upem)
 	os2 := s.tables["OS/2"]
@@ -191,8 +189,7 @@ func (s *sfnt) locaGlyphs() int {
 	return max(len(loca)/2-1, 0)
 }
 
-// readHmtx reads the horizontal metrics, repeating the last advance for the
-// glyphs the table stops short of, as the format requires.
+// readHmtx reads the horizontal metrics, repeating the last advance past numberOfHMetrics.
 func (f *Font) readHmtx(s *sfnt) {
 	hhea, hmtx := s.tables["hhea"], s.tables["hmtx"]
 	if len(hhea) < 36 || len(hmtx) < 4 {
@@ -263,9 +260,7 @@ func (s *sfnt) findCmap(platform, encoding int) *cmapTable {
 	return nil
 }
 
-// lookupUnicode maps a Unicode value through the best available subtable. A
-// character map that answers zero has not mapped the value: glyph zero is
-// .notdef in every sfnt, so the two mean the same and are told the one way.
+// lookupUnicode maps a Unicode value through the best available subtable, -1 for none or glyph zero.
 func (s *sfnt) lookupUnicode(r rune) int {
 	if s == nil || s.unicode == nil {
 		return -1
@@ -276,8 +271,7 @@ func (s *sfnt) lookupUnicode(r rune) int {
 	return -1
 }
 
-// lookupSymbol maps a byte code through a (3,0) symbol subtable, which lives
-// in the private use area and which files address with or without F0.
+// lookupSymbol maps a byte code through a (3,0) symbol subtable, with or without the F0 prefix.
 func (s *sfnt) lookupSymbol(code uint32) int {
 	if s == nil || s.symbol == nil {
 		return -1
@@ -325,7 +319,6 @@ func (t *cmapTable) lookup(c uint32) int {
 		if ranges+2*segs > len(b) {
 			return -1
 		}
-		// The segments are sorted by their end, which the format requires.
 		i := sort.Search(segs, func(i int) bool { return uint32(be16(b, ends+2*i)) >= c })
 		if i >= segs {
 			return -1
@@ -358,7 +351,6 @@ func (t *cmapTable) lookup(c uint32) int {
 			return -1
 		}
 		n = min(n, max(len(b)-16, 0)/12)
-		// The groups are sorted by the character they start at.
 		i := sort.Search(n, func(i int) bool { return uint32(be32(b, 16+12*i+4)) >= c })
 		if i >= n {
 			return -1
@@ -425,8 +417,7 @@ const (
 	nameTypoSubfam = 17
 )
 
-// readNames takes the family, the weight and the slant off a program, which
-// is what a face is looked up by.
+// readNames takes the family, the weight and the slant off a program.
 func (f *Font) readNames(s *sfnt) {
 	f.Weight = 400
 	if os2 := s.tables["OS/2"]; len(os2) >= 64 {
@@ -455,8 +446,7 @@ func (f *Font) readNames(s *sfnt) {
 	}
 }
 
-// sfntName reads the first of the name records that is there, preferring the
-// Windows encoding a modern font writes and falling back to the Macintosh one.
+// sfntName reads the first name record present, Windows before Macintosh.
 func sfntName(name []byte, want ...int) string {
 	if len(name) < 6 {
 		return ""

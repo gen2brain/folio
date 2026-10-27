@@ -2,35 +2,28 @@ package svg
 
 import (
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 )
 
-// A style element carries CSS, and what a drawing needs of it is small: the
-// selectors an exporter writes are a type, a class, an id and lists of those.
-// The engine in html cascades onto the box tree of a document and knows the
-// properties of one, so it is not what an SVG wants; this reads the syntax and
-// answers the one question an element asks, what a sheet declares for it.
+// rule is one style rule: its selector chain and declarations.
 type rule struct {
 	sel   []simple
 	decls []decl
-	// spec is how much the selector counts for and order which rule was
-	// written first, which is what settles two that both match.
+	// spec is the selector specificity and order the rule's position.
 	spec  [3]int
 	order int
 }
 
-// simple is one compound selector of a chain: a type name and any number of
-// classes and ids, all of which have to match the same element.
+// simple is one compound selector: a type, classes and ids matched on one element.
 type simple struct {
 	name    string
 	classes []string
 	ids     []string
-	// attrs are the attribute selectors: a name the element has to carry,
-	// and a value it has to have when one is written.
+	// attrs are the attribute selectors.
 	attrs []attrSel
-	// child says the element must be the one directly inside the match
-	// before it rather than anywhere inside it.
+	// child marks a child combinator before this compound.
 	child bool
 }
 
@@ -45,9 +38,7 @@ type decl struct {
 	important bool
 }
 
-// readStyles collects every sheet the drawing names, in the order they are
-// read: the files an xml-stylesheet instruction points at first, then every
-// style element of the tree.
+// readStyles collects the drawing's stylesheets: xml-stylesheet files first, then style elements.
 func (d *Document) readStyles(sheets []string) {
 	for _, href := range sheets {
 		b := d.sheetBytes(href)
@@ -82,6 +73,22 @@ func (d *Document) readStyles(sheets []string) {
 		}
 		return a.order < b.order
 	})
+	d.keyed = map[string][]int32{}
+	for i := range d.rules {
+		k := ruleKey(d.rules[i].sel[len(d.rules[i].sel)-1])
+		d.keyed[k] = append(d.keyed[k], int32(i))
+	}
+}
+
+// ruleKey is the id, class or type name a compound requires, or empty.
+func ruleKey(s simple) string {
+	switch {
+	case len(s.ids) > 0:
+		return "#" + s.ids[0]
+	case len(s.classes) > 0:
+		return "." + s.classes[0]
+	}
+	return s.name
 }
 
 // text is the character data an element holds, the sheet for a style.
@@ -95,8 +102,7 @@ func text(n *node) string {
 	return b.String()
 }
 
-// sheetBytes reads a stylesheet the drawing names, which is a file beside it
-// or one the container it came out of holds.
+// sheetBytes reads a stylesheet beside the drawing or in its container.
 func (d *Document) sheetBytes(href string) []byte {
 	href = strings.TrimSpace(href)
 	if href == "" || d.open == nil || strings.Contains(href, "://") {
@@ -112,9 +118,7 @@ func (d *Document) sheetBytes(href string) []byte {
 	return b
 }
 
-// parseSheet reads the rules of a sheet and the faces it brings with it,
-// skipping what it does not know: an at-rule other than font-face, and a
-// selector with anything in it this cannot match.
+// parseSheet reads the rules and font faces of a sheet, skipping unknown at-rules and selectors.
 func parseSheet(s string, order int) ([]rule, []faceRule) {
 	s = stripComments(s)
 	var out []rule
@@ -157,17 +161,23 @@ func parseSheet(s string, order int) ([]rule, []faceRule) {
 }
 
 func stripComments(s string) string {
-	for {
-		i := strings.Index(s, "/*")
-		if i < 0 {
-			return s
-		}
+	i := strings.Index(s, "/*")
+	if i < 0 {
+		return s
+	}
+	var b strings.Builder
+	for i >= 0 {
+		b.WriteString(s[:i])
 		j := strings.Index(s[i+2:], "*/")
 		if j < 0 {
-			return s[:i]
+			return b.String()
 		}
-		s = s[:i] + " " + s[i+2+j+2:]
+		b.WriteByte(' ')
+		s = s[i+2+j+2:]
+		i = strings.Index(s, "/*")
 	}
+	b.WriteString(s)
+	return b.String()
 }
 
 func parseDecls(body string) []decl {
@@ -191,9 +201,7 @@ func parseDecls(body string) []decl {
 	return out
 }
 
-// parseSelector reads a chain of compound selectors, and fails on anything
-// with a combinator or a pseudo this does not match, so that a rule it cannot
-// honour is left out rather than applied to the wrong elements.
+// parseSelector reads a selector chain, failing on a combinator or pseudo it cannot match.
 func parseSelector(s string) ([]simple, [3]int, bool) {
 	var spec [3]int
 	var out []simple
@@ -261,8 +269,7 @@ func parseSelector(s string) ([]simple, [3]int, bool) {
 	return out, spec, true
 }
 
-// parseAttrSel reads what is between the brackets: a name, or a name and the
-// value it has to equal.
+// parseAttrSel reads a bracketed attribute selector: a name, or a name and value.
 func parseAttrSel(s string) (attrSel, bool) {
 	name, value, ok := strings.Cut(s, "=")
 	name = strings.TrimSpace(name)
@@ -275,16 +282,17 @@ func parseAttrSel(s string) (attrSel, bool) {
 	return attrSel{name: name, value: strings.Trim(strings.TrimSpace(value), `"'`), exact: true}, true
 }
 
-// sheetProp is what the stylesheets declare for an element, and false when
-// none of them declare it. The chain is matched against the ancestors the
-// runner is holding, which is how a descendant selector is answered without
-// the tree knowing its parents.
+// sheetProp is the stylesheet value of name for n, matched against the open elements.
 func (r *runner) sheetProp(n *node, name string) (string, bool) {
 	if len(r.doc.rules) == 0 {
 		return "", false
 	}
+	c := r.candidates(n)
+	if !r.spend(ruleWork * int64(len(c))) {
+		return "", false
+	}
 	out, found, bang := "", false, false
-	for i := range r.doc.rules {
+	for _, i := range c {
 		ru := &r.doc.rules[i]
 		if !r.matches(ru.sel, n) {
 			continue
@@ -298,6 +306,27 @@ func (r *runner) sheetProp(n *node, name string) (string, bool) {
 	return out, found
 }
 
+// candidates are the rules whose last compound n can match, in sheet order.
+func (r *runner) candidates(n *node) []int32 {
+	if r.candOf == n {
+		return r.cands
+	}
+	k := r.doc.keyed
+	c := append(r.cands[:0], k[""]...)
+	if id := n.attr["id"]; id != "" {
+		c = append(c, k["#"+id]...)
+	}
+	for _, cl := range strings.Fields(n.attr["class"]) {
+		c = append(c, k["."+cl]...)
+	}
+	if name := strings.ToLower(n.name); name != "" {
+		c = append(c, k[name]...)
+	}
+	slices.Sort(c)
+	r.cands, r.candOf = slices.Compact(c), n
+	return r.cands
+}
+
 // matches walks a selector chain backwards through the open elements.
 func (r *runner) matches(sel []simple, n *node) bool {
 	last := len(sel) - 1
@@ -305,8 +334,6 @@ func (r *runner) matches(sel []simple, n *node) bool {
 		return false
 	}
 	i := last - 1
-	// open holds the elements this one is inside, outermost first, with the
-	// element itself on the end.
 	open := r.open
 	k := len(open) - 2
 	for i >= 0 {

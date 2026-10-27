@@ -1,13 +1,15 @@
 package html
 
 import (
+	"cmp"
+	"slices"
 	"strings"
+	"unicode"
 
 	xhtml "golang.org/x/net/html"
 )
 
-// PseudoElement is one of the two boxes a rule may generate around the
-// content of an element.
+// PseudoElement names a ::before or ::after box.
 type PseudoElement uint8
 
 // The pseudo-elements a rule may style.
@@ -17,8 +19,7 @@ const (
 	PseudoAfter
 )
 
-// Styles is the computed style of every element of a tree, and of what a rule
-// generates before or after one.
+// Styles is the computed style of every element of a tree and of its ::before and ::after boxes.
 type Styles struct {
 	of     map[*Node]*Style
 	before map[*Node]*Style
@@ -42,8 +43,7 @@ func (s Styles) Has(n *Node) bool {
 	return ok
 }
 
-// Pseudo returns the style of what a rule generates around an element, and
-// nil when no rule generates anything there.
+// Pseudo returns the style of an element's ::before or ::after box, or nil when it has none.
 func (s Styles) Pseudo(n *Node, p PseudoElement) *Style {
 	switch p {
 	case PseudoBefore:
@@ -71,8 +71,8 @@ func (s *Styles) set(n *Node, p PseudoElement, st *Style) {
 	}
 }
 
-// Cascade computes the style of every element of a tree. The sheets are given
-// in the order they are read, the user agent sheet first.
+// Cascade computes the style of every element of a tree.
+// The sheets are given in reading order, the user agent sheet first.
 func Cascade(root *Node, media Media, sheets ...*Stylesheet) Styles {
 	c := cascader{media: media, out: Styles{of: map[*Node]*Style{}},
 		medium: orDefault(media.FontSize, DefaultFontSize)}
@@ -84,6 +84,15 @@ func Cascade(root *Node, media Media, sheets ...*Stylesheet) Styles {
 		for i := range s.Rules {
 			if matchMedia(s.Rules[i].Media, media) {
 				c.rules = append(c.rules, ruleRef{origin: s.Origin, rule: &s.Rules[i], order: len(c.rules)})
+			}
+		}
+	}
+	c.keyed = map[string][]selRef{}
+	for ri, r := range c.rules {
+		for si := range r.rule.Selectors {
+			if sub := &r.rule.Selectors[si].parts[0]; !sub.never {
+				k := subjectKey(sub)
+				c.keyed[k] = append(c.keyed[k], selRef{int32(ri), int32(si)})
 			}
 		}
 	}
@@ -101,15 +110,79 @@ type ruleRef struct {
 
 type cascader struct {
 	rules []ruleRef
+	// keyed holds rule selectors by the id, class or tag their subject needs; cands those found for one element.
+	keyed map[string][]selRef
+	cands []selRef
+	ctx   matchCtx
 	media Media
 	out   Styles
-	// medium is the size a font size keyword is a multiple of, and rem the
-	// computed size of the root element.
+	// medium is the base of the font size keywords; rem the computed size of the root element.
 	medium, rem float32
+}
+
+// selRef is one selector of one rule.
+type selRef struct{ rule, sel int32 }
+
+// subjectKey is the id, class or tag a compound requires of its subject.
+func subjectKey(c *compound) string {
+	switch {
+	case c.id != "":
+		return "#" + c.id
+	case len(c.classes) > 0:
+		return "." + c.classes[0]
+	case c.tag != "":
+		return foldKey(c.tag)
+	}
+	return ""
+}
+
+// foldKey maps each rune to the least of its case-folding orbit, so two names EqualFold matches map alike.
+func foldKey(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		ascii = ascii && s[i] < 0x80
+	}
+	if ascii {
+		return strings.ToUpper(s)
+	}
+	return strings.Map(func(r rune) rune {
+		m := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			m = min(m, f)
+		}
+		return m
+	}, s)
+}
+
+// candidates are the selectors whose subject n may match, in cascade order.
+func (c *cascader) candidates(n *Node) []selRef {
+	out := append(c.cands[:0], c.keyed[""]...)
+	if id := Attr(n, "id"); id != "" {
+		out = append(out, c.keyed["#"+id]...)
+	}
+	for _, a := range n.Attr {
+		if a.Key == "class" {
+			for f := range strings.FieldsSeq(a.Val) {
+				out = append(out, c.keyed["."+f]...)
+			}
+		}
+	}
+	if n.Data != "" {
+		out = append(out, c.keyed[foldKey(n.Data)]...)
+	}
+	slices.SortFunc(out, func(a, b selRef) int {
+		if a.rule != b.rule {
+			return cmp.Compare(a.rule, b.rule)
+		}
+		return cmp.Compare(a.sel, b.sel)
+	})
+	c.cands = slices.Compact(out)
+	return c.cands
 }
 
 func (c *cascader) walk(n *Node, parent *Style) {
 	if n.Type == xhtml.ElementNode {
+		c.candidates(n)
 		s := c.compute(n, parent, PseudoNone)
 		c.out.set(n, PseudoNone, s)
 		for _, p := range [...]PseudoElement{PseudoBefore, PseudoAfter} {
@@ -127,15 +200,13 @@ func (c *cascader) walk(n *Node, parent *Style) {
 	}
 }
 
-// cand is the declaration that has won a property so far, and how strongly.
+// cand is the declaration winning a property so far, and its weight.
 type cand struct {
 	toks   []cssToken
 	weight uint64
 }
 
-// weightOf packs what the cascade sorts on into one number: the origin and
-// the importance in three bits, the specificity in thirty, the position in
-// the sheets in the thirty one that are left.
+// weightOf packs origin and importance into three bits, specificity into thirty and source order into the low thirty one.
 func weightOf(o Origin, important bool, spec Specificity, order int) uint64 {
 	rank := uint64(0)
 	switch {
@@ -153,12 +224,24 @@ func weightOf(o Origin, important bool, spec Specificity, order int) uint64 {
 	return rank<<61 | uint64(spec&maxSpecificity)<<31 | uint64(min(order, 1<<31-1))
 }
 
-// compute is the cascade over one element, or over one of the boxes a rule
-// generates around it, which is nil when no rule generates one.
+// compute is the cascade over one element, or over its ::before or ::after box; nil when that box has no rule.
 func (c *cascader) compute(n *Node, parent *Style, p PseudoElement) *Style {
 	win := make(map[string]cand)
-	for _, r := range c.rules {
-		spec, ok := matchRule(r.rule, n, p)
+	refs := c.cands
+	for i := 0; i < len(refs); {
+		r := c.rules[refs[i].rule]
+		spec, ok := Specificity(0), false
+		for ri := refs[i].rule; i < len(refs) && refs[i].rule == ri; i++ {
+			sel := &r.rule.Selectors[refs[i].sel]
+			if sel.elem == p && sel.spec >= spec {
+				if len(c.ctx.fail) > 0 {
+					c.ctx.fail = nil
+				}
+				if matchParts(sel.parts, n, &c.ctx) {
+					spec, ok = sel.spec, true
+				}
+			}
+		}
 		if !ok {
 			continue
 		}
@@ -178,7 +261,6 @@ func (c *cascader) compute(n *Node, parent *Style, p PseudoElement) *Style {
 	}
 
 	s := parent.inherit()
-	// The dir attribute is a hint any declaration overrides.
 	if p == PseudoNone {
 		switch strings.ToLower(Attr(n, "dir")) {
 		case "ltr":
@@ -193,7 +275,6 @@ func (c *cascader) compute(n *Node, parent *Style, p PseudoElement) *Style {
 		applyProp(&s, "font-size", v)
 	}
 	v.em = s.FontSize
-	// The colour comes next: a border with none of its own takes it.
 	if w, ok := win["color"]; ok {
 		v.toks = w.toks
 		applyProp(&s, "color", v)
@@ -228,33 +309,19 @@ func add(win map[string]cand, d *Declaration, w uint64) {
 	}
 }
 
-// matchRule returns the specificity of the strongest selector of a rule that
-// the element matches, for the element itself or for one of the two boxes a
-// rule may generate around it.
-func matchRule(r *Rule, n *Node, p PseudoElement) (Specificity, bool) {
-	best, ok := Specificity(0), false
-	for _, sel := range r.Selectors {
-		if sel.elem == p && sel.spec >= best && matchParts(sel.parts, n) {
-			best, ok = sel.spec, true
-		}
-	}
-	return best, ok
-}
-
 // parseInline reads the declarations of a style attribute.
 func parseInline(s string) []Declaration {
 	p := &cssParser{l: newCSSLexer(s), sheet: &Stylesheet{}}
 	return p.declarations()
 }
 
-// longhand is one property a declaration sets, after a shorthand has been
-// split into the properties it stands for.
+// longhand is one property a declaration sets after shorthand expansion.
 type longhand struct {
 	name string
 	toks []cssToken
 }
 
-// The sides a box property is written in, in the order values fill them.
+// boxSides are the side suffixes in the order values fill them.
 var boxSides = [4]string{"-top", "-right", "-bottom", "-left"}
 
 // expand splits a shorthand into the longhands it sets.
@@ -313,8 +380,7 @@ func expand(d *Declaration) []longhand {
 	return []longhand{{name: d.Name, toks: d.value}}
 }
 
-// borderParts splits a border shorthand into the width, the style and the
-// colour it names, filling in what it leaves out.
+// borderParts splits a border shorthand into width, style and colour, defaulting the missing ones.
 func borderParts(toks []cssToken) (w, st, c []cssToken) {
 	w = []cssToken{{kind: cssIdent, value: "medium"}}
 	st = []cssToken{{kind: cssIdent, value: "none"}}
@@ -360,8 +426,7 @@ func isBorderWidth(p []cssToken) bool {
 	return false
 }
 
-// expandBackground splits the background shorthand into the colour, the
-// picture and where it goes, reading the first layer of a list.
+// expandBackground splits the background shorthand into colour, image and position, from the first layer.
 func expandBackground(toks []cssToken) []longhand {
 	out := []longhand{{name: "background-color", toks: backgroundColor(toks)}}
 	var pos []cssToken
@@ -410,7 +475,7 @@ func backgroundColor(toks []cssToken) []cssToken {
 	return toks
 }
 
-// boxIndex is which of one, two, three or four values fills a side.
+// boxIndex is the value of one, two, three or four that fills a side.
 func boxIndex(side, n int) int {
 	switch n {
 	case 1:
@@ -426,8 +491,7 @@ func boxIndex(side, n int) int {
 	return side
 }
 
-// expandRadius splits the corner shorthand, whose horizontal radii come
-// before the slash and whose vertical ones come after it.
+// expandRadius splits border-radius into horizontal radii before the slash and vertical after.
 func expandRadius(toks []cssToken) []longhand {
 	across, down := toks, []cssToken(nil)
 	for i, t := range toks {
@@ -456,8 +520,7 @@ func expandRadius(toks []cssToken) []longhand {
 	return out
 }
 
-// expandFont splits the font shorthand: an optional style, variant and
-// weight, then a size with an optional line height, then the family.
+// expandFont splits the font shorthand: style, variant, weight, size[/line-height], family.
 func expandFont(toks []cssToken) []longhand {
 	parts := splitSpace(toks)
 	size := -1
@@ -528,8 +591,7 @@ func isFontSize(p []cssToken) bool {
 	return false
 }
 
-// splitSlash cuts the size and the line height a font shorthand joins, and
-// reports whether there was a slash to cut at.
+// splitSlash cuts a font shorthand's size from its line height, reporting a slash.
 func splitSlash(p []cssToken) ([]cssToken, []cssToken, bool) {
 	for i, t := range p {
 		if isSlash(t) {
@@ -541,7 +603,7 @@ func splitSlash(p []cssToken) ([]cssToken, []cssToken, bool) {
 
 func isSlash(t cssToken) bool { return t.kind == cssDelim && t.delim == '/' }
 
-// splitSpace cuts a value into the parts space separates at the top level.
+// splitSpace cuts a value at top-level white space.
 func splitSpace(toks []cssToken) [][]cssToken {
 	var out [][]cssToken
 	start, depth := 0, 0
@@ -566,7 +628,7 @@ func splitSpace(toks []cssToken) [][]cssToken {
 	return out
 }
 
-// tokenIndex is where a part starts in the run it was cut from.
+// tokenIndex is the offset of part within all.
 func tokenIndex(all, part []cssToken) int {
 	if len(part) == 0 {
 		return len(all)

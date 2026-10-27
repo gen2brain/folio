@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+	"weak"
 
 	"github.com/gen2brain/folio/font"
 	"github.com/gen2brain/folio/gfx"
@@ -2226,12 +2228,15 @@ func TestLayoutBackdrop(t *testing.T) {
 		.a { background: url(pic.png) no-repeat right center }
 		.b { background-image: url(pic.png); background-repeat: repeat-x }
 		.c { background-image: url(pic.png); background-repeat: no-repeat;
-		     background-position: left top; background-size: 50% auto }`
+		     background-position: left top; background-size: 50% auto }
+		.d { background-image: url(pic.png); background-repeat: repeat-x; background-position: 1000004px 0 }
+		.e { background-image: url(pic.png); background-position: 1e30px -1e30px }`
 	d := openBook(t, map[string]string{
 		"META-INF/container.xml": container,
 		"EPUB/package.opf":       onePart,
 		"EPUB/text/one.xhtml": "<html><head><style>" + sheet + "</style></head><body>" +
-			`<div class="a">a</div><div class="b">b</div><div class="c">c</div></body></html>`,
+			`<div class="a">a</div><div class="b">b</div><div class="c">c</div>` +
+			`<div class="d">d</div><div class="e">e</div></body></html>`,
 		"EPUB/text/pic.png": pic.String(),
 	})
 	if _, err := d.Layout(&LayoutOptions{Width: 300, Height: 300, Margin: 0}); err != nil {
@@ -2268,11 +2273,227 @@ func TestLayoutBackdrop(t *testing.T) {
 		{"a picture drawn half the width of its box", 20, 82, red},
 		{"the other half of it", 70, 82, blue},
 		{"past the picture", 150, 82, white},
+		{"a row placed a million pixels right", 2, 122, blue},
+		{"the next tile of it", 6, 122, red},
 	} {
 		if got := at(c.x, c.y); got != c.want {
 			t.Errorf("%s at %d,%d is %v, want %v", c.what, c.x, c.y, got, c.want)
 		}
 	}
+}
+
+// TestFoldKey keys names alike exactly when EqualFold matches them.
+func TestFoldKey(t *testing.T) {
+	names := []string{"k", "K", "\u212a", "s", "S", "\u017f", "div", "DIV", "dIv", "span", "\u017fpan", "p"}
+	for _, a := range names {
+		for _, b := range names {
+			if got, want := foldKey(a) == foldKey(b), strings.EqualFold(a, b); got != want {
+				t.Errorf("%q and %q key alike %v, EqualFold says %v", a, b, got, want)
+			}
+		}
+	}
+}
+
+// TestCascadeScale styles deep descendant chains, long sibling runs and many rules.
+func TestCascadeScale(t *testing.T) {
+	deep := strings.Repeat("<div>", 300) + `<p id="i">t</p>` + strings.Repeat("</div>", 300)
+	if s := styleOf(t, "span div div div div div div div div div div p { font-variant: small-caps }",
+		deep, "i"); s.SmallCaps {
+		t.Error("a chain with no span in it matched")
+	}
+	wide := strings.Repeat("<i>t</i>", 59999) + `<i id="i">t</i>`
+	if s := styleOf(t, "i:nth-child(2n):nth-last-of-type(1) { font-variant: small-caps }", wide, "i"); !s.SmallCaps {
+		t.Error("the last of 60000 siblings is not the even last one")
+	}
+	var sheet strings.Builder
+	for i := range 20000 {
+		fmt.Fprintf(&sheet, ".c%d { font-variant: small-caps }\n", i)
+	}
+	many := strings.Repeat(`<b class="x">t</b>`, 20000) + `<b id="i" class="c19999">t</b>`
+	if s := styleOf(t, sheet.String(), many, "i"); !s.SmallCaps {
+		t.Error("the last of 20000 rules did not apply")
+	}
+
+	root, err := Parse([]byte("<html><body><ol>" + strings.Repeat("<li>t</li>", 60000) + "</ol></body></html>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := buildBoxes(root, Cascade(root, Media{Width: 600, Height: 800, FontSize: 16}, UserAgent()))
+	last := ""
+	var walk func(*box)
+	walk = func(b *box) {
+		if b.marker != "" {
+			last = b.marker
+		}
+		for _, k := range b.kids {
+			walk(k)
+		}
+	}
+	walk(b)
+	if last != "60000." {
+		t.Errorf("the last item is numbered %q, want 60000.", last)
+	}
+}
+
+// TestLayoutManyFloats lays out a part with thousands of floats down its length.
+func TestLayoutManyFloats(t *testing.T) {
+	body := strings.Repeat(`<div style="float: left; width: 20px; height: 30px"></div>`+
+		`<div style="float: right; width: 20px; height: 10px"></div><p>a line of text</p>`, 4000) +
+		strings.Repeat(`<div style="float: left; width: 100%; height: 1px"></div>`, 3000)
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml":    "<html><body>" + body + "</body></html>",
+	})
+	n, err := d.Layout(&LayoutOptions{Width: 300, Height: 400, Margin: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 100 {
+		t.Errorf("%d pages, want the floats spread down the part", n)
+	}
+}
+
+// TestLayoutLongLines lays out never-full lines with a break every word, and thousands of nowrap runs.
+func TestLayoutLongLines(t *testing.T) {
+	body := `<p style="font-size: 0">` + strings.Repeat("a ", 100000) + `</p><p>` +
+		strings.Repeat(`<span style="white-space: nowrap">a b</span> `, 50000) + `</p>`
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml":    "<html><body>" + body + "</body></html>",
+	})
+	if _, err := d.Layout(&LayoutOptions{Width: 300, Height: 400, Margin: 10}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSheetShared reads a stylesheet two parts link once, and keeps a link with its own media query apart.
+func TestSheetShared(t *testing.T) {
+	part := `<html><head><link rel="stylesheet" href="s.css"/>` +
+		`<link rel="stylesheet" href="p.css" media="print"/></head><body><p>t</p></body></html>`
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf": strings.Replace(strings.Replace(onePart,
+			`<item id="one" href="text/one.xhtml" media-type="application/xhtml+xml"/>`,
+			`<item id="one" href="text/one.xhtml" media-type="application/xhtml+xml"/>`+
+				`<item id="two" href="text/two.xhtml" media-type="application/xhtml+xml"/>`, 1),
+			`<itemref idref="one"/>`, `<itemref idref="one"/><itemref idref="two"/>`, 1),
+		"EPUB/text/one.xhtml": part,
+		"EPUB/text/two.xhtml": part,
+		"EPUB/text/s.css":     "p { color: red }",
+		"EPUB/text/p.css":     "p { color: blue }",
+	})
+	sheets := func(path string) []*Stylesheet {
+		root, err := d.ParsePart(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.Stylesheets(path, root)
+	}
+	one, two := sheets("EPUB/text/one.xhtml"), sheets("EPUB/text/two.xhtml")
+	if len(one) != 3 || len(two) != 3 {
+		t.Fatalf("%d and %d sheets, want the user agent's and two linked", len(one), len(two))
+	}
+	if one[1] != two[1] {
+		t.Error("the sheet both parts link was read twice")
+	}
+	if len(one[2].Rules) != 1 || len(one[2].Rules[0].Media) != 1 || len(d.sheet("EPUB/text/p.css").Rules[0].Media) != 0 {
+		t.Error("the print query reached the shared sheet")
+	}
+}
+
+// TestNavText joins the text of an entry with a hundred thousand pieces.
+func TestNavText(t *testing.T) {
+	in := inner{Own: "a", Children: make([]inner, 100000)}
+	for i := range in.Children {
+		in.Children[i] = inner{Own: "bc", Children: []inner{{Own: "d"}}}
+	}
+	if s := in.String(); len(s) != 300001 || !strings.HasPrefix(s, "abcdbcd") {
+		t.Errorf("joined %d bytes starting %q", len(s), s[:min(len(s), 8)])
+	}
+}
+
+// TestLayoutNestedTables measures cells whose tables nest sixteen deep.
+func TestLayoutNestedTables(t *testing.T) {
+	cell := strings.Repeat("<p>a few words in a cell</p>", 100)
+	body := "x"
+	for range 16 {
+		body = "<table><tr><td>" + body + cell + "</td><td>" + cell + "</td></tr></table>"
+	}
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml":    "<html><body>" + body + "</body></html>",
+	})
+	if _, err := d.Layout(&LayoutOptions{Width: 600, Height: 800, Margin: 10}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEmbeddedFontReleases lays out and draws a book with its own font, then lets the book go.
+func TestEmbeddedFontReleases(t *testing.T) {
+	mini, err := os.ReadFile(filepath.Join("..", "testdata", "mini.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Load(buildEPUB(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml": `<html><head><style>@font-face { font-family: m; src: url(m.ttf) }
+			p { font-family: m }</style></head><body><p>ABC</p></body></html>`,
+		"EPUB/text/m.ttf": string(mini),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Layout(&LayoutOptions{Width: 300, Height: 300, Margin: 10}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ImageDPI(24); err != nil {
+		t.Fatal(err)
+	}
+	prog := d.embeddedFont("EPUB/text/m.ttf")
+	if prog == nil {
+		t.Fatal("the book's font did not load")
+	}
+	w := weak.Make(prog)
+	d.Close()
+	d, p, prog = nil, nil, nil
+	runtime.GC()
+	runtime.GC()
+	if w.Value() != nil {
+		t.Error("the book's font outlived the book")
+	}
+}
+
+// TestBackdropDrawingBudget tiles a drawing of a million elements ten thousand times across one box.
+func TestBackdropDrawingBudget(t *testing.T) {
+	art := `<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><defs><rect id="l0" width="1" height="1"/>`
+	for i := 1; i <= 6; i++ {
+		art += fmt.Sprintf(`<g id="l%d">%s</g>`, i, strings.Repeat(fmt.Sprintf(`<use href="#l%d"/>`, i-1), 10))
+	}
+	art += `</defs><use href="#l6"/></svg>`
+	d := openBook(t, map[string]string{
+		"META-INF/container.xml": container,
+		"EPUB/package.opf":       onePart,
+		"EPUB/text/one.xhtml": `<html><head><style>body { margin: 0 }
+			div { width: 100px; height: 100px; background: url(a.svg); background-size: 1px 1px }
+			</style></head><body><div>t</div></body></html>`,
+		"EPUB/text/a.svg": art,
+	})
+	if _, err := d.Layout(&LayoutOptions{Width: 120, Height: 120, Margin: 0}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.ImageDPI(96)
 }
 
 func TestCSSTypography(t *testing.T) {

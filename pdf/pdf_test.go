@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -410,9 +412,6 @@ func TestCMapOverlappingRanges(t *testing.T) {
 		"2 begincidrange <0000> <00ff> 100 <0010> <001f> 200 endcidrange\n" +
 		"endcmap\n"
 	cm := d.parseCMap([]byte(cmapData), 0)
-	if cm.sorted {
-		t.Error("overlapping ranges were sorted")
-	}
 	if got := cm.Lookup(0x18); got != 100+0x18 {
 		t.Errorf("Lookup(0x18) = %d, want %d", got, 100+0x18)
 	}
@@ -980,6 +979,217 @@ func TestType3Cycle(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("a glyph that shows itself did not stop")
+	}
+}
+
+// TestSharedOps charges heavy Type3 glyphs and appearances shown many times to one budget.
+func TestSharedOps(t *testing.T) {
+	heavy := strings.Repeat("q Q ", 50000)
+	annots := strings.Repeat("7 0 R ", 2000)
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Font << /T3 5 0 R >> >> /Annots [" + annots + "] >>",
+		streamObj("", "BT /T3 1 Tf 0 50 Td ("+strings.Repeat("a", 5000)+") Tj ET"),
+		"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 10 10]" +
+			" /FontMatrix [0.1 0 0 0.1 0 0] /FirstChar 97 /LastChar 97 /Widths [0]" +
+			" /Encoding << /Differences [97 /a] >> /CharProcs << /a 6 0 R >> >>",
+		streamObj("", "0 0 d0 "+heavy),
+		"<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] /AP << /N 8 0 R >> >>",
+		streamObj("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", heavy),
+	})
+	renderDoc(t, d, nil)
+	n := 0
+	for _, err := range d.Err() {
+		if strings.Contains(err.Error(), "operations") {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("%d budgets ran out, want the glyphs' and the annotations'", n)
+	}
+}
+
+// TestFunctionCache sets a color through one sampled function twenty thousand times.
+func TestFunctionCache(t *testing.T) {
+	samples := strings.Repeat("\x80\x40\x20", 65536)
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /ColorSpace << /S [/Separation /Spot /DeviceRGB 5 0 R] >> >> >>",
+		streamObj("", strings.Repeat("/S cs 0.5 scn 0 0 1 1 re f\n", 20000)),
+		streamObj("/FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [65536] /BitsPerSample 8",
+			samples),
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 0, 99); !same(got, 0x80, 0x40, 0x20) {
+		t.Errorf("the spot color drew %v", got)
+	}
+	if n := d.funcSamples; n != 3*65536 {
+		t.Errorf("%d samples read, want one function's", n)
+	}
+}
+
+// TestFunctionShadingWork fills a large page with an expensive function shading.
+func TestFunctionShadingWork(t *testing.T) {
+	prog := "{ " + strings.Repeat("dup pop ", 4995) + "pop pop 0.25 0.5 0.75 }"
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1000 1000] /Contents 4 0 R" +
+			" /Resources << /Shading << /S 5 0 R >> >> >>",
+		streamObj("", "/S sh"),
+		"<< /ShadingType 1 /ColorSpace /DeviceRGB /Domain [0 1000 0 1000] /Function 6 0 R >>",
+		streamObj("/FunctionType 4 /Domain [0 1000 0 1000] /Range [0 1 0 1 0 1]", prog),
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 500, 500); !same(got, 0x40, 0x80, 0xbf) {
+		t.Errorf("the shading drew %v", got)
+	}
+	f := d.function(d.f.Resolve(Ref{Num: 6}))
+	if f == nil || f.ops > maxPSOps {
+		t.Fatal("the calculator did not read")
+	}
+	if g, _, err := parsePostScript([]byte("{ " + strings.Repeat("1 pop ", maxPSOps) + "}")); err == nil || g != nil {
+		t.Error("a calculator past the bound was read")
+	}
+}
+
+// TestCMapOverlap looks codes up through ranges that overlap, the first written winning.
+func TestCMapOverlap(t *testing.T) {
+	seed := uint32(7)
+	next := func(n uint32) uint32 {
+		seed = seed*1664525 + 1013904223
+		return (seed >> 8) % n
+	}
+	for range 50 {
+		var ranges []cidRange
+		for range 1 + next(12) {
+			lo := next(200)
+			ranges = append(ranges, cidRange{lo, lo + next(60) - 5, next(1000)})
+		}
+		c := &CMap{single: map[uint32]uint32{}, ranges: slices.Clone(ranges)}
+		c.sortRanges()
+		for code := uint32(0); code < 300; code++ {
+			want := uint32(0)
+			for _, r := range ranges {
+				if code >= r.low && code <= r.high {
+					want = r.cid + (code - r.low)
+					break
+				}
+			}
+			if got := c.Lookup(code); got != want {
+				t.Fatalf("%v: code %d maps to %d, want %d", ranges, code, got, want)
+			}
+		}
+	}
+	var big []cidRange
+	for i := range uint32(100000) {
+		big = append(big, cidRange{i, i + 1000, i})
+	}
+	c := &CMap{single: map[uint32]uint32{}, ranges: big}
+	c.sortRanges()
+	for code := range uint32(100000) {
+		if got := c.Lookup(code + 500); got != code+500 {
+			t.Fatalf("code %d maps to %d", code+500, got)
+		}
+	}
+}
+
+// TestMeshWork paints huge meshes and a page that repeats a large one.
+func TestMeshWork(t *testing.T) {
+	var mesh []byte
+	for range 200000 {
+		mesh = append(mesh, 0, 0, 0, 255, 0, 0, 0, 0, 255, 0, 255, 0, 0, 255, 0, 0, 0, 255)
+	}
+	shading := streamObj("/ShadingType 4 /ColorSpace /DeviceRGB /BitsPerCoordinate 8"+
+		" /BitsPerComponent 8 /BitsPerFlag 8 /Decode [0 1000 0 1000 0 1 0 1 0 1]", string(mesh))
+	for _, c := range []struct{ content, want string }{
+		{"/S sh", "mesh shading past its work budget"},
+		{strings.Repeat("q 0 0 1 1 re W n /S sh Q\n", 3000), "operations"},
+	} {
+		d := buildPDF(t, []string{
+			"<< /Type /Catalog /Pages 2 0 R >>",
+			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1000 1000] /Contents 4 0 R" +
+				" /Resources << /Shading << /S 5 0 R >> >> >>",
+			streamObj("", c.content),
+			shading,
+		})
+		renderDoc(t, d, nil)
+		found := false
+		for _, err := range d.Err() {
+			found = found || strings.Contains(err.Error(), c.want)
+		}
+		if !found {
+			t.Errorf("%q: no %q among %v", c.content[:min(len(c.content), 10)], c.want, d.Err())
+		}
+	}
+}
+
+// TestPatternTiles fills a page many times with an empty pattern of many tiles.
+func TestPatternTiles(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Pattern << /P 5 0 R >> >> >>",
+		streamObj("", "/Pattern cs /P scn\n"+strings.Repeat("0 0 100 100 re f\n", 2000)),
+		streamObj("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 1 1] /XStep 1 /YStep 1", ""),
+	})
+	renderDoc(t, d, nil)
+	found := false
+	for _, err := range d.Err() {
+		found = found || strings.Contains(err.Error(), "operations")
+	}
+	if !found {
+		t.Error("twenty million tiles ran within the page's operations")
+	}
+}
+
+// TestMembershipCache evaluates one huge membership dictionary many times.
+func TestMembershipCache(t *testing.T) {
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R 7 0 R] /D << /OFF [7 0 R] >> >> >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /Properties << /M 5 0 R >> >> >>",
+		streamObj("", strings.Repeat("/OC /M BDC 0 0 1 1 re f EMC\n", 20000)),
+		"<< /Type /OCMD /P /AllOn /OCGs [" + strings.Repeat("6 0 R ", 100000) + "7 0 R] >>",
+		"<< /Type /OCG /Name (on) >>",
+		"<< /Type /OCG /Name (off) >>",
+	})
+	px := renderDoc(t, d, nil)
+	if got := pixel(px, 0, 99); !same(got, 255, 255, 255) {
+		t.Errorf("content of a hidden membership drew %v", got)
+	}
+}
+
+// TestImageWork draws an image of a million pixels two thousand times with no cache to keep it.
+func TestImageWork(t *testing.T) {
+	var z bytes.Buffer
+	w := zlib.NewWriter(&z)
+	w.Write(make([]byte, 3*1000*1000))
+	w.Close()
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /I 5 0 R >> >> >>",
+		streamObj("", strings.Repeat("q 100 0 0 100 0 0 cm /I Do Q\n", 2000)),
+		streamObj("/Type /XObject /Subtype /Image /Width 1000 /Height 1000 /ColorSpace /DeviceRGB"+
+			" /BitsPerComponent 8 /Filter /FlateDecode", z.String()),
+	})
+	d.ImageCacheBytes = -1
+	renderDoc(t, d, nil)
+	found := false
+	for _, err := range d.Err() {
+		found = found || strings.Contains(err.Error(), "operations")
+	}
+	if !found {
+		t.Error("two thousand decodes ran within the page's operations")
 	}
 }
 

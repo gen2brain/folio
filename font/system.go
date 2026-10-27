@@ -55,8 +55,8 @@ var (
 	extraDirs []string
 )
 
-// AddFontDir adds a directory to the ones the system look-up searches. It has
-// to be called before the first look-up to have any effect.
+// AddFontDir adds a directory to the system font search.
+// It must be called before the first look-up.
 func AddFontDir(dir string) {
 	extraMu.Lock()
 	extraDirs = append(extraDirs, dir)
@@ -69,9 +69,12 @@ type entry struct {
 	family string
 	weight int
 	italic bool
-	// once guards the full parse, which happens only for a file that is chosen.
+	// once guards the full parse of a chosen file.
 	once sync.Once
 	font *Font
+	// cmapOnce guards cmap, the character map covers reads.
+	cmapOnce sync.Once
+	cmap     *sfnt
 }
 
 func (e *entry) load() *Font {
@@ -125,8 +128,7 @@ func buildIndex() *index {
 	return ix
 }
 
-// walkFonts visits the font files under a directory, bounded: a link loop or
-// a mount full of files must not run away with the scan.
+// walkFonts visits the font files under a directory, within the scan bounds.
 func walkFonts(dir string, depth int, fn func(string)) {
 	if depth > maxFontDepth {
 		return
@@ -148,8 +150,7 @@ func walkFonts(dir string, depth int, fn func(string)) {
 	}
 }
 
-// describe reads the name table of a font file and nothing else: the table
-// directory says where it is, so four short reads answer what a file holds.
+// describe reads the name table of a font file and nothing else.
 func describe(path string) *entry {
 	tables := sfntTables(path, 1<<20, "name", "OS/2", "head")
 	if len(tables) == 0 {
@@ -163,8 +164,7 @@ func describe(path string) *entry {
 	return &entry{path: path, family: probe.Family, weight: probe.Weight, italic: probe.Italic}
 }
 
-// sfntTables reads the named tables of a font file's first face, each no
-// longer than limit, without reading the rest of the file.
+// sfntTables reads the named tables of a file's first face, each at most limit bytes.
 func sfntTables(path string, limit int, names ...string) map[string][]byte {
 	f, err := os.Open(path)
 	if err != nil {
@@ -220,12 +220,16 @@ func sfntTables(path string, limit int, names ...string) map[string][]byte {
 
 // covers reports whether the file maps r, reading its character map alone.
 func (e *entry) covers(r rune) bool {
-	tables := sfntTables(e.path, maxFontBytes, "cmap")
-	if tables == nil {
+	e.cmapOnce.Do(func() {
+		if t := sfntTables(e.path, maxFontBytes, "cmap"); t != nil {
+			e.cmap = &sfnt{tables: t}
+			e.cmap.readCmap()
+		}
+	})
+	s := e.cmap
+	if s == nil {
 		return false
 	}
-	s := &sfnt{tables: tables}
-	s.readCmap()
 	if s.lookupUnicode(r) > 0 {
 		return true
 	}
@@ -233,8 +237,7 @@ func (e *entry) covers(r rune) bool {
 	return ok && s.lookupUnicode(alt) > 0
 }
 
-// foldName is what two family names are compared as: no case, no spaces and
-// nothing that is not a letter or a digit.
+// foldName lower-cases a family name and keeps only its letters and digits.
 func foldName(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
@@ -245,8 +248,7 @@ func foldName(s string) string {
 	return b.String()
 }
 
-// SystemFont returns a face the machine has for a family, and nil when it has
-// none. A family with several weights and slants gives the nearest.
+// SystemFont returns the face nearest a weight and slant the machine has for a family, or nil.
 func SystemFont(family string, bold, italic bool) *Font {
 	key := foldName(family)
 	if key == "" {
@@ -260,8 +262,6 @@ func SystemFont(family string, bold, italic bool) *Font {
 		}
 	}
 	if best == nil {
-		// A family the name table spells differently: Noto Sans CJK is
-		// indexed under one language and asked for under none.
 		for k, list := range ix.byName {
 			if !strings.HasPrefix(k, key) {
 				continue
@@ -299,8 +299,7 @@ func abs(v int) int {
 	return v
 }
 
-// Fallback returns a face the machine has that can draw r, nil when it has
-// none. It is what a document in a script the base fourteen cannot draw needs.
+// Fallback returns a face the machine has that can draw r, or nil.
 func Fallback(r rune, bold, italic bool) *Font {
 	k := scriptOf(r)
 	script := fallbackKey{k, bold, italic, 0}
@@ -309,8 +308,6 @@ func Fallback(r rune, bold, italic bool) *Font {
 			return f
 		}
 	}
-	// A character the face for its script does not have is remembered on its
-	// own: without that, every one of them opens every font again.
 	key := fallbackKey{k, bold, italic, r}
 	if v, ok := fallbackCache.Load(key); ok {
 		f, _ := v.(*Font)

@@ -2,6 +2,8 @@ package svg
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -275,7 +277,7 @@ func TestGradientStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	st := initialState(100, 100)
 	g, _ := r.server("url(#heir)", raster.Rect{X1: 10, Y1: 10}, st)
 	if g == nil {
@@ -318,7 +320,7 @@ func TestTextLayout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		return r.layout(c.chars)
@@ -354,7 +356,7 @@ func TestTextLayout(t *testing.T) {
 
 	pos := func(anchor string) float32 {
 		gs := run(`<svg><text x="100" y="9" font-size="16" text-anchor="` + anchor + `">abc</text></svg>`)
-		r := &runner{}
+		r := newRunner(nil, nil, 0, nil)
 		r.anchorChunks(gs)
 		return gs[0].x
 	}
@@ -411,7 +413,7 @@ func TestTextSpacing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		g := r.layout(c.chars)
@@ -428,7 +430,7 @@ func TestTextSpacing(t *testing.T) {
 
 	count := func(markup string) int {
 		d, _ := Load([]byte(markup))
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		return len(r.layout(c.chars))
@@ -442,7 +444,7 @@ func TestTextSpacing(t *testing.T) {
 
 	base := func(v string) float32 {
 		d, _ := Load([]byte(`<svg><text y="50" font-size="20" dominant-baseline="` + v + `">a</text></svg>`))
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		g := r.layout(c.chars)
@@ -517,7 +519,7 @@ func TestStylesheet(t *testing.T) {
 		t.Fatal(err)
 	}
 	fill := func(id string) string {
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		var found string
 		var walk func(n *node)
 		walk = func(n *node) {
@@ -626,6 +628,55 @@ func TestMaskAndMarker(t *testing.T) {
 	if r, g, b := at(30, 10); r < 248 || g < 248 || b < 248 {
 		t.Errorf("between the markers is %d,%d,%d, want the page", r, g, b)
 	}
+
+	at = render(`<svg width="60" height="20">
+	  <marker id="r" markerWidth="10" markerHeight="10" refX="5" refY="5" markerUnits="userSpaceOnUse">
+	    <path d="M0 0L1 0" stroke="none" marker-start="url(#r)"/>
+	    <rect x="4" y="4" width="2" height="2" fill="black"/>
+	  </marker>
+	  <line x1="30" y1="10" x2="31" y2="10" stroke="none" marker-start="url(#r)"/></svg>`)
+	if r, g, b := at(29, 9); r > 8 || g > 8 || b > 8 {
+		t.Errorf("the marker is %d,%d,%d, want black", r, g, b)
+	}
+	if r, g, b := at(25, 5); r < 248 || g < 248 || b < 248 {
+		t.Errorf("a marker inside itself drew %d,%d,%d, want the page", r, g, b)
+	}
+}
+
+// TestWorkBudget stops drawings whose work multiplies past the budget.
+func TestWorkBudget(t *testing.T) {
+	fan := func(leaf string, levels int) string {
+		s := `<defs>` + strings.Replace(leaf, "<", `<g id="l0"><`, 1) + `</g>`
+		for i := 1; i <= levels; i++ {
+			s += fmt.Sprintf(`<g id="l%d">%s</g>`, i, strings.Repeat(fmt.Sprintf(`<use href="#l%d"/>`, i-1), 10))
+		}
+		return s + fmt.Sprintf(`</defs><use href="#l%d"/>`, levels)
+	}
+	bounds := `<defs><rect id="b0" width="10" height="10"/>`
+	for i := 1; i <= 32; i++ {
+		bounds += fmt.Sprintf(`<g id="b%d"><use href="#b%d"/><use href="#b%d"/></g>`, i, i-1, i-1)
+	}
+	bounds += `<filter id="f"><feFlood/></filter></defs><use href="#b32" filter="url(#f)"/>`
+	inner := `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">` +
+		fan(`<rect width="1" height="1"/>`, 5) + `</svg>`
+	nested := strings.Repeat(`<image width="10" height="10" href="data:image/svg+xml;base64,`+
+		base64.StdEncoding.EncodeToString([]byte(inner))+`"/>`, 50)
+	for _, c := range []struct{ name, body string }{
+		{"a heavy path a million times", `<filter id="b"><feGaussianBlur stdDeviation="3"/></filter>` +
+			fan(`<path d="M0 0`+strings.Repeat(" L100 100 L0 0", 1000)+`" stroke="red" filter="url(#b)"/>`, 6)},
+		{"the bounds of a group of 2^32", bounds},
+		{"fifty drawings of a hundred thousand", nested},
+	} {
+		d, err := Load([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">` + c.body + `</svg>`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := d.Page(0)
+		if _, err := p.ImageDPI(24); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s: %v, want the budget to run out", c.name, err)
+		}
+		d.Close()
+	}
 }
 
 // TestHugeDrawing checks that a drawing too large to allocate is refused.
@@ -672,7 +723,7 @@ func TestGradientSpread(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		g, _ := r.server("url(#g)", raster.Rect{X1: 100, Y1: 10}, initialState(100, 10))
 		if g == nil {
 			t.Fatal("the gradient did not resolve")
@@ -860,7 +911,7 @@ func TestTspanPositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	c := &textCursor{}
 	r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 
@@ -882,6 +933,38 @@ func TestTspanPositions(t *testing.T) {
 	}
 	if x := g[3].x; x <= 20 || x >= 100 {
 		t.Errorf("the space is at %v, want it after the c at 20 and before the next tspan at 100", x)
+	}
+}
+
+// TestTextLength fits each tspan to its own textLength.
+func TestTextLength(t *testing.T) {
+	d, err := Load([]byte(`<svg><text font-size="10"><tspan x="0" textLength="50">ab</tspan>` +
+		`<tspan x="100" textLength="40">cde</tspan></text></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRunner(d, nil, 0, nil)
+	c := &textCursor{}
+	r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
+	g := r.laidOut(c)
+	if len(g) != 5 {
+		t.Fatalf("laid out %d glyphs, want 5", len(g))
+	}
+	for _, c := range []struct {
+		i    int
+		want float32
+	}{{0, 0}, {2, 100}} {
+		if x := g[c.i].x; !near(x, c.want) {
+			t.Errorf("glyph %d starts at %v, want %v", c.i, x, c.want)
+		}
+	}
+	for _, c := range []struct {
+		i    int
+		want float32
+	}{{1, 50}, {4, 140}} {
+		if x := g[c.i].x + g[c.i].adv; !near(x, c.want) {
+			t.Errorf("glyph %d ends at %v, want %v", c.i, x, c.want)
+		}
 	}
 }
 
@@ -1061,7 +1144,7 @@ func TestViewportAndConditions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	c := &textCursor{}
 	st := r.style(d.root.kids[0], initialState(100, 40))
 	st = r.style(d.root.kids[0].kids[0], st)
@@ -1086,7 +1169,7 @@ func TestTextPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	st := initialState(60, 60)
 	var flat, down []glyph
 	for i, want := range []*[]glyph{&flat, &down, nil} {
@@ -1123,7 +1206,7 @@ func TestVerticalText(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	st := r.style(d.root, initialState(200, 200))
 	c := &textCursor{}
 	r.textRun(d.root.kids[0], st, c, 0, false)
@@ -1161,7 +1244,7 @@ func TestBidiText(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer d.Close()
-		r := &runner{doc: d}
+		r := newRunner(d, nil, 0, nil)
 		c := &textCursor{}
 		r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 		out := []rune{}
@@ -1188,7 +1271,7 @@ func TestBidiText(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	c := &textCursor{}
 	r.textRun(d.root.kids[0], initialState(300, 300), c, 0, false)
 	g := r.layout(c.chars)
@@ -1458,7 +1541,7 @@ func TestBaselineShift(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	r := &runner{doc: d}
+	r := newRunner(d, nil, 0, nil)
 	base := r.style(d.root, initialState(200, 60))
 	ys := make([]float32, 0, 3)
 	for _, n := range d.root.kids {
@@ -1533,6 +1616,54 @@ func slowFuzz(t *testing.T) func() {
 	return func() {
 		if d := time.Since(start); d > 5*time.Second {
 			t.Fatalf("took %v", d)
+		}
+	}
+}
+
+// TestMorphology holds the separable morphology to the rectangle it stands for.
+func TestMorphology(t *testing.T) {
+	brute := func(px *raster.Pixmap, cols, rows int, erode bool) []uint8 {
+		out := make([]uint8, len(px.Samples))
+		for y := range px.H {
+			for x := range px.W {
+				for c := range 4 {
+					v := uint8(0)
+					if erode {
+						v = 255
+					}
+					for sy := max(y-rows/2, 0); sy < min(y-rows/2+rows, px.H); sy++ {
+						for sx := max(x-cols/2, 0); sx < min(x-cols/2+cols, px.W); sx++ {
+							s := px.Samples[sy*px.Stride+sx*4+c]
+							if erode {
+								v = min(v, s)
+							} else {
+								v = max(v, s)
+							}
+						}
+					}
+					out[y*px.Stride+x*4+c] = v
+				}
+			}
+		}
+		return out
+	}
+	seed := uint32(1)
+	for _, size := range [][2]int{{1, 1}, {1, 7}, {9, 1}, {13, 11}, {32, 5}} {
+		for _, r := range [][2]float32{{0.5, 0.5}, {1, 2}, {2.5, 1}, {3, 3}, {40, 1}, {1e30, 1e30}} {
+			for _, erode := range []bool{true, false} {
+				px := raster.NewPixmap(raster.ModelRGB, size[0], size[1], true)
+				for i := range px.Samples {
+					seed = seed*1664525 + 1013904223
+					px.Samples[i] = uint8(seed >> 24)
+				}
+				cols := int(min(math.Ceil(float64(r[0]))*2, float64(px.W)))
+				rows := int(min(math.Ceil(float64(r[1]))*2, float64(px.H)))
+				want := brute(px, cols, rows, erode)
+				morph(px, r[0], r[1], erode)
+				if !bytes.Equal(px.Samples, want) {
+					t.Errorf("%dx%d radius %v erode %v differs from the rectangle", size[0], size[1], r, erode)
+				}
+			}
 		}
 	}
 }

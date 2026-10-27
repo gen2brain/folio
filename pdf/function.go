@@ -29,11 +29,38 @@ type Function struct {
 	bounds []float64
 
 	prog []psOp
+	ops  int
 
 	dict Dict
 }
 
+// cost is about how many steps one Eval takes.
+func (f *Function) cost() int {
+	if f == nil {
+		return 1
+	}
+	switch f.Type {
+	case 0:
+		return f.n << min(f.m, 8)
+	case 3:
+		c := 1
+		for _, g := range f.funcs {
+			c = max(c, g.cost())
+		}
+		return c + 1
+	case 4:
+		return max(f.ops, 1)
+	}
+	return max(f.n, 1)
+}
+
 const maxFunctionDepth = 8
+
+// maxSamples bounds the samples of one sampled function, maxDocSamples those of a document.
+const (
+	maxSamples    = 1 << 22
+	maxDocSamples = 1 << 25
+)
 
 // maxComponents bounds the values a function may be asked for at once.
 const maxComponents = 32
@@ -52,6 +79,32 @@ func (d *Document) functionDepth(obj Object, depth int) *Function {
 	if dict == nil {
 		return nil
 	}
+	st := d.f.GetStream(obj)
+	if st != nil {
+		d.mu.Lock()
+		fn, ok := d.funcs[st]
+		d.mu.Unlock()
+		if ok {
+			return fn
+		}
+	}
+	fn := d.readFunction(obj, dict, depth)
+	if st != nil {
+		d.mu.Lock()
+		if old, ok := d.funcs[st]; ok {
+			fn = old
+		} else {
+			if d.funcs == nil {
+				d.funcs = map[*syntax.Stream]*Function{}
+			}
+			d.funcs[st] = fn
+		}
+		d.mu.Unlock()
+	}
+	return fn
+}
+
+func (d *Document) readFunction(obj Object, dict Dict, depth int) *Function {
 	fn := &Function{
 		Type:   int(d.f.GetInt(dict["FunctionType"], -1)),
 		Domain: d.f.GetFloats(dict["Domain"]),
@@ -85,8 +138,7 @@ func (d *Document) functionDepth(obj Object, depth int) *Function {
 	return fn
 }
 
-// NumOutputs returns how many values Eval returns, or zero when the function
-// only learns that from its own definition.
+// NumOutputs returns how many values Eval returns, or zero when only the definition says.
 func (f *Function) NumOutputs() int {
 	if f == nil {
 		return 0
@@ -94,8 +146,7 @@ func (f *Function) NumOutputs() int {
 	return f.n
 }
 
-// Eval evaluates the function. The result is appended to out, which may be
-// nil, so that a caller in a loop can reuse one buffer.
+// Eval evaluates the function, appending the result to out, which may be nil.
 func (f *Function) Eval(out []float64, in ...float64) []float64 {
 	if f == nil {
 		return out
@@ -132,8 +183,7 @@ func (f *Function) Eval(out []float64, in ...float64) []float64 {
 	return out
 }
 
-// Eval1 evaluates a function of one input into a float32 slice, which is what
-// color conversion works in.
+// Eval1 evaluates a function of one input into a float32 slice.
 func (f *Function) Eval1(out []float32, in float64) []float32 {
 	var buf [64]float64
 	v := f.Eval(buf[:0], in)
@@ -169,8 +219,7 @@ func interpolate(x, xmin, xmax, ymin, ymax float64) float64 {
 	return ymin + (x-xmin)*(ymax-ymin)/(xmax-xmin)
 }
 
-// readSampled reads a type 0 function, whose samples are packed at a chosen
-// bit depth in the stream.
+// readSampled reads a type 0 function.
 func (d *Document) readSampled(fn *Function, obj Object) error {
 	st := d.f.GetStream(obj)
 	if st == nil {
@@ -209,10 +258,19 @@ func (d *Document) readSampled(fn *Function, obj Object) error {
 
 	total := fn.n
 	for _, s := range fn.size {
-		total *= s
-		if total > 1<<26 {
+		if s > maxSamples/total {
 			return fmt.Errorf("sampled function has too many samples")
 		}
+		total *= s
+	}
+	d.mu.Lock()
+	full := d.funcSamples+total > maxDocSamples
+	if !full {
+		d.funcSamples += total
+	}
+	d.mu.Unlock()
+	if full {
+		return fmt.Errorf("sampled functions past %d samples", maxDocSamples)
 	}
 	data, err := st.Data()
 	if err != nil {
@@ -329,7 +387,7 @@ func (f *Function) evalExponential(out []float64, in []float64) []float64 {
 	return out
 }
 
-// readStitching reads a type 3 function, which splits its domain up.
+// readStitching reads a type 3 function.
 func (d *Document) readStitching(fn *Function, depth int) error {
 	for _, sub := range d.f.GetArray(fn.dict["Functions"]) {
 		s := d.functionDepth(sub, depth+1)
@@ -386,11 +444,11 @@ func (d *Document) readPostScript(fn *Function, obj Object) error {
 	if err != nil {
 		return fmt.Errorf("PostScript function: %w", err)
 	}
-	prog, err := parsePostScript(data)
+	prog, ops, err := parsePostScript(data)
 	if err != nil {
 		return err
 	}
-	fn.prog = prog
+	fn.prog, fn.ops = prog, ops
 	return nil
 }
 
@@ -487,27 +545,34 @@ var psOps = map[string]psOpcode{
 	"pop": psPop, "roll": psRoll,
 }
 
-// parsePostScript reads the program, which is one brace delimited block.
-func parsePostScript(data []byte) ([]psOp, error) {
+// maxPSOps bounds the instructions of one PostScript function.
+const maxPSOps = 1 << 14
+
+// parsePostScript reads the program, one brace delimited block.
+func parsePostScript(data []byte) ([]psOp, int, error) {
 	l := syntax.NewLexer(data)
 	obj, ok := l.Next()
 	if kw, isKw := obj.(syntax.Keyword); !ok || !isKw || kw != "{" {
-		return nil, fmt.Errorf("PostScript function does not start with {")
+		return nil, 0, fmt.Errorf("PostScript function does not start with {")
 	}
-	prog, err := parsePSBlock(l, 0)
+	n := 0
+	prog, err := parsePSBlock(l, 0, &n)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return prog, nil
+	return prog, n, nil
 }
 
-func parsePSBlock(l *syntax.Lexer, depth int) ([]psOp, error) {
+func parsePSBlock(l *syntax.Lexer, depth int, n *int) ([]psOp, error) {
 	if depth > 32 {
 		return nil, fmt.Errorf("PostScript function nested too deeply")
 	}
 	var prog []psOp
 	var blocks [][]psOp
 	for {
+		if *n++; *n > maxPSOps {
+			return nil, fmt.Errorf("PostScript function past %d instructions", maxPSOps)
+		}
 		obj, ok := l.Next()
 		if !ok {
 			return nil, fmt.Errorf("PostScript function ends inside a block")
@@ -529,7 +594,7 @@ func parsePSBlock(l *syntax.Lexer, depth int) ([]psOp, error) {
 		case syntax.Keyword:
 			switch v {
 			case "{":
-				b, err := parsePSBlock(l, depth+1)
+				b, err := parsePSBlock(l, depth+1, n)
 				if err != nil {
 					return nil, err
 				}
@@ -613,7 +678,7 @@ func (v psValue) bool() bool {
 	return v.num() != 0
 }
 
-// psStack is the operand stack, bounded because a program is untrusted.
+// psStack is the bounded operand stack.
 type psStack struct {
 	v   [100]psValue
 	len int

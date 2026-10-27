@@ -5,8 +5,7 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// Limits on what one page may ask for. A content stream is untrusted input
-// and every one of these has a file behind it.
+// Limits on what one page may ask for.
 const (
 	maxNesting    = 16      // form XObjects, patterns and Type3 glyphs
 	maxOperands   = 64      // operands before an operator
@@ -31,9 +30,7 @@ type interp struct {
 	defaultsSet   []bool
 
 	path raster.Path
-	// held is the stack of paths being painted, one per painting operator
-	// this is inside: taking the path out of the interpreter is what keeps a
-	// soft mask or a pattern run from inside one from building into it.
+	// held is the stack of paths being painted, one per enclosing painting operator.
 	held    [maxNesting + 2]raster.Path
 	holding int
 	// clip is the pending clip of W or W*, applied by the next paint operator.
@@ -46,22 +43,17 @@ type interp struct {
 	textMode int
 	textCTM  raster.Matrix
 
-	// base is the transform the page started with, which is the space a
-	// pattern matrix is relative to.
+	// base is the transform the page started with, the space of a pattern matrix.
 	base raster.Matrix
 
-	// mc is the marked content stack, and hidden counts how many enclosing
-	// optional content groups are switched off. Hidden content is still
-	// interpreted, so that the stacks stay balanced, but nothing is drawn.
+	// mc is the marked content stack; hidden counts the enclosing optional content groups switched off.
 	mc []markedContent
 	// pending holds the layers whose EMC arrived inside a clip they opened.
 	pending []pendingLayer
 	hidden  int
 
 	depth int
-	// running is the form XObjects on the path from the page to here, so one
-	// that reaches itself stops at the cycle rather than at the depth limit.
-	// It unwinds on the way out, so a form drawn twice side by side still does.
+	// running is the form XObjects on the path from the page to here.
 	running []Ref
 	ops     *int64
 }
@@ -79,16 +71,13 @@ type markedContent struct {
 	hid    bool // this entry hid its content
 }
 
-// pendingLayer is a layer whose EMC arrived while a clip opened inside it was
-// still on the device. Ending it there would leave the layer and the clip
-// crossing rather than nesting, so it waits for the Q that pops the clip.
+// pendingLayer is a layer whose EMC waits for the Q that pops a clip opened inside it.
 type pendingLayer struct {
 	layers int
 	clip   int
 }
 
-// openClips counts the clips the device is holding, which q resets per level
-// and only the whole stack adds up.
+// openClips counts the clips the device is holding over the whole graphics state stack.
 func (ip *interp) openClips() int {
 	n := ip.gs.clipDepth
 	for _, g := range ip.gstack {
@@ -132,8 +121,7 @@ func (ip *interp) run(data []byte) {
 			}
 			continue
 		}
-		if *ip.ops++; *ip.ops > maxOperations {
-			ip.errorf("page exceeds %d operations", maxOperations)
+		if !ip.spend(1) {
 			return
 		}
 		if kw == "BI" {
@@ -367,8 +355,7 @@ func (ip *interp) op(kw syntax.Keyword, stack []syntax.Operand) {
 	}
 }
 
-// markedProperty resolves the property list of a BDC, which is either an
-// inline dictionary or a name to look up in the resources.
+// markedProperty resolves the property list of a BDC, inline or named in the resources.
 func (ip *interp) markedProperty(stack []syntax.Operand) Object {
 	switch v := lastObject(stack).(type) {
 	case Name:
@@ -430,8 +417,7 @@ func (ip *interp) setDeviceColor(c *color, cs *ColorSpace, stack []syntax.Operan
 	cs.Clamp(c.value)
 }
 
-// setColor handles sc, scn, SC and SCN, whose operands depend on the space
-// that cs or CS selected.
+// setColor handles sc, scn, SC and SCN in the space cs or CS selected.
 func (ip *interp) setColor(c *color, stack []syntax.Operand) {
 	if c.cs.IsPattern() {
 		c.pattern = nil
@@ -539,8 +525,7 @@ type drawState struct {
 	group bool
 }
 
-// beginDraw wraps a drawing operation in the soft mask and the blend group
-// the graphics state calls for. bbox bounds what is about to be drawn.
+// beginDraw wraps a drawing operation bounded by bbox in the soft mask and blend group of the graphics state.
 func (ip *interp) beginDraw(bbox raster.Rect) drawState {
 	var d drawState
 	d.mask = ip.beginSoftMask(bbox)
@@ -560,8 +545,7 @@ func (ip *interp) endDraw(d drawState) {
 	}
 }
 
-// beginSoftMask renders the soft mask in force, if any, so that the drawing
-// operation about to happen is clipped by it.
+// beginSoftMask renders the soft mask in force, if any, as a clip.
 func (ip *interp) beginSoftMask(bbox raster.Rect) bool {
 	sm := ip.gs.softMask
 	if sm == nil || ip.depth >= maxNesting {

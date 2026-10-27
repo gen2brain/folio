@@ -6,8 +6,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// clip pushes what clip-path asks for and reports whether anything was
-// pushed, which the caller has to pop.
+// clip pushes the clip clip-path names and reports whether the caller must pop it.
 func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 	id := serverID(r.prop(n, "clip-path"))
 	if id == "" {
@@ -25,8 +24,7 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 
 	m := raster.Concat(atOrigin(transform(c.attr["transform"]),
 		r.prop(c, "transform-origin"), st.vw, st.vh, st.em), ctm)
-	// A clip in the units of the object is written in fractions of the box
-	// the shape covers, SVG 1.1 14.3.5.
+	// SVG 1.1 14.3.5.
 	if strings.TrimSpace(r.inherited(c, "clipPathUnits", 0)) == "objectBoundingBox" {
 		box := r.shapeBounds(n, st)
 		if box.IsEmpty() {
@@ -36,8 +34,6 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 			raster.Translate(box.X0, box.Y0)), m)
 	}
 
-	// Every shape of the clip counts, so they go into one path: with the
-	// nonzero rule the subpaths of one path are the union the spec asks for.
 	var p raster.Path
 	even := false
 	for _, k := range c.kids {
@@ -56,15 +52,16 @@ func (r *runner) clip(n *node, ctm raster.Matrix, st state) bool {
 		p.Append(sub)
 	}
 	if p.IsEmpty() {
-		// A clip with nothing in it clips everything away.
 		p.Rect(0, 0, 0, 0)
+	}
+	if !r.spend(r.pathWork(&p, true, nil, m)) {
+		return false
 	}
 	r.dev.ClipPath(&p, even, m, raster.InfiniteRect)
 	return true
 }
 
-// clipShape is the outline one child of a clipPath contributes, which is a
-// shape or the shape a use refers to.
+// clipShape is the outline one child of a clipPath contributes, through a use too.
 func (r *runner) clipShape(n *node, st state) *raster.Path {
 	switch strings.TrimSpace(r.prop(n, "display")) {
 	case "none":
@@ -110,10 +107,9 @@ func (r *runner) clipShape(n *node, st state) *raster.Path {
 	return nil
 }
 
-// shapeBounds is the box an element's own geometry covers, which a clip and a
-// gradient in the units of the object are fractions of.
+// shapeBounds is the box an element's own geometry covers.
 func (r *runner) shapeBounds(n *node, st state) raster.Rect {
-	if strings.TrimSpace(r.prop(n, "display")) == "none" {
+	if !r.spend(boundsWork) || strings.TrimSpace(r.prop(n, "display")) == "none" {
 		return raster.Rect{}
 	}
 	var p *raster.Path
@@ -133,8 +129,6 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 	case "polygon":
 		p = polyPath(n, true)
 	case "text":
-		// The box a text covers is the one its characters cover, which is
-		// only known by laying them out.
 		if r.depth >= maxNesting {
 			return raster.Rect{}
 		}
@@ -181,7 +175,6 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 			r.prop(t, "transform-origin"), st.vw, st.vh, st.em),
 			raster.Translate(x, y)).ApplyRect(b)
 	default:
-		// A group's box is everything under it, in the group's own space.
 		out := raster.EmptyRect
 		for _, k := range n.kids {
 			b := r.shapeBounds(k, st)
@@ -195,7 +188,7 @@ func (r *runner) shapeBounds(n *node, st state) raster.Rect {
 		}
 		return out
 	}
-	if p == nil {
+	if p == nil || !r.spend(segmentWork*int64(p.Len())) {
 		return raster.Rect{}
 	}
 	return p.Bounds(raster.Identity)

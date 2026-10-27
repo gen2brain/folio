@@ -77,8 +77,7 @@ func (f *File) repair() error {
 	return nil
 }
 
-// objectHeaderStart walks back from an obj keyword over "num gen " and reports
-// where the header begins.
+// objectHeaderStart walks back from an obj keyword over "num gen " to where the header begins.
 func objectHeaderStart(buf []byte, at int) (int, bool) {
 	i := at
 	skipBack := func(pred func(byte) bool) bool {
@@ -106,8 +105,7 @@ func objectHeaderStart(buf []byte, at int) (int, bool) {
 	return i, true
 }
 
-// set2 records an entry, replacing what is there. The repair scan runs forward
-// through the file, so the last definition wins.
+// set2 records an entry, replacing what is there.
 func (x *xref) set2(num uint32, e xrefEntry) {
 	if int(num) >= maxObjects {
 		return
@@ -116,8 +114,7 @@ func (x *xref) set2(num uint32, e xrefEntry) {
 	x.ents[num] = e
 }
 
-// scanTrailers collects the trailer dictionaries, newest last, and takes the
-// keys the document needs from them.
+// scanTrailers collects the trailer dictionaries, newest last, and takes the document keys from them.
 func (f *File) scanTrailers() {
 	want := []Name{"Root", "Info", "Encrypt", "ID", "Size"}
 	pos := 0
@@ -132,6 +129,11 @@ func (f *File) scanTrailers() {
 		l.pos = pos
 		p := NewParser(l, f)
 		obj, ok := p.Object()
+		next := p.lex.pos
+		if p.ok[0] {
+			next = p.start[0]
+		}
+		pos = max(pos, next)
 		if !ok {
 			continue
 		}

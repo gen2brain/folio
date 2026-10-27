@@ -13,9 +13,9 @@ const (
 	gposExtension
 )
 
-// position runs every stage of the plan over the buffer and then settles the
-// marks onto what they were attached to.
+// position runs every stage of the plan over the buffer and settles attached marks.
 func (p *shapePlan) position(b *buffer) {
+	b.bases = nil
 	for _, st := range p.gpos {
 		for _, l := range st.lookups {
 			if b.mayMatch(l.digest) {
@@ -23,15 +23,17 @@ func (p *shapePlan) position(b *buffer) {
 			}
 		}
 	}
-	// A mark carries the advance of whatever glyph it happens to be, which
-	// is not what it takes on the line: it takes none.
 	for i := range b.items {
 		if b.f.gdef.class(b.items[i].gid) == classMark {
 			b.items[i].xadv, b.items[i].yadv = 0, 0
 		}
 	}
+	sum := make([][2]int, len(b.items)+1)
+	for i, it := range b.items {
+		sum[i+1] = [2]int{sum[i][0] + it.xadv, sum[i][1] + it.yadv}
+	}
 	for i := range b.items {
-		b.settle(i, 0)
+		b.settle(i, 0, sum)
 	}
 }
 
@@ -97,8 +99,7 @@ func valueSize(format int) int {
 	return 2 * n
 }
 
-// applyValue moves a glyph by what a value record says. The device tables are
-// read past: they only matter at a size this does not work in.
+// applyValue moves a glyph by a value record, skipping its device tables.
 func (b *buffer) applyValue(d []byte, off, format, at int) {
 	p := off
 	take := func(bit int) int {
@@ -197,7 +198,7 @@ func (b *buffer) pairPos(d []byte, l *otLookup, off, at int) int {
 	return 0
 }
 
-// anchor reads an anchor table, which is a point in glyph space.
+// anchor reads an anchor table as a point in glyph space.
 func anchor(d []byte, off int) (int, int, bool) {
 	if off <= 0 || off+6 > len(d) {
 		return 0, 0, false
@@ -232,8 +233,6 @@ func (b *buffer) cursivePos(d []byte, l *otLookup, off, at int) int {
 	if !ok1 || !ok2 {
 		return 0
 	}
-	// The exit of one glyph is put where the entry of the next is, which is
-	// what joins a cursive script.
 	if b.rtl {
 		v := ex + b.items[at].xoff
 		b.items[at].xadv -= v
@@ -245,8 +244,6 @@ func (b *buffer) cursivePos(d []byte, l *otLookup, off, at int) int {
 		b.items[nxt].xadv -= v
 		b.items[nxt].xoff -= v
 	}
-	// One of the two hangs off the other, and which way round depends on the
-	// direction the lookup itself declares.
 	child, parent := at, nxt
 	dy := eny - ey
 	if l.flag&flagRTL == 0 {
@@ -347,7 +344,6 @@ func (b *buffer) markLigPos(d []byte, l *otLookup, off, at int) int {
 		return 0
 	}
 	comps := be16(d, attach)
-	// A mark sits on the component of the ligature it was written after.
 	comp := 0
 	if b.items[at].ligID != 0 && b.items[at].ligID == b.items[lig].ligID {
 		comp = b.items[at].ligComp
@@ -383,8 +379,6 @@ func (b *buffer) markMarkPos(d []byte, l *otLookup, off, at int) int {
 	if prev < 0 {
 		return 0
 	}
-	// The two have to belong to the same thing: the same ligature and the
-	// same component of it, or neither in one.
 	if b.items[at].ligID != b.items[prev].ligID ||
 		(b.items[at].ligID != 0 && b.items[at].ligComp != b.items[prev].ligComp) {
 		return 0
@@ -413,19 +407,26 @@ func (b *buffer) markMarkPos(d []byte, l *otLookup, off, at int) int {
 	return b.attachMarkTo(mx, my, bx, by, at, prev)
 }
 
-// baseBefore is the nearest glyph before a mark that is not one itself, which
-// is what the mark sits on.
+// baseBefore is the nearest glyph before a mark that is not a mark.
 func (b *buffer) baseBefore(at int) int {
-	for k := at - 1; k >= 0; k-- {
-		if b.f.gdef.class(b.items[k].gid) != classMark {
-			return k
+	if len(b.bases) != len(b.items) {
+		b.bases = make([]int, len(b.items))
+		last := -1
+		for k := range b.items {
+			b.bases[k] = last
+			if b.f.gdef.class(b.items[k].gid) != classMark {
+				last = k
+			}
 		}
 	}
-	return -1
+	return b.bases[at]
 }
 
 // contextPos matches a run and runs other positioning lookups inside it.
 func (b *buffer) contextPos(d []byte, l *otLookup, off, at, depth int, chain bool) int {
+	if depth >= maxLookupNesting {
+		return 0
+	}
 	var recs []subRecord
 	var n int
 	var ok bool
@@ -454,6 +455,9 @@ func (b *buffer) contextPos(d []byte, l *otLookup, off, at, depth int, chain boo
 		if sub == nil {
 			continue
 		}
+		if b.ops--; b.ops < 0 {
+			break
+		}
 		for _, s := range sub.subs {
 			if b.posAt(sub, s, idx[r.at], depth+1) != 0 {
 				break
@@ -463,9 +467,8 @@ func (b *buffer) contextPos(d []byte, l *otLookup, off, at, depth int, chain boo
 	return max(n, 1)
 }
 
-// settle moves a glyph the rest of the way onto what it was attached to, once
-// everything it hangs off has been moved itself.
-func (b *buffer) settle(i, depth int) {
+// settle moves a glyph onto what it is attached to, after settling that first.
+func (b *buffer) settle(i, depth int, sum [][2]int) {
 	if depth > maxLookupNesting || b.items[i].attachKind == attachNone {
 		return
 	}
@@ -475,61 +478,62 @@ func (b *buffer) settle(i, depth int) {
 	if j < 0 || j >= len(b.items) {
 		return
 	}
-	b.settle(j, depth+1)
+	b.settle(j, depth+1, sum)
 	if kind == attachCursive {
 		b.items[i].yoff += b.items[j].yoff
 		return
 	}
 	b.items[i].xoff += b.items[j].xoff
 	b.items[i].yoff += b.items[j].yoff
-	// The offset is measured from where the base sits, so whatever the pen
-	// moved between the two has to come back off.
 	if j < i {
 		if b.rtl {
-			for k := j + 1; k <= i; k++ {
-				b.items[i].xoff += b.items[k].xadv
-				b.items[i].yoff += b.items[k].yadv
-			}
+			b.items[i].xoff += sum[i+1][0] - sum[j+1][0]
+			b.items[i].yoff += sum[i+1][1] - sum[j+1][1]
 		} else {
-			for k := j; k < i; k++ {
-				b.items[i].xoff -= b.items[k].xadv
-				b.items[i].yoff -= b.items[k].yadv
-			}
+			b.items[i].xoff -= sum[i][0] - sum[j][0]
+			b.items[i].yoff -= sum[i][1] - sum[j][1]
 		}
 	}
 }
 
-// kernPairs is the kerning the old table gives a pair of glyphs, which a font
-// with no GPOS of its own carries instead.
+// kernPairs is the kerning the kern table gives a pair of glyphs.
 func (f *Font) kernPairs(left, right int) int {
-	b := f.kern
+	total := 0
+	for _, t := range f.kern {
+		total += kernFormat0(t, left, right)
+	}
+	return total
+}
+
+// kernTables reads the horizontal format 0 subtables of a kern table, at most maxKernTables.
+func kernTables(b []byte) [][]byte {
 	if len(b) < 4 {
-		return 0
+		return nil
 	}
 	at, n := 4, be16(b, 2)
-	// Apple writes a longer header, and a version of one says which.
 	if be16(b, 0) != 0 {
 		if len(b) < 8 {
-			return 0
+			return nil
 		}
 		at, n = 8, be32(b, 4)
 	}
-	total := 0
-	for i := 0; i < n && at+6 <= len(b); i++ {
+	var out [][]byte
+	for i := 0; i < n && at+6 <= len(b) && len(out) < maxKernTables; i++ {
 		length := be16(b, at+2)
 		cover := be16(b, at+4)
 		if length < 6 || at+length > len(b) {
 			break
 		}
-		// Only the horizontal kerning of format zero is read; a minimum or a
-		// cross stream table says something else.
 		if cover&0x0001 != 0 && cover&0x0002 == 0 && cover>>8 == 0 {
-			total += kernFormat0(b[at:at+length], left, right)
+			out = append(out, b[at:at+length])
 		}
 		at += length
 	}
-	return total
+	return out
 }
+
+// maxKernTables bounds the subtables a pair is looked up in.
+const maxKernTables = 64
 
 // kernFormat0 looks a pair up in the sorted list one subtable holds.
 func kernFormat0(b []byte, left, right int) int {
@@ -560,9 +564,7 @@ func kernFormat0(b []byte, left, right int) int {
 	return 0
 }
 
-// kern applies the old kerning table, which is what a font with no kerning of
-// its own in GPOS is left with. The adjustment is shared between the two
-// glyphs the way the reference shaper shares it.
+// kern applies the kern table, splitting each adjustment as HarfBuzz does.
 func (b *buffer) kern() {
 	for i := 0; i+1 < len(b.items); i++ {
 		if b.f.gdef.class(b.items[i].gid) == classMark {

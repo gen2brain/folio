@@ -2,9 +2,7 @@ package gfx
 
 import "github.com/gen2brain/folio/raster"
 
-// BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5. It is
-// raster's, because a blend mode is a function of two colors and nothing
-// about it belongs to a document format.
+// BlendMode is one of the sixteen blend modes of ISO 32000-1 11.3.5.
 type BlendMode = raster.BlendMode
 
 // The separable blend modes, then the four non-separable ones.
@@ -27,8 +25,7 @@ const (
 	BlendLuminosity = raster.BlendLuminosity
 )
 
-// ColorParams are the rendering intent and the four flags that travel with
-// every painting operation.
+// ColorParams are the rendering intent and the flags of every painting operation.
 type ColorParams struct {
 	Intent          int  // 0 perceptual, 1 relative, 2 saturation, 3 absolute
 	BlackPoint      bool // black point compensation
@@ -40,8 +37,7 @@ type ColorParams struct {
 // DefaultColorParams is what a page starts with.
 var DefaultColorParams = ColorParams{Intent: 1, BlackPoint: true}
 
-// DefaultColorSpaces is what the three device spaces mean, and the output
-// intent that stands behind them, ISO 32000-1 8.6.5.6.
+// DefaultColorSpaces are the spaces the device spaces stand for and the output intent, ISO 32000-1 8.6.5.6.
 type DefaultColorSpaces struct {
 	Gray, RGB, CMYK *ColorSpace
 	OutputIntent    *ColorSpace
@@ -79,9 +75,6 @@ func (d *DefaultColorSpaces) Clone() *DefaultColorSpaces {
 }
 
 // Device receives the drawing operations an interpreted document produces.
-// Nothing upstream of it touches a pixel; everything a renderer, a text
-// extractor, a bounding box or a trace needs comes through here.
-//
 // Embed BaseDevice to pick up no-op implementations of everything.
 type Device interface {
 	FillPath(path *raster.Path, evenOdd bool, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp ColorParams)
@@ -102,15 +95,10 @@ type Device interface {
 
 	PopClip()
 
-	// SetDefaultColorSpaces reports the spaces a device color is to be
-	// interpreted in, which a document may override per resource with
-	// /DefaultGray, /DefaultRGB and /DefaultCMYK.
+	// SetDefaultColorSpaces reports the spaces device colors are interpreted in.
 	SetDefaultColorSpaces(d *DefaultColorSpaces)
 
-	// BeginMask opens a soft mask group. What is drawn until EndMask is the
-	// mask, not the page: EndMask turns it into a clip that stays in force
-	// until it is popped, reading either the luminosity of each pixel
-	// against backdrop or its alpha, through the transfer table.
+	// BeginMask opens a soft mask group that EndMask turns into a clip until popped.
 	BeginMask(area raster.Rect, luminosity bool, cs *ColorSpace, backdrop []float32, cp ColorParams)
 	EndMask(transfer *[256]uint8)
 	BeginGroup(area raster.Rect, cs *ColorSpace, isolated, knockout bool, blend BlendMode, alpha float32)
@@ -120,24 +108,20 @@ type Device interface {
 	BeginLayer(name string)
 	EndLayer()
 
-	// Close is called when the page is finished. A device that writes
-	// somewhere flushes here.
+	// Close is called when the page is finished.
 	Close() error
 }
 
-// BaseDevice implements Device with no-ops. Embed it so a device that cares
-// about three operations does not have to spell out twenty.
+// BaseDevice implements Device with no-ops.
 type BaseDevice struct {
-	// running is the glyph procedures the device is in the middle of. A font
-	// with no program of its own draws a glyph by running content through the
-	// device, so the device is the only thing on that path that outlives one
-	// call and the only place it can be bounded.
-	running []any
+	running  []any
+	glyphOps int64
 }
 
-// EnterGlyph reports whether a glyph procedure may run and pushes it, and
-// LeaveGlyph pops it. One that reaches itself stops at the cycle rather than
-// at the nesting limit, because the work a cycle does doubles every turn.
+// GlyphOps is the count every glyph procedure run through the device adds to.
+func (b *BaseDevice) GlyphOps() *int64 { return &b.glyphOps }
+
+// EnterGlyph reports whether a glyph procedure may run and pushes it; LeaveGlyph pops it.
 func (b *BaseDevice) EnterGlyph(key any) bool {
 	if len(b.running) >= maxGlyphDepth {
 		return false
@@ -157,8 +141,7 @@ func (b *BaseDevice) LeaveGlyph() {
 	}
 }
 
-// GlyphRunner is the part of a device a font uses to draw its own glyphs
-// through it. BaseDevice implements it, so every device has it.
+// GlyphRunner is the part of a device a font uses to draw its own glyphs through it.
 type GlyphRunner interface {
 	EnterGlyph(key any) bool
 	LeaveGlyph()

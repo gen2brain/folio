@@ -2,27 +2,21 @@ package pdf
 
 import "github.com/gen2brain/folio/raster"
 
-// meshSplitMin and meshSplitMax bound how finely a patch is tessellated, and
-// meshSplitPixels is how many device pixels one cell aims for.
+// meshSplitMin and meshSplitMax bound patch tessellation; meshSplitPixels is the target cell size in device pixels.
 const (
 	meshSplitMin    = 3
 	meshSplitMax    = 32
 	meshSplitPixels = 3
 )
 
-// meshFull and meshEdge order the control points of a patch as they are
-// written, into the row major grid the surface is evaluated over. A patch
-// that shares an edge with the one before it leaves out that edge's four
-// points; meshInner is the tensor patch's own four.
+// meshFull and meshEdge map written patch control points into the row major grid; meshInner is the tensor patch's own four.
 var (
 	meshFull  = [12]int{0, 4, 8, 12, 13, 14, 15, 11, 7, 3, 2, 1}
 	meshEdge  = [8]int{13, 14, 15, 11, 7, 3, 2, 1}
 	meshInner = [4]int{5, 9, 10, 6}
 )
 
-// paintMesh decodes a type 4 to 7 shading and fills its triangles into px,
-// which m maps the shading's own space onto. It reports whether the mesh
-// decoded far enough to have drawn anything.
+// paintMesh fills the triangles of a type 4 to 7 shading into px under m and reports whether it drew anything.
 func (sh *Shade) paintMesh(m raster.Matrix, px *raster.Pixmap) bool {
 	if sh.stream == nil || sh.doc == nil {
 		return false
@@ -45,6 +39,7 @@ func (sh *Shade) paintMesh(m raster.Matrix, px *raster.Pixmap) bool {
 		dst:    px,
 		n:      px.N,
 		col:    make([]float32, shadeComps(sh)),
+		work:   meshWork*int64(px.W)*int64(px.H) + meshTriangles*meshTriangleWork,
 	}
 	r.ncomp = len(r.col)
 	if len(sh.Function) > 0 {
@@ -53,6 +48,7 @@ func (sh *Shade) paintMesh(m raster.Matrix, px *raster.Pixmap) bool {
 	if !meshBits(r.coord) || !meshBits(r.comp) || len(r.decode) < 4+2*r.ncomp {
 		return false
 	}
+	defer r.charge(r.work)
 	switch sh.Type {
 	case 4:
 		if r.flag != 2 && r.flag != 4 && r.flag != 8 {
@@ -78,8 +74,7 @@ func meshBits(n int) bool {
 	return false
 }
 
-// meshReader reads the packed vertices of a mesh shading and turns them into
-// triangles of the destination's own colors.
+// meshReader turns the packed vertices of a mesh shading into triangles of destination colors.
 type meshReader struct {
 	data  []byte
 	pos   int
@@ -100,7 +95,16 @@ type meshReader struct {
 	rows [2][]raster.Vertex
 
 	drawn bool
+	// work is the area, in samples, the triangles may still fill.
+	work int64
 }
+
+// A mesh's fill bound in destination pixmaps, its triangle bound past that, and a triangle's cost in samples.
+const (
+	meshWork         = 64
+	meshTriangles    = 1 << 20
+	meshTriangleWork = 64
+)
 
 func (r *meshReader) bits(n int) uint32 {
 	for r.nbits < uint(n) {
@@ -127,8 +131,7 @@ func (r *meshReader) more() bool {
 	return !r.eof && (r.pos < len(r.data) || r.nbits >= 8)
 }
 
-// value maps a packed number through the Decode array, whose first two pairs
-// bound the coordinates and whose rest bound the color.
+// value maps a packed number through the Decode array: two coordinate pairs, then color.
 func (r *meshReader) value(v uint32, bits, i int) float64 {
 	lo, hi := 0.0, 1.0
 	if 2*i+1 < len(r.decode) {
@@ -172,12 +175,31 @@ func (r *meshReader) vertex() (raster.Vertex, bool) {
 }
 
 func (r *meshReader) emit(a, b, c raster.Vertex) {
+	if r.work < 0 {
+		return
+	}
+	box := raster.EmptyRect.AddPoint(raster.Point{X: a.X, Y: a.Y}).
+		AddPoint(raster.Point{X: b.X, Y: b.Y}).AddPoint(raster.Point{X: c.X, Y: c.Y}).
+		Intersect(raster.Rect{X0: float32(r.dst.X), Y0: float32(r.dst.Y),
+			X1: float32(r.dst.X + r.dst.W), Y1: float32(r.dst.Y + r.dst.H)})
+	if r.work -= meshTriangleWork; !box.IsEmpty() {
+		r.work -= int64(float64(box.X1-box.X0) * float64(box.Y1-box.Y0))
+	}
+	if r.work < 0 {
+		r.eof = true
+		r.sh.doc.errorf("mesh shading past its work budget")
+		return
+	}
 	r.dst.FillTriangle(a, b, c)
 	r.drawn = true
 }
 
-// triangles reads a type 4 free form mesh, where a flag before each vertex
-// says which two of the last three it joins.
+// charge adds what the mesh filled to its shading's count.
+func (r *meshReader) charge(budget int64) {
+	r.sh.spent.Add(budget - max(r.work, 0))
+}
+
+// triangles reads a type 4 free form mesh.
 func (r *meshReader) triangles() {
 	var a, b, c raster.Vertex
 	pending := 0
@@ -234,8 +256,7 @@ func (r *meshReader) lattice(per int) {
 	r.rows[0], r.rows[1] = prev, row
 }
 
-// patches reads a type 6 or 7 mesh, each patch either standing alone or
-// sharing an edge and two colors with the one before it.
+// patches reads a type 6 or 7 mesh.
 func (r *meshReader) patches(tensor bool) {
 	var p [16]raster.Point
 	var c [4][4]uint8
@@ -278,8 +299,7 @@ func (r *meshReader) patches(tensor bool) {
 	}
 }
 
-// meshJoin puts the points and colors just read into the grid, keeping the
-// edge and two colors the flag says this patch shares with the one before.
+// meshJoin puts the points and colors just read into the grid with the edge flag f shares from the previous patch.
 func meshJoin(p [16]raster.Point, c [4][4]uint8, q [16]raster.Point, rc [4][4]uint8, f uint32) ([16]raster.Point, [4][4]uint8) {
 	var nc [4][4]uint8
 	switch f {
@@ -300,8 +320,7 @@ func meshJoin(p [16]raster.Point, c [4][4]uint8, q [16]raster.Point, rc [4][4]ui
 	return q, nc
 }
 
-// meshInterior computes the four inner control points a Coons patch leaves
-// implied, which is what makes it a tensor patch.
+// meshInterior computes the four implied inner control points of a Coons patch.
 func meshInterior(p *[16]raster.Point) {
 	p[5] = coons(p[0], p[15], p[4], p[1], p[12], p[3], p[13], p[7])
 	p[6] = coons(p[3], p[12], p[2], p[7], p[0], p[15], p[4], p[14])
@@ -316,8 +335,7 @@ func coons(a, b, c, d, e, f, g, h raster.Point) raster.Point {
 	}
 }
 
-// tessellate walks the patch surface on a grid fine enough that its cells are
-// a few pixels across, and emits two triangles for each cell.
+// tessellate walks the patch surface on a grid of cells a few pixels across, two triangles each.
 func (r *meshReader) tessellate(p *[16]raster.Point, c *[4][4]uint8) {
 	nrow := meshSplit(chord(p[0], p[12]), chord(p[3], p[15]))
 	ncol := meshSplit(chord(p[0], p[3]), chord(p[12], p[15]))

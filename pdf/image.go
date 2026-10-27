@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gen2brain/folio/gfx"
 	"github.com/gen2brain/folio/raster"
@@ -36,7 +37,32 @@ type Image struct {
 	stream *syntax.Stream
 	dict   Dict
 	inline []byte
+	// spent is the samples decoding it has produced.
+	spent atomic.Int64
 }
+
+// takeSpent returns and clears the samples the image and its masks have decoded.
+func (i *Image) takeSpent() int64 {
+	n := i.spent.Swap(0)
+	for _, m := range [...]*Image{i.SMask, i.StencilMask} {
+		if m != nil {
+			n += m.spent.Swap(0)
+		}
+	}
+	return n
+}
+
+// charge adds to what the image has cost the samples read to make px, or px's own when more.
+func (i *Image) charge(px *raster.Pixmap) {
+	n := int64(1)
+	if i.CS != nil {
+		n = int64(max(i.CS.N, 1))
+	}
+	i.spent.Add(max(int64(i.Width)*int64(i.Height)*n, int64(len(px.Samples))))
+}
+
+// The samples decoded counted as one operation.
+const imageOpSamples = 64
 
 // image builds an Image from an image XObject or an inline image dictionary.
 func (d *Document) image(st *syntax.Stream, dict Dict, res Dict, inline []byte, depth int) *Image {
@@ -81,8 +107,7 @@ func (d *Document) image(st *syntax.Stream, dict Dict, res Dict, inline []byte, 
 	return img
 }
 
-// MaskImage returns the image that supplies this one's transparency, from
-// /SMask or from a stencil /Mask.
+// MaskImage returns the /SMask or stencil /Mask image that supplies this one's transparency.
 func (i *Image) MaskImage() *Image {
 	if i.SMask != nil {
 		return i.SMask
@@ -126,6 +151,7 @@ func (ip *interp) paintImage(img *Image) {
 	if ip.hidden > 0 {
 		return
 	}
+	defer func() { ip.spend(img.takeSpent() / imageOpSamples) }()
 	ctm := raster.Concat(raster.Matrix{A: 1, D: -1, F: 1}, ip.gs.ctm)
 	bbox := ctm.ApplyRect(raster.Rect{X1: 1, Y1: 1})
 
@@ -569,7 +595,7 @@ func (u *unpacker) run() {
 	}
 }
 
-// mapped is the palette path for byte samples, which index without a reader.
+// mapped is the palette path for byte samples.
 func (u *unpacker) mapped(lut []uint8, rowBytes int) {
 	i, px := u.img, u.px
 	n, m := px.Comps(), px.N
@@ -763,8 +789,7 @@ func (b *bits) next() uint32 {
 	return v
 }
 
-// composite hangs an /SMask or a stencil /Mask on a decoded image and folds
-// the alpha into the color components.
+// composite hangs an /SMask or a stencil /Mask on a decoded image, premultiplying its components.
 func (i *Image) composite(px *raster.Pixmap, opacity []byte) {
 	if !px.Alpha {
 		return
@@ -1082,7 +1107,11 @@ const DefaultImageCacheBytes = 1 << 26
 // decodedImage decodes an image into dst's components, or a stencil for a nil dst, through the cache.
 func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if img.stream == nil {
-		return img.decode(dst, shrink)
+		px, err := img.decode(dst, shrink)
+		if px != nil {
+			img.charge(px)
+		}
+		return px, err
 	}
 	key := imageKey{stream: img.stream, shrink: shrink}
 	if dst != nil {
@@ -1103,6 +1132,7 @@ func (d *Document) decodedImage(img *Image, dst *ColorSpace, shrink int) (*raste
 	if err != nil {
 		return nil, err
 	}
+	img.charge(px)
 	d.mu.Lock()
 	if e := d.images[key]; e != nil {
 		px = e.px

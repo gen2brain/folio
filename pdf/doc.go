@@ -16,15 +16,19 @@ import (
 type Document struct {
 	f *syntax.File
 
-	// errs collects everything that went wrong while reading or interpreting.
 	errs []error
 
 	// mu guards the caches a render fills; errMu guards errs.
 	mu    sync.Mutex
 	errMu sync.Mutex
 
-	fonts  map[any]*Font
-	ocOff  map[Ref]bool
+	fonts map[any]*Font
+	// funcs holds the functions read out of streams, funcSamples their samples.
+	funcs       map[*syntax.Stream]*Function
+	funcSamples int
+	ocOff       map[Ref]bool
+	// ocmd holds what each membership dictionary came to, until the layers change.
+	ocmd   map[Ref]bool
 	layers []Layer
 	usage  Usage
 	// noSystemFonts stops a substitute being looked for outside the file.
@@ -130,6 +134,7 @@ func (d *Document) Close() error {
 	d.fonts, d.images, d.glyphs = nil, nil, nil
 	d.imageHead, d.imageTail, d.imageBytes = nil, nil, 0
 	d.layers, d.ocOff, d.fbFont, d.intent = nil, nil, nil, nil
+	d.ocmd, d.funcs = nil, nil
 	d.mu.Unlock()
 
 	d.errMu.Lock()
@@ -225,7 +230,7 @@ func (d *Document) fallbackFont() *Font { return d.fbFont }
 
 // readOptionalContent applies the document's default optional content configuration.
 func (d *Document) readOptionalContent() {
-	d.layers, d.ocOff = nil, nil
+	d.layers, d.ocOff, d.ocmd = nil, nil, nil
 	props := d.f.GetDict(d.f.Catalog()["OCProperties"])
 	if props == nil {
 		return
@@ -314,14 +319,14 @@ type Layer struct {
 	ref  Ref
 }
 
-// Layers returns the document's optional content groups and whether each is
-// on, in the order the catalog lists them.
+// Layers returns the document's optional content groups in catalog order and whether each is on.
 func (d *Document) Layers() []Layer {
 	return append([]Layer(nil), d.layers...)
 }
 
 // SetLayers turns optional content groups on and off by the On field of each layer.
 func (d *Document) SetLayers(layers []Layer) {
+	d.ocmd = nil
 	known := make(map[Ref]bool, len(d.layers))
 	for i := range d.layers {
 		known[d.layers[i].ref] = true
@@ -354,8 +359,7 @@ const (
 	UsageExport
 )
 
-// SetSystemFonts chooses whether a font the file does not embed may be
-// substituted with one the machine has.
+// SetSystemFonts chooses whether a font the file does not embed may be substituted with a system font.
 func (d *Document) SetSystemFonts(on bool) { d.noSystemFonts = !on }
 
 // Usage returns what the document is being rendered for.
@@ -372,9 +376,31 @@ func (d *Document) optionalContentVisible(obj Object) bool {
 	if obj == nil || len(d.ocOff) == 0 {
 		return true
 	}
-	if r, ok := obj.(Ref); ok && d.ocOff[r] {
+	r, isRef := obj.(Ref)
+	if isRef && d.ocOff[r] {
 		return false
 	}
+	if !isRef {
+		return d.membership(obj)
+	}
+	d.mu.Lock()
+	v, ok := d.ocmd[r]
+	d.mu.Unlock()
+	if ok {
+		return v
+	}
+	v = d.membership(obj)
+	d.mu.Lock()
+	if d.ocmd == nil {
+		d.ocmd = map[Ref]bool{}
+	}
+	d.ocmd[r] = v
+	d.mu.Unlock()
+	return v
+}
+
+// membership evaluates an optional content membership dictionary, ISO 32000-1 8.11.2.2.
+func (d *Document) membership(obj Object) bool {
 	dict := d.f.GetDict(obj)
 	if dict == nil {
 		return true
@@ -588,8 +614,7 @@ func dateZone(s string) *time.Location {
 	return time.FixedZone("", sign*(hh*3600+mm*60))
 }
 
-// PageLabels returns what a viewer numbers each page with, ISO 32000-1
-// 12.4.2, and nil for a document with no labels.
+// PageLabels returns the label of each page, ISO 32000-1 12.4.2, or nil for none.
 func (d *Document) PageLabels() []string {
 	f := d.f
 	root := f.Lookup(f.Catalog(), "PageLabels")

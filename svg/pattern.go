@@ -6,11 +6,7 @@ import (
 	"github.com/gen2brain/folio/raster"
 )
 
-// pattern draws what a pattern server paints over the shape a path covers,
-// and reports whether the reference named a pattern at all. One that draws
-// nothing still answers for the paint, so the shape is not filled with the
-// color underneath it. The caller has already clipped to the shape, which is
-// what bounds the tiles.
+// pattern paints a pattern server over the clipped shape and reports whether the reference named a pattern.
 func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st state) bool {
 	id := serverID(value)
 	if id == "" {
@@ -23,8 +19,6 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	if r.depth >= maxNesting {
 		return true
 	}
-	// A pattern with no content of its own draws what the one it was written
-	// as a variation of draws.
 	content := n
 	for i := 0; len(content.kids) == 0 && i < maxNesting; i++ {
 		p := r.doc.byID[fragment(content.attr["href"])]
@@ -37,8 +31,7 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 		return true
 	}
 
-	// The tile's own box is in the units of the shape unless it says
-	// otherwise, SVG 1.1 13.3.
+	// SVG 1.1 13.3.
 	units := strings.TrimSpace(r.inherited(n, "patternUnits", 0))
 	user := units == "userSpaceOnUse"
 	ref := raster.Rect{X1: 1, Y1: 1}
@@ -69,17 +62,10 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 		w, h = w*bw, h*bh
 	}
 
-	// The tile is placed where it says, and the drawing inside it is scaled
-	// by its own viewBox when it has one.
 	pt := atOrigin(transform(r.inherited(n, "patternTransform", 0)),
 		r.inherited(n, "transform-origin", 0), st.vw, st.vh, st.em)
 	tile := raster.Concat(raster.Concat(raster.Translate(x, y), pt), ctm)
-	// pre maps the content onto the cell and applies before the cell is
-	// stepped, so the step stays one cell whatever the content is scaled by.
 	pre := raster.Identity
-	// The content of a pattern is not inside the shape that referred to it,
-	// so it inherits nothing from it: a shape stroked black must not put a
-	// black edge around every tile.
 	sub := initialState(w, h)
 	if vb := numbers(r.inherited(n, "viewBox", 0)); len(vb) == 4 && vb[2] > 0 && vb[3] > 0 {
 		al, sl := aspect(r.inherited(n, "preserveAspectRatio", 0))
@@ -107,6 +93,9 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	for ty := y0; ty < y1; ty++ {
 		for tx := x0; tx < x1; tx++ {
 			at := raster.Concat(raster.Translate(float32(tx)*w, float32(ty)*h), tile)
+			if !r.spend(elementWork + r.pathWork(&cell, true, nil, at)) {
+				break
+			}
 			r.dev.ClipPath(&cell, false, at, raster.InfiniteRect)
 			r.children(content, raster.Concat(pre, at), sub)
 			r.dev.PopClip()
@@ -116,8 +105,7 @@ func (r *runner) pattern(value string, box raster.Rect, ctm raster.Matrix, st st
 	return true
 }
 
-// clipBox is the area of the drawing a pattern has to cover, which is the
-// shape's box in device space.
+// clipBox is the shape's box in device space.
 func (r *runner) clipBox(box raster.Rect, ctm raster.Matrix) raster.Rect {
 	return ctm.ApplyRect(box)
 }
@@ -137,7 +125,6 @@ func tileRange(area, view raster.Rect, xstep, ystep float32) (x0, y0, x1, y1 int
 	if y1 <= y0 {
 		y1 = y0 + 1
 	}
-	// A pattern whose cell is a fraction of a pixel would repeat forever.
 	if n := (x1 - x0) * (y1 - y0); n > maxTiles || n < 0 {
 		return 0, 0, 1, 1
 	}

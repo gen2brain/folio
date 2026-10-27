@@ -1,9 +1,9 @@
 // Package syntax reads the PDF file format: objects, cross references, object
-// streams, damaged file recovery, the stream filters and encryption. It knows
-// nothing about graphics.
+// streams, damaged file recovery, the stream filters and encryption.
 package syntax
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"io"
@@ -11,9 +11,8 @@ import (
 	"sync"
 )
 
-// ErrInvalid is returned for a file that is not a PDF, or is damaged beyond
-// what reconstruction can recover. ErrUnsupported is returned for a well formed
-// file this package cannot handle.
+// ErrInvalid is returned for a file that is not a PDF or cannot be recovered,
+// ErrUnsupported for a well formed file this package cannot handle.
 var (
 	ErrInvalid     = errors.New("pdf: invalid file")
 	ErrUnsupported = errors.New("pdf: unsupported file")
@@ -27,32 +26,78 @@ type File struct {
 	enc   *encrypt
 	trail Dict
 
-	// mu guards the object caches, which are the only mutable state a
-	// rendering goroutine touches. Everything else a File holds is built
-	// while it is being opened and read-only afterwards, which is what lets
-	// a document be rendered from several goroutines at once.
+	// mu guards the object caches.
 	mu    sync.RWMutex
 	errMu sync.Mutex
 
-	// hdrOff is where %PDF- was found. It is nonzero only for files with
-	// something prepended, whose stored offsets may or may not account for it.
+	// hdrOff is the offset of %PDF-.
 	hdrOff int64
 
 	root  Dict
 	pages []Ref
 
-	// pageMu guards pageIdx, which is built the first time a reference has
-	// to be turned back into a page number.
 	pageMu  sync.Mutex
 	pageIdx map[Ref]int
 
-	// errs collects everything that went wrong while parsing or reading. A
-	// damaged file still yields the parts that could be read, so this is a
-	// log rather than a failure: only Open returning an error means nothing
-	// could be recovered. Err reads it.
 	errs []error
 
 	repaired bool
+
+	// StreamCacheBytes bounds the decoded stream data kept: zero is
+	// DefaultStreamCacheBytes, negative is none.
+	StreamCacheBytes int
+	decMu            sync.Mutex
+	decLRU           list.List
+	decHeld          int
+}
+
+// DefaultStreamCacheBytes is the default bound of a file's decoded stream cache.
+const DefaultStreamCacheBytes = 1 << 26
+
+// keep puts a decoded stream in the cache and drops the oldest past its bound.
+func (f *File) keep(s *Stream, n, gen int) {
+	limit := f.StreamCacheBytes
+	if limit == 0 {
+		limit = DefaultStreamCacheBytes
+	}
+	type victim struct {
+		s   *Stream
+		gen int
+	}
+	var drop []victim
+	f.decMu.Lock()
+	if s.elem == nil {
+		s.elem, s.held = f.decLRU.PushFront(victim{s, gen}), n
+		f.decHeld += n
+	}
+	for f.decHeld > max(limit, 0) {
+		e := f.decLRU.Back()
+		if e == nil {
+			break
+		}
+		v := e.Value.(victim)
+		f.decLRU.Remove(e)
+		f.decHeld -= v.s.held
+		v.s.elem, v.s.held = nil, 0
+		drop = append(drop, v)
+	}
+	f.decMu.Unlock()
+	for _, v := range drop {
+		v.s.mu.Lock()
+		if v.s.gen == v.gen {
+			v.s.dec, v.s.decoded = nil, false
+		}
+		v.s.mu.Unlock()
+	}
+}
+
+// touch marks a cached stream as just used.
+func (f *File) touch(s *Stream) {
+	f.decMu.Lock()
+	if s.elem != nil {
+		f.decLRU.MoveToFront(s.elem)
+	}
+	f.decMu.Unlock()
 }
 
 // Open reads the named file.
@@ -67,9 +112,7 @@ func OpenPassword(name, password string) (*File, error) {
 	return load(b, password)
 }
 
-// NewReader reads size bytes from r. The whole file is read into memory:
-// resolving a cross-reference means seeking anywhere in it, and every filter
-// decodes into memory regardless.
+// NewReader reads size bytes from r into memory.
 func NewReader(r io.ReaderAt, size int64) (*File, error) {
 	return NewReaderPassword(r, size, "")
 }
@@ -89,9 +132,7 @@ func NewReaderPassword(r io.ReaderAt, size int64, password string) (*File, error
 // Load reads a document from a buffer, which it takes ownership of.
 func Load(buf []byte, password string) (*File, error) { return load(buf, password) }
 
-// Close releases the file. It must not be called while anything is still
-// reading the file, which for a document rendered from several goroutines
-// means after the last of them has finished.
+// Close releases the file. It must not be called while anything is still reading it.
 func (f *File) Close() error {
 	f.mu.Lock()
 	f.buf, f.root, f.pages, f.trail = nil, nil, nil, nil
@@ -125,8 +166,7 @@ func (f *File) errorf(format string, a ...any) {
 	}
 }
 
-// Err returns what went wrong while reading the file, which is a log rather
-// than a failure: a damaged file still yields the parts that could be read.
+// Err returns the errors recorded while reading the file.
 // It is safe to call while other goroutines are reading the same file.
 func (f *File) Err() []error {
 	if f == nil {

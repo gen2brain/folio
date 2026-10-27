@@ -7,15 +7,14 @@ import (
 	"github.com/gen2brain/folio/font"
 )
 
-// The three kinds of face the base fourteen can stand in for.
+// The three kinds of face the base fourteen substitute for.
 const (
 	familySerif = iota
 	familySans
 	familyMono
 )
 
-// genericFamilies maps what a stylesheet names onto the three kinds of face
-// there are substitutes for.
+// genericFamilies maps a family name onto one of the three kinds of face.
 var genericFamilies = map[string]int{
 	"serif":              familySerif,
 	"ui-serif":           familySerif,
@@ -83,24 +82,21 @@ var base14 = [3][4]string{
 	familyMono:  {"Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"},
 }
 
-// face is a font program at a size, what a run of text measures and draws with.
+// face is a font program at a size.
 type face struct {
 	prog *font.Font
 	m    *faceMetrics
 	size float32
-	// track is what letter-spacing adds after every character.
+	// track is the letter-spacing added after every character.
 	track float32
-	// bold and italic are what was asked for, which a fallback for a script
-	// this face cannot draw is looked up by.
+	// bold and italic are the style asked for, for looking up a fallback.
 	bold, italic bool
-	// vertical is a face measured down a line rather than across one, and
-	// orient how it turns a character there.
+	// vertical is a face set down the line; orient turns a character there.
 	vertical bool
 	orient   Orientation
 }
 
-// faceMetrics is what a program says about itself, worked out once: the em
-// box, and the advance of every character a Latin book is mostly made of.
+// faceMetrics is a program's em box and ASCII advances, computed once.
 type faceMetrics struct {
 	ascent, descent float32
 	ascii           [128]glyph
@@ -108,20 +104,15 @@ type faceMetrics struct {
 	upem            float32
 	once            sync.Once
 	prog            *font.Font
-	// mu guards the glyphs a face has been asked about above ASCII. Looking
-	// one up in a font of sixty thousand glyphs is what measuring a page of
-	// ideographs costs, and it is the same answer every time.
+	// mu guards glyphs, the cached look-ups above ASCII.
 	mu     sync.RWMutex
 	glyphs map[rune]glyph
-	// runMu guards the runs the font has shaped. Breaking a paragraph into
-	// lines measures the same text again and again, and shaping a script
-	// that joins is far too much work to repeat.
+	// runMu guards runs, the cached shaped runs.
 	runMu sync.RWMutex
 	runs  map[shapeKey][]font.Glyph
 }
 
-// glyph is what a character maps to in one program: the glyph index, and how
-// far the pen moves in text space.
+// glyph is a glyph index and its advance in text space.
 type glyph struct {
 	gid int32
 	adv float32
@@ -167,7 +158,7 @@ func (m *faceMetrics) read(r rune) glyph {
 	return glyph{gid: int32(gid), adv: m.prog.Advance(gid) / m.upem}
 }
 
-// glyph is what a character maps to, remembered after the first look-up.
+// glyph is the cached look-up of r.
 func (m *faceMetrics) glyph(r rune) glyph {
 	if r >= 0 && r < 128 {
 		return m.ascii[r]
@@ -195,21 +186,20 @@ func (m *faceMetrics) advance(r rune) float32 {
 	if g := m.glyph(r); g.gid > 0 {
 		return g.adv
 	}
-	// A character the substitute has no glyph for still takes room, or the
-	// text of a script it cannot draw collapses into nothing.
 	if wide(r) {
 		return 1
 	}
 	return m.space
 }
 
-// styleFace picks the face a computed style asks for: what the book brings
-// with it for one of the families it names, then what the machine has, then
-// one of the base fourteen.
+// styleFace picks the face a style asks for: the book's own, then the machine's, then the base fourteen.
 func styleFace(s *Style, set *fontSet) face {
 	bold, italic := s.FontWeight >= 600, s.FontStyle != StyleNormal
 	prog := set.pick(s.FontFamily, bold, italic)
-	if prog == nil {
+	var m *faceMetrics
+	if prog != nil {
+		m = set.doc.metricsOf(prog)
+	} else {
 		prog = namedFont(s.FontFamily, bold, italic)
 	}
 	if prog == nil {
@@ -229,29 +219,38 @@ func styleFace(s *Style, set *fontSet) face {
 		}
 		prog = font.Standard(base14[kind][slot])
 	}
-	return face{prog: prog, m: metricsOf(prog), size: s.FontSize,
+	if m == nil {
+		m = metricsOf(prog)
+	}
+	return face{prog: prog, m: m, size: s.FontSize,
 		track: s.LetterSpacing, bold: bold, italic: italic,
 		vertical: s.Writing.Vertical(), orient: s.Orient}
 }
 
-// namedKey is what a resolved family is remembered by.
+// namedKey is the cache key of a resolved family list.
 type namedKey struct {
 	families     string
 	bold, italic bool
 }
 
-var namedCache sync.Map
+var (
+	namedMu    sync.Mutex
+	namedCache = map[namedKey]*font.Font{}
+)
 
-// namedFont is the first of the families a style names that the machine has,
-// and nil when it has none of them. A generic family is left to the base
-// fourteen, which every machine has and which draw the same everywhere.
+// maxNamed bounds the family lists namedCache remembers.
+const maxNamed = 4096
+
+// namedFont is the first family named that the machine has, or nil; generic families are left to the base fourteen.
 func namedFont(families []string, bold, italic bool) *font.Font {
 	if len(families) == 0 {
 		return nil
 	}
 	key := namedKey{strings.Join(families, ","), bold, italic}
-	if v, ok := namedCache.Load(key); ok {
-		f, _ := v.(*font.Font)
+	namedMu.Lock()
+	f, ok := namedCache[key]
+	namedMu.Unlock()
+	if ok {
 		return f
 	}
 	var found *font.Font
@@ -264,14 +263,18 @@ func namedFont(families []string, bold, italic bool) *font.Font {
 			break
 		}
 	}
-	namedCache.Store(key, found)
+	namedMu.Lock()
+	if len(namedCache) >= maxNamed {
+		clear(namedCache)
+	}
+	namedCache[key] = found
+	namedMu.Unlock()
 	return found
 }
 
 func foldFamily(name string) string { return strings.ToLower(strings.TrimSpace(name)) }
 
-// fallbackFace is a face for a character the one in hand cannot draw, which
-// is what a page in a script the base fourteen have no glyphs for needs.
+// fallbackFace is a face for a character f cannot draw.
 func fallbackFace(f face, r rune) face {
 	prog := font.Fallback(r, f.bold, f.italic)
 	if prog == nil {
@@ -287,10 +290,10 @@ func smallCapsFace(f face) face {
 	return f
 }
 
-// smallCapsScale is how much a synthesised small capital shrinks by.
+// smallCapsScale is the size of a synthesised small capital relative to a capital.
 const smallCapsScale = 0.8
 
-// width is how much room a run of text takes.
+// width is the advance of a run of text.
 func (f face) width(s string) float32 {
 	if gs, ok := f.shape(s, false); ok {
 		w := float32(0)
@@ -307,8 +310,7 @@ func (f face) width(s string) float32 {
 	return w*f.size + float32(n)*f.track
 }
 
-// shape runs the text through the font's own layout tables. Plain text is
-// measured a character at a time, the same answer for much less work.
+// shape runs the text through the font's layout tables; plain text is measured a character at a time.
 func (f face) shape(s string, rtl bool) ([]font.Glyph, bool) {
 	if f.prog == nil || f.m == nil || f.vertical || !f.prog.Shaped() || !font.NeedsShaping(s) {
 		return nil, false
@@ -339,11 +341,10 @@ type shapeKey struct {
 	rtl bool
 }
 
-// maxShapedRuns bounds what a face remembers of the text it has shaped.
+// maxShapedRuns bounds the shaped runs a face caches.
 const maxShapedRuns = 1 << 14
 
-// advance is what a character takes along its line, which for one that stands
-// upright in vertical text is the em rather than its own width.
+// advance is the advance of r along its line, the em for an upright character in vertical text.
 func (f face) advance(r rune) float32 {
 	if f.standsUp(r) {
 		return f.size + f.track
@@ -351,8 +352,7 @@ func (f face) advance(r rune) float32 {
 	return f.m.advance(r)*f.size + f.track
 }
 
-// standsUp reports a character drawn upright rather than turned with the
-// line, which only happens in vertical text.
+// standsUp reports a character drawn upright in vertical text.
 func (f face) standsUp(r rune) bool {
 	if !f.vertical {
 		return false
@@ -369,13 +369,11 @@ func (f face) standsUp(r rune) bool {
 // gid is the glyph a character is drawn with, and -1 when the face has none.
 func (f face) gid(r rune) int { return int(f.m.glyph(r).gid) }
 
-// ascent and descent are how far the face reaches either side of the baseline.
+// ascent and descent are the extent of the face either side of the baseline.
 func (f face) ascent() float32  { return f.m.ascent * f.size }
 func (f face) descent() float32 { return -f.m.descent * f.size }
 
-// xHeight, subOffset and superOffset are what the program says about a lower
-// case x and about where a script sits, and a plain fraction of the em for a
-// program that says nothing, which is every one that is not an SFNT.
+// xHeight, subOffset and superOffset come from the program, or a fraction of the em when it has none.
 func (f face) xHeight() float32 { return f.metric(f.prog.XHeight, 0.5) }
 
 func (f face) subOffset() float32 { return f.metric(f.prog.SubOffset, 0.1) }
@@ -389,15 +387,13 @@ func (f face) metric(v, def float32) float32 {
 	return v * f.size
 }
 
-// fontSet are the faces a book brings with it, from the @font-face rules of
-// the sheets that style a part.
+// fontSet are the faces the @font-face rules of a part's sheets declare.
 type fontSet struct {
 	doc   *Document
 	faces map[string][]FontFace
 }
 
-// newFontSet collects what the sheets declare, in the order they are read: a
-// family declared twice resolves to the last one that said it.
+// newFontSet collects the faces the sheets declare; a family declared twice resolves to the last.
 func newFontSet(d *Document, sheets []*Stylesheet) *fontSet {
 	var set *fontSet
 	for _, s := range sheets {
@@ -415,8 +411,7 @@ func newFontSet(d *Document, sheets []*Stylesheet) *fontSet {
 	return set
 }
 
-// pick returns the face a book brings for the first family it names that it
-// has one for, and nil when it brings none of them.
+// pick returns the book's face for the first named family it has, or nil.
 func (s *fontSet) pick(families []string, bold, italic bool) *font.Font {
 	if s == nil {
 		return nil
@@ -429,8 +424,7 @@ func (s *fontSet) pick(families []string, bold, italic bool) *font.Font {
 	return nil
 }
 
-// find returns the face a book brings for a family at a weight and a slant,
-// and nil when it brings none.
+// find returns the book's face for a family at a weight and slant, or nil.
 func (s *fontSet) find(family string, bold, italic bool) *font.Font {
 	list := s.faces[foldFamily(family)]
 	if len(list) == 0 {
@@ -465,8 +459,23 @@ func abs(v int) int {
 	return v
 }
 
-// embeddedFont reads and parses one of the font programs a book carries, once
-// per book however many parts name it.
+// metricsOf is the metrics of a font the book brings, cached on the document.
+func (d *Document) metricsOf(prog *font.Font) *faceMetrics {
+	d.fontMu.Lock()
+	m, ok := d.metrics[prog]
+	if !ok {
+		m = &faceMetrics{prog: prog}
+		if d.metrics == nil {
+			d.metrics = map[*font.Font]*faceMetrics{}
+		}
+		d.metrics[prog] = m
+	}
+	d.fontMu.Unlock()
+	m.once.Do(m.fill)
+	return m
+}
+
+// embeddedFont parses a font program the book carries, once per path.
 func (d *Document) embeddedFont(path string) *font.Font {
 	d.fontMu.Lock()
 	if prog, ok := d.fonts[path]; ok {

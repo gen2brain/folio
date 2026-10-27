@@ -57,7 +57,7 @@ type Font struct {
 	// gsub, gpos and gdef are the OpenType layout tables, plans the lookups per script.
 	gsub, gpos *otLayout
 	gdef       *gdef
-	kern       []byte
+	kern       [][]byte
 	shapeMu    sync.Mutex
 	plans      map[string]*shapePlan
 

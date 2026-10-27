@@ -4,8 +4,7 @@ import (
 	"github.com/gen2brain/folio/syntax"
 )
 
-// DefaultContentCacheOps is how many operands of parsed content streams a
-// document keeps when nothing says otherwise.
+// DefaultContentCacheOps is the default bound, in operands, of a document's parsed content cache.
 const DefaultContentCacheOps = 1 << 18
 
 type contentOp struct {
@@ -32,8 +31,7 @@ func (ip *interp) runStream(st *syntax.Stream, data []byte) {
 
 func (ip *interp) replay(c *content) {
 	for i := range c.ops {
-		if *ip.ops++; *ip.ops > maxOperations {
-			ip.errorf("page exceeds %d operations", maxOperations)
+		if !ip.spend(1) {
 			return
 		}
 		ip.op(c.ops[i].kw, c.ops[i].args)
@@ -43,8 +41,7 @@ func (ip *interp) replay(c *content) {
 	}
 }
 
-// content returns the parsed form of a content stream, nil the first time it
-// is asked for and whenever the cache is full or the stream cannot be kept.
+// content returns the parsed form of a content stream, or nil when it is not cached yet or cannot be.
 func (d *Document) content(st *syntax.Stream, data []byte) *content {
 	if st == nil || d.ContentCacheOps < 0 {
 		return nil
@@ -92,8 +89,7 @@ func (d *Document) contentBudget() int {
 	return d.ContentCacheOps
 }
 
-// parseContent reads a content stream into the operators it runs. One
-// carrying an inline image is not kept.
+// parseContent reads a content stream into its operators, uncached when it carries an inline image.
 func (d *Document) parseContent(data []byte) *content {
 	l := syntax.NewLexer(data)
 	p := syntax.NewParser(l, d.f)
