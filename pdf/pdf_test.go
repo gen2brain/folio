@@ -2024,6 +2024,17 @@ func TestJPXTileTwice(t *testing.T) {
 	}
 }
 
+// TestJPXNoTile decodes a codestream of 16x11737392 whose one tile has too many code blocks.
+func TestJPXNoTile(t *testing.T) {
+	b := []byte("\xffO\xffQ\x00)00\x00\x0000\x00\xb3\x190\x00\x000 \x00\x00\x00\x000 \x00\x010000" +
+		"\x00\x000 \x00\x000 \x00\x0107\x01\xffR\x00\f0\x00000\x020Q00\xff\\\x00%A" +
+		"0000000000000000000000000000000000\xff\x90\x00\n\x00\x000000\x000\xff\x93\xd800")
+	img, err := jpxDecode(b, false)
+	if img != nil || err == nil {
+		t.Errorf("a codestream with no tile to decode gave an image and %v", err)
+	}
+}
+
 func FuzzJPX(fu *testing.F) {
 	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.j2k"))
 	for _, name := range names {

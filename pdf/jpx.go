@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/gen2brain/folio/syntax"
 )
@@ -1889,6 +1890,7 @@ func jpxParseCodestream(data []byte, start, end int) (*jpxContext, error) {
 					return ctx, err
 				}
 				if err := jpxBuildPackets(ctx, tile); err != nil {
+					tile.cod = nil
 					return ctx, err
 				}
 			}
@@ -1941,6 +1943,9 @@ func jpxAssemble(ctx *jpxContext) (*jpxImage, error) {
 	if w <= 0 || h <= 0 || w > maxImagePixels || h > maxImagePixels ||
 		int64(w)*int64(h)*int64(n) > maxImagePixels {
 		return nil, fmt.Errorf("%w: JPX is %dx%d with %d components", ErrInvalid, w, h, n)
+	}
+	if !slices.ContainsFunc(ctx.tiles, func(t *jpxTile) bool { return t.cod != nil }) {
+		return nil, fmt.Errorf("%w: JPX has no tile to decode", ErrInvalid)
 	}
 	img := &jpxImage{width: w, height: h, comps: n, pix: make([]byte, w*h*n)}
 
