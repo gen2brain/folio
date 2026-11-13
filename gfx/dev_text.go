@@ -541,11 +541,14 @@ func near(a, b raster.Point, tol float32) bool {
 	return abs32(a.X-b.X) <= tol && abs32(a.Y-b.Y) <= tol
 }
 
-// DefaultDPI is the resolution a page with no image on it renders at.
+// DefaultDPI is the resolution a page renders at when no image covers enough of it.
 const DefaultDPI = 300
 
-// CropArea is the share of a page a picture covers before a page holding
-// nothing else is taken to be that picture.
+// MinDPI is the lowest resolution a page renders at for the image on it, one pixel a point.
+const MinDPI = 72
+
+// CropArea is the share of a page a picture covers before the page renders at
+// its resolution, and before a page holding nothing else is taken to be that picture.
 const CropArea = 0.5
 
 // BookCropArea is CropArea for a page of a book.
@@ -568,10 +571,10 @@ func (n *Natural) Get(f func() (float64, raster.Rect, bool)) (float64, raster.Re
 	return n.dpi, n.box, n.crop
 }
 
-// NaturalDPI is the highest resolution any image on the page is drawn at,
+// NaturalDPI is the resolution the largest image on the page is drawn at, and
+// at least MinDPI, when it covers minArea of the page, DefaultDPI otherwise,
 // lowered until the page fits in NaturalPixels and in limit pixels, and the box
-// of the largest image when no text is drawn and it covers minArea. A negative
-// limit is none.
+// of that image, cropped to when no text is drawn. A negative limit is none.
 func NaturalDPI(st *TextPage, page raster.Rect, minArea float64, limit int) (dpi float64, box raster.Rect, crop bool) {
 	if st == nil {
 		return fitDPI(DefaultDPI, page, limit), box, false
@@ -584,23 +587,21 @@ func NaturalDPI(st *TextPage, page raster.Rect, minArea float64, limit int) (dpi
 			text = true
 			continue
 		}
-		w, h := b.Image.Size()
 		bw, bh := b.Bounds.X1-b.Bounds.X0, b.Bounds.Y1-b.Bounds.Y0
-		if bw > 0 {
-			dpi = max(dpi, float64(w)*72/float64(bw))
+		if bw <= 0 || bh <= 0 || bw*bh <= area {
+			continue
 		}
-		if bh > 0 {
-			dpi = max(dpi, float64(h)*72/float64(bh))
-		}
-		if bw*bh > area {
-			area, box = bw*bh, b.Bounds
-		}
-	}
-	if !(dpi > 0) {
-		dpi = DefaultDPI
+		w, h := b.Image.Size()
+		area, box = bw*bh, b.Bounds
+		dpi = max(float64(w)*72/float64(bw), float64(h)*72/float64(bh))
 	}
 	pa := (page.X1 - page.X0) * (page.Y1 - page.Y0)
-	return fitDPI(dpi, page, limit), box, !text && pa > 0 && float64(area) >= minArea*float64(pa)
+	large := pa > 0 && float64(area) >= minArea*float64(pa)
+	if !large || !(dpi > 0) {
+		dpi = DefaultDPI
+	}
+	dpi = max(dpi, MinDPI)
+	return fitDPI(dpi, page, limit), box, !text && large
 }
 
 // fitDPI lowers dpi until the page, rounded out to whole pixels, is within

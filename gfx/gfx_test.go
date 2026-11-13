@@ -477,13 +477,19 @@ func TestNaturalDPI(t *testing.T) {
 		{"nothing at all", nil, DefaultDPI, false},
 		{"a page that is one picture", []TextBlock{block(1200, 1800, 0, 0, 600, 900)}, 144, true},
 		{"a landscape picture across the page",
-			[]TextBlock{block(1400, 1000, 0, 0, 600, 428)}, 168, false},
+			[]TextBlock{block(1400, 1000, 0, 0, 600, 428)}, DefaultDPI, false},
 		{"a tall picture down the page",
 			[]TextBlock{block(800, 1600, 0, 0, 450, 900)}, 128, true},
 		{"a thin strip across the foot of the page",
-			[]TextBlock{block(81915, 1, 0, 791, 4178, 792)}, 802, false},
+			[]TextBlock{block(81915, 1, 0, 791, 4178, 792)}, DefaultDPI, false},
 		{"a small picture reaching neither edge",
-			[]TextBlock{block(100, 100, 10, 10, 110, 110)}, 72, false},
+			[]TextBlock{block(100, 100, 10, 10, 110, 110)}, DefaultDPI, false},
+		{"a small sharp picture",
+			[]TextBlock{block(2000, 2000, 100, 100, 120, 120)}, DefaultDPI, false},
+		{"a page that is one coarse picture",
+			[]TextBlock{block(10, 15, 0, 0, 600, 900)}, MinDPI, true},
+		{"a page that is one picture with a sharp logo on it",
+			[]TextBlock{block(1200, 1800, 0, 0, 600, 900), block(2000, 2000, 100, 100, 120, 120)}, 144, true},
 		{"a picture on a page with text",
 			[]TextBlock{block(1200, 1800, 0, 0, 600, 900), text}, 144, false},
 	} {
@@ -502,24 +508,24 @@ func TestNaturalDPI(t *testing.T) {
 	}
 
 	land := &TextPage{Bounds: page, Blocks: []TextBlock{block(1400, 1000, 0, 0, 600, 428)}}
-	if _, _, crop := NaturalDPI(land, page, BookCropArea, -1); !crop {
-		t.Error("a landscape picture on a book page was not cropped to")
+	if dpi, _, crop := NaturalDPI(land, page, BookCropArea, -1); !crop || int(dpi) != 168 {
+		t.Errorf("a landscape picture on a book page gave %v dpi, crop %v, want 168 and a crop", dpi, crop)
 	}
 	strip := &TextPage{Bounds: page, Blocks: []TextBlock{block(81915, 1, 0, 791, 4178, 792)}}
 	if _, _, crop := NaturalDPI(strip, page, BookCropArea, -1); crop {
 		t.Error("a thin strip was cropped to even at the book share")
 	}
 
-	tiny := &TextPage{Bounds: page, Blocks: []TextBlock{block(8192, 8192, 0, 0, 1, 1), text}}
+	huge := &TextPage{Bounds: page, Blocks: []TextBlock{block(81920, 122880, 0, 0, 600, 900), text}}
 	for _, lim := range []int{1 << 28, 1 << 20, 4} {
-		dpi, _, _ := NaturalDPI(tiny, page, CropArea, lim)
+		dpi, _, _ := NaturalDPI(huge, page, CropArea, lim)
 		w, h := math.Ceil(600*dpi/72)+1, math.Ceil(900*dpi/72)+1
 		if !(dpi >= 1) || (w*h > float64(lim) && dpi > 1) {
 			t.Errorf("limit %d: %v dpi is %vx%v", lim, dpi, w, h)
 		}
 	}
 	for _, lim := range []int{1 << 28, -1} {
-		dpi, _, _ := NaturalDPI(tiny, page, CropArea, lim)
+		dpi, _, _ := NaturalDPI(huge, page, CropArea, lim)
 		w, h := math.Ceil(600*dpi/72)+1, math.Ceil(900*dpi/72)+1
 		if w*h > NaturalPixels || w*h < NaturalPixels*0.97 {
 			t.Errorf("limit %d: %v dpi is %vx%v, want just under %d pixels", lim, dpi, w, h, NaturalPixels)
