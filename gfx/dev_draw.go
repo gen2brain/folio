@@ -143,6 +143,14 @@ func (d *DrawDevice) fillPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, p
 	d.ras.SetClip(d.clip.rect)
 	d.ras.AddPath(p, ctm)
 	d.ras.Fill(d.dst, rule, paint)
+	d.whole(d.ras)
+}
+
+// whole reports a fill the rasterizer could hold only part of.
+func (d *DrawDevice) whole(r *raster.Rasterizer) {
+	if r.Truncated() {
+		d.fail(fmt.Errorf("%w: a path too complex to fill whole was filled in part", ErrUnsupported))
+	}
 }
 
 // cullFill is p with what lies above or below the clip reduced to lines.
@@ -255,6 +263,7 @@ func (d *DrawDevice) maskClip(bounds raster.Rect, add func(*raster.Rasterizer, i
 	}
 	add(d.mas, x0, y0)
 	d.mas.Sweep(rule, mask.MaskBlitter())
+	d.whole(d.mas)
 
 	mask.MulMask(d.clip.mask)
 	return clipState{rect: box, mask: mask}
@@ -332,6 +341,7 @@ func (d *DrawDevice) FillShade(sh Shade, ctm raster.Matrix, alpha float32, cp Co
 	d.ras.FillShader(d.dst, raster.NonZero, s, raster.Paint{
 		Alpha: alphaByte(alpha), Clip: d.clip.mask,
 	})
+	d.whole(d.ras)
 }
 
 // BeginMask implements Device.
@@ -672,6 +682,7 @@ func (d *DrawDevice) renderGlyph(p *raster.Path, m raster.Matrix, x0, y0, x1, y1
 	m.F -= float32(y0)
 	d.mas.AddPath(p, m)
 	d.mas.Sweep(raster.NonZero, mask.MaskBlitter())
+	d.whole(d.mas)
 	return mask
 }
 
@@ -773,6 +784,7 @@ func (d *DrawDevice) drawImage(src *raster.Pixmap, ctm raster.Matrix, paint rast
 	d.ras.SetClip(d.clip.rect)
 	d.ras.AddPath(&p, ctm)
 	d.ras.FillImage(d.dst, src, inv, paint, smoothImage(src, ctm, interpolate))
+	d.whole(d.ras)
 }
 
 // sourceMatrix maps a device pixel to a pixel of the image.

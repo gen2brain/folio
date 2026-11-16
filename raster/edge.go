@@ -20,14 +20,18 @@ type cellBuf struct {
 	starts []int32
 	cursor []int32
 
-	cur    cell
-	x, y   int32
-	minX   int32
-	minY   int32
-	maxX   int32
-	maxY   int32
-	isSort bool
-	full   bool
+	cur          cell
+	x, y         int32
+	minX         int32
+	minY         int32
+	maxX         int32
+	maxY         int32
+	isSort       bool
+	full         bool
+	limit, cap   int
+	dropped      int64
+	strip        bool
+	rowLo, rowHi int32
 }
 
 func (c *cellBuf) reset() {
@@ -37,17 +41,36 @@ func (c *cellBuf) reset() {
 	c.maxX, c.maxY = math.MinInt32, math.MinInt32
 	c.isSort = false
 	c.full = false
+	c.dropped = 0
+	if c.cap == 0 {
+		c.cap = maxCells
+	}
+	c.limit = c.cap
+	if c.strip {
+		c.limit = 0
+	}
 }
 
 func (c *cellBuf) addCur() {
 	if c.cur.area|c.cur.cover == 0 {
 		return
 	}
-	if len(c.cells) >= maxCells {
-		c.full = true
+	if len(c.cells) >= c.limit && !c.admit() {
 		return
 	}
 	c.cells = append(c.cells, c.cur)
+}
+
+func (c *cellBuf) admit() bool {
+	if c.strip && (c.cur.y < c.rowLo || c.cur.y >= c.rowHi) {
+		return false
+	}
+	if len(c.cells) >= c.cap {
+		c.full = true
+		c.dropped++
+		return false
+	}
+	return true
 }
 
 func (c *cellBuf) setCur(x, y int32) {

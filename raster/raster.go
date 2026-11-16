@@ -41,10 +41,16 @@ type Rasterizer struct {
 	status         int
 
 	flatness float32
-	cover    []uint8
-	solid    solidBlitter
-	image    imageBlitter
-	shader   shaderBlitter
+	// recs is the geometry added since Reset, kept to fill again in strips
+	// when it takes more than maxCells.
+	recs      []pathRec
+	directs   []*Path
+	passes    int
+	truncated bool
+	cover     []uint8
+	solid     solidBlitter
+	image     imageBlitter
+	shader    shaderBlitter
 }
 
 // NewRasterizer returns a rasterizer for a w by h pixel target.
@@ -114,18 +120,62 @@ func (r *Rasterizer) SetFlatness(tol float32) { r.flatness = tol }
 // Reset drops the accumulated geometry, keeping the memory.
 func (r *Rasterizer) Reset() {
 	r.cells.reset()
+	r.truncated = false
 	r.status = statusInitial
+	r.recs = r.recs[:0]
+}
+
+// pathRec is a path added under a matrix, or the points added one at a time.
+type pathRec struct {
+	p      *Path
+	m      Matrix
+	direct bool
+}
+
+// direct returns the path the points added one at a time are kept in.
+func (r *Rasterizer) direct() *Path {
+	if n := len(r.recs); n > 0 && r.recs[n-1].direct {
+		return r.recs[n-1].p
+	}
+	k := 0
+	for _, rec := range r.recs {
+		if rec.direct {
+			k++
+		}
+	}
+	if k == len(r.directs) {
+		r.directs = append(r.directs, &Path{})
+	}
+	p := r.directs[k]
+	p.Reset()
+	r.recs = append(r.recs, pathRec{p: p, m: Identity, direct: true})
+	return p
 }
 
 // MoveTo begins a subpath at a device space point.
-func (r *Rasterizer) MoveTo(x, y float32) { r.moveTo(toFixed(x), toFixed(y)) }
+func (r *Rasterizer) MoveTo(x, y float32) {
+	r.restart()
+	r.direct().MoveTo(x, y)
+	r.moveTo(toFixed(x), toFixed(y))
+}
 
 // LineTo adds a segment to a device space point.
-func (r *Rasterizer) LineTo(x, y float32) { r.lineTo(toFixed(x), toFixed(y)) }
+func (r *Rasterizer) LineTo(x, y float32) {
+	r.restart()
+	r.direct().LineTo(x, y)
+	r.lineTo(toFixed(x), toFixed(y))
+}
 
 // Close closes the current subpath. Sweep closes it anyway; an explicit close
 // only matters when more geometry follows.
 func (r *Rasterizer) Close() {
+	if r.status == statusLine {
+		r.direct().Close()
+	}
+	r.close()
+}
+
+func (r *Rasterizer) close() {
 	if r.status != statusLine {
 		return
 	}
@@ -133,17 +183,31 @@ func (r *Rasterizer) Close() {
 	r.closeNoClip()
 }
 
-// AddPath flattens the path under m and adds it.
-func (r *Rasterizer) AddPath(p *Path, m Matrix) {
-	p.Flatten(m, r.flatness, r)
-}
-
-func (r *Rasterizer) moveTo(x, y int32) {
+// restart begins a new fill when geometry arrives after a sweep.
+func (r *Rasterizer) restart() {
 	if r.cells.isSort {
 		r.Reset()
 	}
+}
+
+// AddPath flattens the path under m and adds it. The path must not change
+// before the next Sweep.
+func (r *Rasterizer) AddPath(p *Path, m Matrix) {
+	r.restart()
+	r.recs = append(r.recs, pathRec{p: p, m: m})
+	p.Flatten(m, r.flatness, (*flattenTo)(r))
+}
+
+// flattenTo receives a flattened path without keeping it again.
+type flattenTo Rasterizer
+
+func (f *flattenTo) MoveTo(x, y float32) { (*Rasterizer)(f).moveTo(toFixed(x), toFixed(y)) }
+func (f *flattenTo) LineTo(x, y float32) { (*Rasterizer)(f).lineTo(toFixed(x), toFixed(y)) }
+func (f *flattenTo) Close()              { (*Rasterizer)(f).close() }
+
+func (r *Rasterizer) moveTo(x, y int32) {
 	if r.status == statusLine {
-		r.Close()
+		r.close()
 	}
 	r.prevX, r.startX = x, x
 	r.prevY, r.startY = y, y
@@ -208,7 +272,7 @@ func (r *Rasterizer) clipSegment(x, y int32) {
 // clamped to the target. It is conservative: an edge landing exactly on a
 // pixel boundary counts.
 func (r *Rasterizer) Bounds() (x0, y0, x1, y1 int) {
-	r.Close()
+	r.close()
 	r.cells.sort()
 	if len(r.cells.cells) == 0 {
 		return 0, 0, 0, 0
@@ -234,9 +298,72 @@ func (r *Rasterizer) Bounds() (x0, y0, x1, y1 int) {
 }
 
 // Sweep applies the fill rule and hands the coverage to b, scanline by
-// scanline, top to bottom.
+// scanline, top to bottom, in strips of rows past maxCells cells.
 func (r *Rasterizer) Sweep(rule FillRule, b Blitter) {
-	r.Close()
+	r.close()
+	r.cells.sort()
+	if r.cells.full {
+		r.sweepStrips(rule, b)
+		return
+	}
+	r.sweepCells(rule, b)
+}
+
+func (r *Rasterizer) sweepStrips(rule FillRule, b Blitter) {
+	total := int64(len(r.cells.cells)) + r.cells.dropped
+	y0 := max(int(r.clip.y0>>polyShift), int(r.cells.minY), 0)
+	y1 := min(int((r.clip.y1+polyMask)>>polyShift), int(r.cells.maxY)+1, r.height)
+	part := int64(max(r.cells.cap/4*3, 1))
+	n := int(max(min((total+part-1)/part, int64(y1-y0)), 1))
+	if y1 <= y0 || n > maxStrips {
+		r.truncated = true
+		r.sweepCells(rule, b)
+		return
+	}
+	h := (y1 - y0 + n - 1) / n
+	truncated := false
+	recs := r.recs
+	r.recs = nil
+	defer func() {
+		r.cells.strip = false
+		r.recs = recs
+		r.Reset()
+		r.truncated = truncated
+	}()
+	r.passes = 0
+	for ys := y0; ys < y1; ys += h {
+		truncated = r.fillStrip(recs, rule, b, ys, min(ys+h, y1)) || truncated
+	}
+}
+
+// maxStrips bounds the strips one fill is redone in, and twice it the passes.
+const maxStrips = 4
+
+// Truncated reports that the last Sweep held only part of the geometry: it
+// would have taken more than maxStrips strips of maxCells cells.
+func (r *Rasterizer) Truncated() bool { return r.truncated }
+
+func (r *Rasterizer) fillStrip(recs []pathRec, rule FillRule, b Blitter, ys, ye int) bool {
+	r.cells.strip, r.cells.rowLo, r.cells.rowHi = true, int32(ys), int32(ye)
+	r.cells.reset()
+	r.status = statusInitial
+	r.passes++
+	for _, rec := range recs {
+		rec.p.Flatten(rec.m, r.flatness, (*flattenTo)(r))
+	}
+	r.close()
+	r.cells.sort()
+	if r.cells.full && ye-ys > 1 && r.passes < 2*maxStrips {
+		mid := ys + (ye-ys)/2
+		a := r.fillStrip(recs, rule, b, ys, mid)
+		return r.fillStrip(recs, rule, b, mid, ye) || a
+	}
+	full := r.cells.full
+	r.sweepCells(rule, b)
+	return full
+}
+
+func (r *Rasterizer) sweepCells(rule FillRule, b Blitter) {
 	r.cells.sort()
 	if len(r.cells.cells) == 0 {
 		return

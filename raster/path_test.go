@@ -228,3 +228,61 @@ func TestCullY(t *testing.T) {
 		t.Errorf("only %d fills and %d strokes of 3000 were culled", culled, cut)
 	}
 }
+
+// TestSweepStrips fills paths of more cells than one fill may hold, which go
+// in strips of rows, and checks them against the same fills held at once.
+func TestSweepStrips(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 5))
+	fill := func(paths []*Path, m Matrix, rule FillRule, clip Rect, direct bool, limit int) ([]uint8, int, bool) {
+		mask := NewMask(200, 200)
+		r := NewRasterizer(200, 200)
+		r.cells.cap = limit
+		r.Reset()
+		r.SetClip(clip)
+		for k, p := range paths {
+			if direct && k%2 == 1 {
+				p.Flatten(m, 0, r)
+				continue
+			}
+			r.AddPath(p, m)
+		}
+		r.Sweep(rule, mask.MaskBlitter())
+		cells, truncated := len(r.cells.cells), r.Truncated()
+		var after Path
+		after.Rect(10, 10, 30, 30)
+		r.AddPath(&after, Identity)
+		r.Sweep(NonZero, mask.MaskBlitter())
+		return mask.Samples, cells, truncated
+	}
+	strips := 0
+	for i := range 300 {
+		var paths []*Path
+		for range 1 + rng.IntN(3) {
+			paths = append(paths, randomPath(rng, 100))
+		}
+		m := Concat(Concat(Matrix{A: 1.5, D: 1.2, C: rng.Float32() - 0.5}, Rotate(rng.Float64()*360)), Translate(100, 100))
+		rule := FillRule(rng.IntN(2))
+		clip := Rect{X1: 200, Y1: 200}
+		if i%2 == 0 {
+			clip = Rect{X0: rng.Float32() * 50, Y0: rng.Float32() * 50, X1: 150 + rng.Float32()*50, Y1: 150 + rng.Float32()*50}
+		}
+		direct := i%3 == 0
+		want, cells, _ := fill(paths, m, rule, clip, direct, maxCells)
+		limit := max(cells*(3+rng.IntN(4))/8, 400)
+		got, _, truncated := fill(paths, m, rule, clip, direct, limit)
+		if cells > limit {
+			strips++
+		}
+		if truncated || !slices.Equal(got, want) {
+			t.Fatalf("paths %d: filled in strips of %d cells of %d, the coverage differs (truncated %v)", i, limit, cells, truncated)
+		}
+		if i == 0 {
+			if _, _, truncated := fill(paths, m, rule, clip, direct, max(cells/(4*maxStrips), 4)); !truncated {
+				t.Errorf("a fill of %d cells in strips of %d was not reported", cells, max(cells/(4*maxStrips), 4))
+			}
+		}
+	}
+	if strips < 100 {
+		t.Errorf("only %d of 300 fills went in strips", strips)
+	}
+}
