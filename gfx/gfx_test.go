@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"weak"
 
@@ -457,6 +458,137 @@ func TestDrawBudget(t *testing.T) {
 	}
 	if px.Samples[0] == 255 {
 		t.Error("the fill inside the groups never reached the page")
+	}
+}
+
+// countImage is a solid image that counts its decodes.
+type countImage struct {
+	w, h int
+	v    uint8
+	n    atomic.Int32
+}
+
+func (c *countImage) Size() (int, int)        { return c.w, c.h }
+func (c *countImage) ColorSpace() *ColorSpace { return DeviceGray }
+func (c *countImage) Stencil() bool           { return false }
+func (c *countImage) Smooth() bool            { return false }
+func (c *countImage) Pixels(cs *ColorSpace, _ int) (*raster.Pixmap, error) {
+	c.n.Add(1)
+	px := raster.NewPixmap(cs.Model(), c.w, c.h, false)
+	for i := range px.Samples {
+		px.Samples[i] = c.v
+	}
+	return px, nil
+}
+
+// sliceImage is an image whose type cannot be a map key.
+type sliceImage struct{ pix []uint8 }
+
+func (s sliceImage) Size() (int, int)        { return 1, 1 }
+func (s sliceImage) ColorSpace() *ColorSpace { return DeviceGray }
+func (s sliceImage) Stencil() bool           { return false }
+func (s sliceImage) Smooth() bool            { return false }
+func (s sliceImage) Pixels(cs *ColorSpace, _ int) (*raster.Pixmap, error) {
+	px := raster.NewPixmap(cs.Model(), 1, 1, false)
+	px.Samples[0], px.Samples[1], px.Samples[2] = s.pix[0], s.pix[0], s.pix[0]
+	return px, nil
+}
+
+// TestDrawBandsImages checks that a banded drawing decodes an image once while
+// bands still draw it, and a clip mask only in the bands it covers.
+func TestDrawBandsImages(t *testing.T) {
+	for _, threads := range []int{1, 3} {
+		fill := &countImage{w: 50, h: 50, v: 0}
+		mask := &countImage{w: 400, h: 400, v: 255}
+		list := NewListDevice()
+		list.FillImage(fill, raster.Matrix{A: 100, D: 400}, 1, ColorParams{})
+		list.FillImage(sliceImage{[]uint8{128}}, raster.Matrix{A: 100, D: 100, F: 200}, 1, ColorParams{})
+		list.ClipImageMask(mask, raster.Matrix{A: 100, D: 100, F: 300}, raster.InfiniteRect)
+		var sq raster.Path
+		sq.Rect(0, 0, 100, 400)
+		list.FillPath(&sq, false, raster.Identity, DeviceRGB, []float32{0, 0, 0}, 1, ColorParams{})
+		list.PopClip()
+
+		var rows [][3]uint8
+		err := list.DrawBands(image.Rect(0, 0, 100, 400), raster.ModelRGB, false, 10, threads,
+			func(px *raster.Pixmap) Device { return NewDrawDevice(px) },
+			func(px *raster.Pixmap) error {
+				for y := range px.H {
+					r := px.Row(y)
+					rows = append(rows, [3]uint8{r[150], r[151], r[152]})
+				}
+				return nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			y int
+			v uint8
+		}{{5, 0}, {195, 0}, {250, 128}, {350, 0}} {
+			if got := rows[c.y]; got != [3]uint8{c.v, c.v, c.v} {
+				t.Errorf("%d threads: row %d is %v, want %d", threads, c.y, got, c.v)
+			}
+		}
+		if n := fill.n.Load(); n < 1 || n > int32(threads) {
+			t.Errorf("%d threads: an image held for forty bands was decoded %d times", threads, n)
+		}
+		if n := mask.n.Load(); n != 10 {
+			t.Errorf("%d threads: a mask too large to hold, in ten bands of forty, was decoded %d times", threads, n)
+		}
+	}
+
+	big := &countImage{w: 400, h: 400, v: 0}
+	list := NewListDevice()
+	list.FillImage(big, raster.Matrix{A: 100, D: 400}, 1, ColorParams{})
+	if err := list.DrawBands(image.Rect(0, 0, 100, 400), raster.ModelRGB, false, 10, 1,
+		func(px *raster.Pixmap) Device { return NewDrawDevice(px) },
+		func(*raster.Pixmap) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if n := big.n.Load(); n != 1 {
+		t.Errorf("an image larger than the page, alone, was decoded %d times", n)
+	}
+}
+
+// TestDrawBandsStrokes checks strokes whose reach a band must not
+// underestimate: a square cap and a miter under a rotation, and a hairline.
+func TestDrawBandsStrokes(t *testing.T) {
+	rot := raster.Matrix{A: 0.7071, B: 0.7071, C: -0.7071, D: 0.7071, E: 100, F: 20}
+	square := &raster.Stroke{Width: 30, MiterLimit: 1, StartCap: raster.CapSquare, EndCap: raster.CapSquare}
+	miter := &raster.Stroke{Width: 20, MiterLimit: 10, Join: raster.JoinMiter}
+	var line, corner, hair raster.Path
+	line.MoveTo(20, 60)
+	line.LineTo(80, 60)
+	corner.MoveTo(0, 150)
+	corner.LineTo(60, 110)
+	corner.LineTo(120, 150)
+	hair.MoveTo(10, 179.8)
+	hair.LineTo(190, 179.8)
+	list := NewListDevice()
+	black := []float32{0, 0, 0}
+	list.StrokePath(&line, square, rot, DeviceRGB, black, 1, ColorParams{})
+	list.StrokePath(&corner, miter, raster.Identity, DeviceRGB, black, 1, ColorParams{})
+	list.StrokePath(&hair, &raster.Stroke{MiterLimit: 10}, raster.Identity, DeviceRGB, black, 1, ColorParams{})
+	draw := func(rows int) []uint8 {
+		var out []uint8
+		err := list.DrawBands(image.Rect(0, 0, 200, 200), raster.ModelRGB, false, rows, 1,
+			func(px *raster.Pixmap) Device { return NewDrawDevice(px) },
+			func(px *raster.Pixmap) error { out = append(out, px.Samples[:px.H*px.Stride]...); return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	want := draw(200)
+	for _, rows := range []int{1, 3, 10} {
+		got := draw(rows)
+		for i := range got {
+			if d := int(got[i]) - int(want[i]); d > 1 || d < -1 {
+				t.Errorf("%d rows: pixel %d,%d is %d, want %d", rows, i/3%200, i/600, got[i], want[i])
+				break
+			}
+		}
 	}
 }
 

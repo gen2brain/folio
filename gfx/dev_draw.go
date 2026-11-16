@@ -30,11 +30,13 @@ type DrawDevice struct {
 
 	flat    float32
 	stroked raster.Path
+	culled  [2]raster.Path
 	// src is the destination color of the current operation, valid until the next.
 	src   []uint8
 	depth int
 	// cache and err belong to whoever opened the document.
 	cache *raster.GlyphCache
+	hold  *imageHold
 	err   func(error)
 	// held is the bytes of the masks and groups on the stack, budget their bound.
 	held, budget int64
@@ -143,9 +145,25 @@ func (d *DrawDevice) fillPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, p
 	d.ras.Fill(d.dst, rule, paint)
 }
 
+// cullFill is p with what lies above or below the clip reduced to lines.
+func (d *DrawDevice) cullFill(p *raster.Path, ctm raster.Matrix) *raster.Path {
+	c := d.clip.rect
+	if y0, y1 := p.YBounds(ctm); y0 >= c.Y0 && y1 <= c.Y1 {
+		return p
+	}
+	return p.CullY(&d.culled[0], ctm, c.Y0, c.Y1)
+}
+
 // strokeOutline turns a stroke into the path that fills it, in the space the
 // path is already in. The result lives until the next stroke.
 func (d *DrawDevice) strokeOutline(p *raster.Path, s *raster.Stroke, ctm raster.Matrix) *raster.Path {
+	if len(s.Dash) == 0 {
+		c := d.clip.rect
+		r := s.Reach(ctm)
+		if y0, y1 := p.YBounds(ctm); y0 < c.Y0-r || y1 > c.Y1+r {
+			p = p.CullStrokeY(&d.culled[1], ctm, c.Y0, c.Y1, r)
+		}
+	}
 	return s.OutlineInto(&d.stroked, p, ctm.Expansion())
 }
 
@@ -169,7 +187,7 @@ func (d *DrawDevice) FillPath(p *raster.Path, evenOdd bool, ctm raster.Matrix, c
 	if !d.drawing() {
 		return
 	}
-	d.fillPath(p, evenOdd, ctm, d.paint(cs, col, alpha))
+	d.fillPath(d.cullFill(p, ctm), evenOdd, ctm, d.paint(cs, col, alpha))
 }
 
 // StrokePath implements Device.
@@ -195,6 +213,7 @@ func (d *DrawDevice) pushPathClip(p *raster.Path, evenOdd bool, ctm raster.Matri
 		d.push(clipState{rect: d.clip.rect.Intersect(r), mask: d.clip.mask})
 		return
 	}
+	p = d.cullFill(p, ctm)
 	d.push(d.maskClip(p.Bounds(ctm), func(r *raster.Rasterizer, ox, oy int) {
 		m := ctm
 		m.E -= float32(ox)
@@ -697,6 +716,10 @@ func (d *DrawDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace,
 
 // ClipImageMask implements Device.
 func (d *DrawDevice) ClipImageMask(img Image, ctm raster.Matrix, scissor raster.Rect) {
+	if ctm.ApplyRect(unitRect).Intersect(d.clip.rect).IsEmpty() {
+		d.push(clipState{rect: raster.EmptyRect})
+		return
+	}
 	src := d.maskPixmap(img, shrinkFor(img, ctm))
 	if src == nil {
 		d.push(clipState{rect: raster.EmptyRect})
@@ -828,10 +851,17 @@ func (d *DrawDevice) decodeImage(img Image, dst *ColorSpace, shrink int) *raster
 	if img == nil {
 		return nil
 	}
+	key := holdKey{img, dst, shrink}
+	if px := d.hold.get(key); px != nil {
+		return px
+	}
 	px, err := img.Pixels(dst, shrink)
 	if err != nil {
 		d.fail(fmt.Errorf("image: %w", err))
 		return nil
 	}
+	d.hold.put(key, px)
 	return px
 }
+
+func (d *DrawDevice) setHold(h *imageHold) { d.hold = h }

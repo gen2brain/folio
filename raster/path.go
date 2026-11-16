@@ -1,5 +1,10 @@
 package raster
 
+import (
+	"math"
+	"slices"
+)
+
 // Path is a sequence of subpaths built from lines and cubic curves.
 type Path struct {
 	cmds []byte
@@ -184,20 +189,262 @@ func (p *Path) Bounds(m Matrix) Rect {
 	return out
 }
 
-// StrokeBounds returns the bounding box of the stroked path, padded for width and miter.
+// StrokeBounds returns the bounding box of the stroked path, padded for width,
+// miter and square caps.
 func (p *Path) StrokeBounds(s *Stroke, m Matrix) Rect {
 	r := p.Bounds(m)
 	if r.IsEmpty() {
 		return r
 	}
-	w := s.Width * m.MaxExpansion() / 2
-	if w < 0 {
-		w = 0
-	}
-	if s.Join == JoinMiter && s.MiterLimit > 1 {
-		w *= s.MiterLimit
-	}
+	w := s.Reach(m)
 	return Rect{r.X0 - w, r.Y0 - w, r.X1 + w, r.Y1 + w}
+}
+
+// Reach returns the farthest the outline of a stroke lies from the path
+// under m, in device units.
+func (s *Stroke) Reach(m Matrix) float32 {
+	w := s.Width
+	if e := m.Expansion(); !(w*e >= 1) && e > 0 {
+		w = 1 / e
+	}
+	f := float32(innerMiterLim)
+	if s.StartCap == CapSquare || s.EndCap == CapSquare || s.DashCap == CapSquare {
+		f = math.Sqrt2
+	}
+	if s.Join == JoinMiter && s.MiterLimit > f {
+		f = s.MiterLimit
+	}
+	return max(w, 0) * m.MaxExpansion() / 2 * f
+}
+
+// YBounds returns the least and the greatest y of the path's points under m.
+func (p *Path) YBounds(m Matrix) (y0, y1 float32) {
+	if len(p.pts) == 0 {
+		return 0, 0
+	}
+	y0 = float32(m.B*p.pts[0].X) + float32(m.D*p.pts[0].Y)
+	y1 = y0
+	for _, q := range p.pts[1:] {
+		y := float32(m.B*q.X) + float32(m.D*q.Y)
+		y0, y1 = min(y0, y), max(y1, y)
+	}
+	return y0 + m.F, y1 + m.F
+}
+
+// segment is one line or curve of a path and the point it starts from.
+type segment struct {
+	cmd  byte
+	n    int
+	from Point
+	pts  [3]Point
+}
+
+func (g *segment) end() Point { return g.pts[g.n-1] }
+
+// side is -1 when every point of g lies at or above y0 under m, 1 when every
+// one lies at or below y1, and 0 otherwise.
+func (g *segment) side(m Matrix, y0, y1 float32) int {
+	return sideOf(m, g.from, g.pts[:g.n], y0, y1)
+}
+
+func sideOf(m Matrix, from Point, pts []Point, y0, y1 float32) int {
+	lo := m.Apply(from).Y
+	hi := lo
+	for _, q := range pts {
+		y := m.Apply(q).Y
+		lo, hi = min(lo, y), max(hi, y)
+	}
+	switch {
+	case hi <= y0:
+		return -1
+	case lo >= y1:
+		return 1
+	}
+	return 0
+}
+
+// segments calls fn for each subpath: where it starts, its segments, and
+// whether it is closed, the closing line among them when it has length.
+func (p *Path) segments(fn func(start Point, segs []segment, closed bool)) {
+	var segs []segment
+	var start, at Point
+	open := false
+	i := 0
+	for _, c := range p.cmds {
+		switch c {
+		case cmdMove:
+			if open {
+				fn(start, segs, false)
+			}
+			segs, open = segs[:0], true
+			start, at = p.pts[i], p.pts[i]
+			i++
+		case cmdLine:
+			open = true
+			segs = append(segs, segment{cmd: cmdLine, n: 1, from: at, pts: [3]Point{p.pts[i]}})
+			at = p.pts[i]
+			i++
+		case cmdCurve:
+			open = true
+			segs = append(segs, segment{cmd: cmdCurve, n: 3, from: at, pts: [3]Point{p.pts[i], p.pts[i+1], p.pts[i+2]}})
+			at = p.pts[i+2]
+			i += 3
+		case cmdClose:
+			if at != start {
+				segs = append(segs, segment{cmd: cmdLine, n: 1, from: at, pts: [3]Point{start}})
+			}
+			fn(start, segs, true)
+			segs, open = segs[:0], false
+			at = start
+		}
+	}
+	if open {
+		fn(start, segs, false)
+	}
+}
+
+func (p *Path) appendMove(at Point) {
+	p.cmds = append(p.cmds, cmdMove)
+	p.pts = append(p.pts, at)
+	p.cur, p.start, p.started = at, at, true
+}
+
+func (p *Path) appendSeg(g *segment) {
+	p.cmds = append(p.cmds, g.cmd)
+	p.pts = append(p.pts, g.pts[:g.n]...)
+	p.cur = g.end()
+}
+
+// CullY writes into dst the path as it fills the rows from y0 to y1 under m:
+// each run of segments wholly above y0, or wholly below y1, becomes one line
+// between its ends, which covers nothing in those rows either.
+func (p *Path) CullY(dst *Path, m Matrix, y0, y1 float32) *Path {
+	dst.Reset()
+	if !(y0 < y1) {
+		dst.Append(p)
+		return dst
+	}
+	run, i := 0, 0
+	var at, end Point
+	flush := func() {
+		if run != 0 {
+			dst.cmds = append(dst.cmds, cmdLine)
+			dst.pts = append(dst.pts, end)
+			dst.cur = end
+			run = 0
+		}
+	}
+	for _, c := range p.cmds {
+		n := 0
+		switch c {
+		case cmdMove:
+			flush()
+			at = p.pts[i]
+			dst.appendMove(at)
+			i++
+			continue
+		case cmdClose:
+			flush()
+			dst.cmds = append(dst.cmds, cmdClose)
+			at = dst.start
+			dst.cur = at
+			continue
+		case cmdLine:
+			n = 1
+		case cmdCurve:
+			n = 3
+		}
+		pts := p.pts[i : i+n]
+		sd := sideOf(m, at, pts, y0, y1)
+		at = pts[n-1]
+		i += n
+		if sd != 0 {
+			if run != sd {
+				flush()
+			}
+			run, end = sd, at
+			continue
+		}
+		flush()
+		dst.cmds = append(dst.cmds, c)
+		dst.pts = append(dst.pts, pts...)
+		dst.cur = at
+	}
+	flush()
+	return dst
+}
+
+// CullStrokeY writes into dst the path as a stroke reaching reach from it
+// draws the rows from y0 to y1 under m: a segment wholly beyond reach of
+// those rows is cut out unless it meets one that is not, and a closed subpath
+// that loses one opens there. The stroke must be undashed.
+func (p *Path) CullStrokeY(dst *Path, m Matrix, y0, y1, reach float32) *Path {
+	dst.Reset()
+	if !(y0 < y1) {
+		dst.Append(p)
+		return dst
+	}
+	y0, y1 = y0-reach, y1+reach
+	var in, near []bool
+	p.segments(func(start Point, segs []segment, closed bool) {
+		n := len(segs)
+		if n == 0 {
+			if y := m.Apply(start).Y; y > y0 && y < y1 {
+				dst.appendMove(start)
+				if closed {
+					dst.cmds = append(dst.cmds, cmdClose)
+				}
+			}
+			return
+		}
+		in, near = in[:0], near[:0]
+		for k := range segs {
+			in = append(in, segs[k].side(m, y0, y1) == 0)
+			near = append(near, false)
+		}
+		for k := range n {
+			if !in[k] {
+				continue
+			}
+			near[k] = true
+			if k > 0 || closed {
+				near[(k+n-1)%n] = true
+			}
+			if k < n-1 || closed {
+				near[(k+1)%n] = true
+			}
+		}
+		cut := slices.Index(near, false)
+		if cut < 0 {
+			dst.appendMove(start)
+			for k := range segs {
+				dst.appendSeg(&segs[k])
+			}
+			if closed {
+				dst.cmds = append(dst.cmds, cmdClose)
+				dst.cur = start
+			}
+			return
+		}
+		first := 0
+		if closed {
+			first = cut + 1
+		}
+		open := false
+		for j := range n {
+			k := (first + j) % n
+			if !near[k] {
+				open = false
+				continue
+			}
+			if !open {
+				dst.appendMove(segs[k].from)
+				open = true
+			}
+			dst.appendSeg(&segs[k])
+		}
+	})
+	return dst
 }
 
 // AsRect reports whether the path is one subpath that maps to an axis aligned

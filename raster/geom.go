@@ -221,13 +221,10 @@ func (m Matrix) Expansion() float32 {
 
 // MaxExpansion is the largest factor any direction is scaled by.
 func (m Matrix) MaxExpansion() float32 {
-	max := absf(m.A)
-	for _, v := range [3]float32{m.B, m.C, m.D} {
-		if a := absf(v); a > max {
-			max = a
-		}
-	}
-	return max
+	a, b, c, d := float64(m.A), float64(m.B), float64(m.C), float64(m.D)
+	s := a*a + b*b + c*c + d*d
+	det := a*d - b*c
+	return float32(math.Sqrt((s + math.Sqrt(math.Max(s*s-4*det*det, 0))) / 2))
 }
 
 func abs32(v float32) float32 {

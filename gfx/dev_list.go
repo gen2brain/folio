@@ -3,6 +3,8 @@ package gfx
 import (
 	"fmt"
 	"image"
+	"math"
+	"reflect"
 	"sync"
 
 	"github.com/gen2brain/folio/raster"
@@ -326,13 +328,18 @@ func (d *ListDevice) DrawBands(r image.Rectangle, model raster.Model, alpha bool
 			return fmt.Errorf("%w: %dx%d does not fit in memory", ErrUnsupported, w, rows)
 		}
 	}
+	hold := d.imageHold(int64(bufs[0].Stride) * int64(h))
 	draw := func(i int) {
 		b := &bands[i]
 		dev := newDevice(b)
+		if hd, ok := dev.(interface{ setHold(*imageHold) }); ok {
+			hd.setHold(hold)
+		}
 		d.ReplayClip(dev, raster.Rect{X0: float32(b.X), Y0: float32(b.Y), X1: float32(b.X + b.W), Y1: float32(b.Y + b.H)})
 		errs[i] = dev.Close()
 	}
 	for y := r.Min.Y; y < r.Max.Y; y += n * rows {
+		hold.release(y)
 		k := 0
 		for ; k < n && y+k*rows < r.Max.Y; k++ {
 			y0 := y + k*rows
@@ -367,4 +374,86 @@ func (d *ListDevice) DrawBands(r image.Rectangle, model raster.Model, alpha bool
 		}
 	}
 	return nil
+}
+
+// imageHold keeps the images a banded drawing decodes from the first band
+// that draws one to the last, within a bound of bytes or one image alone.
+type imageHold struct {
+	mu    sync.Mutex
+	last  map[Image]int
+	held  map[holdKey]*raster.Pixmap
+	bytes int64
+	limit int64
+}
+
+type holdKey struct {
+	img    Image
+	cs     *ColorSpace
+	shrink int
+}
+
+// imageHold finds the lowest device row each image of the list reaches; an
+// image inside a tile repeats and is kept to the end.
+func (d *ListDevice) imageHold(limit int64) *imageHold {
+	h := &imageHold{last: map[Image]int{}, held: map[holdKey]*raster.Pixmap{}, limit: limit}
+	tiles := 0
+	for i := range d.cmds {
+		c := &d.cmds[i]
+		switch c.kind {
+		case cmdBeginTile:
+			tiles++
+		case cmdEndTile:
+			tiles--
+		case cmdFillImage, cmdFillImageMask, cmdClipImageMask:
+			img, ok := c.obj.(Image)
+			if !ok || !holdable(img) {
+				continue
+			}
+			y := math.MaxInt
+			if tiles == 0 {
+				_, _, _, y = c.ctm.ApplyRect(unitRect).Outer()
+			}
+			if v, ok := h.last[img]; !ok || y > v {
+				h.last[img] = y
+			}
+		}
+	}
+	return h
+}
+
+func holdable(img Image) bool { return img != nil && reflect.TypeOf(img).Comparable() }
+
+func (h *imageHold) get(k holdKey) *raster.Pixmap {
+	if h == nil || !holdable(k.img) {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.held[k]
+}
+
+func (h *imageHold) put(k holdKey, px *raster.Pixmap) {
+	if h == nil || px == nil || !holdable(k.img) {
+		return
+	}
+	n := int64(len(px.Samples))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.last[k.img]; !ok || h.held[k] != nil || h.bytes > 0 && h.bytes+n > h.limit {
+		return
+	}
+	h.held[k] = px
+	h.bytes += n
+}
+
+// release lets go of the images no row from y down draws.
+func (h *imageHold) release(y int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for k, px := range h.held {
+		if h.last[k.img] <= y {
+			delete(h.held, k)
+			h.bytes -= int64(len(px.Samples))
+		}
+	}
 }

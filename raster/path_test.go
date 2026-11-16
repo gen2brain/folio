@@ -2,6 +2,8 @@ package raster
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -124,5 +126,105 @@ func TestPathTransform(t *testing.T) {
 	}
 	if got, want := p.Bounds(Identity), (Rect{0, 0, 10, 20}); got != want {
 		t.Error("the original path was modified")
+	}
+}
+
+// randomPath is a random walk of short lines and curves in subpaths, some
+// closed and some carrying on from where a closed one started, with the odd
+// long segment across the whole area.
+func randomPath(rng *rand.Rand, size float32) *Path {
+	var p Path
+	pt := func(x, y float32, step float32) (float32, float32) {
+		if rng.IntN(20) == 0 {
+			step = size
+		}
+		return x + (rng.Float32()*2-1)*step, y + (rng.Float32()*2-1)*step
+	}
+	var x, y float32
+	walk := func(n int) {
+		for range n {
+			if rng.IntN(2) == 0 {
+				x, y = pt(x, y, 8)
+				p.LineTo(x, y)
+				continue
+			}
+			x1, y1 := pt(x, y, 8)
+			x2, y2 := pt(x1, y1, 8)
+			x, y = pt(x2, y2, 8)
+			p.CurveTo(x1, y1, x2, y2, x, y)
+		}
+	}
+	for range 1 + rng.IntN(4) {
+		x, y = rng.Float32()*size, rng.Float32()*size
+		p.MoveTo(x, y)
+		walk(rng.IntN(40))
+		if rng.IntN(2) == 0 {
+			p.Close()
+			if rng.IntN(3) == 0 {
+				x, y = p.Start().X, p.Start().Y
+				walk(1 + rng.IntN(10))
+			}
+		}
+	}
+	return &p
+}
+
+// coverIn rasterizes p under m into a mask of the rows from y0 to y1.
+func coverIn(p *Path, m Matrix, rule FillRule, w int, y0, y1 float32) []uint8 {
+	mask := NewMask(w, 200)
+	r := NewRasterizer(w, 200)
+	r.SetClip(Rect{X0: 0, Y0: y0, X1: float32(w), Y1: y1})
+	r.AddPath(p, m)
+	r.Sweep(rule, mask.MaskBlitter())
+	return mask.Samples
+}
+
+// TestCullY checks that a path culled to a band fills the band exactly as the
+// whole path does, and a culled stroke strokes it exactly as the whole one.
+func TestCullY(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11))
+	culled, cut := 0, 0
+	for i := range 3000 {
+		p := randomPath(rng, 100)
+		a := rng.Float64() * 360
+		sc := 0.5 + rng.Float32()*1.5
+		m := Concat(Matrix{A: sc, D: sc * (0.5 + rng.Float32())}, Rotate(a))
+		m = Concat(m, Translate(100, 100))
+		y0 := float32(rng.IntN(180))
+		y1 := y0 + float32(1+rng.IntN(30))
+		if i%3 == 0 {
+			y0 += rng.Float32()
+			y1 -= rng.Float32() / 2
+		}
+		rule := FillRule(rng.IntN(2))
+
+		var c Path
+		p.CullY(&c, m, y0, y1)
+		if c.Len() < p.Len() {
+			culled++
+		}
+		if got, want := coverIn(&c, m, rule, 200, y0, y1), coverIn(p, m, rule, 200, y0, y1); !slices.Equal(got, want) {
+			t.Fatalf("path %d: the culled fill differs in rows %v to %v", i, y0, y1)
+		}
+
+		s := Stroke{
+			Width: rng.Float32() * 8, MiterLimit: 1 + rng.Float32()*9,
+			Join: Join(rng.IntN(3)),
+		}
+		s.SetCaps(Cap(rng.IntN(4)))
+		r := s.Reach(m)
+		var cs Path
+		p.CullStrokeY(&cs, m, y0, y1, r)
+		if cs.Len() < p.Len() {
+			cut++
+		}
+		e := m.Expansion()
+		got := coverIn(s.Outline(&cs, e), m, NonZero, 200, y0, y1)
+		if want := coverIn(s.Outline(p, e), m, NonZero, 200, y0, y1); !slices.Equal(got, want) {
+			t.Fatalf("path %d: the culled stroke %+v differs in rows %v to %v", i, s, y0, y1)
+		}
+	}
+	if culled < 1000 || cut < 1000 {
+		t.Errorf("only %d fills and %d strokes of 3000 were culled", culled, cut)
 	}
 }

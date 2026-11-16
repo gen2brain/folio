@@ -1218,8 +1218,10 @@ func TestImageWork(t *testing.T) {
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
-			" /Resources << /XObject << /I 5 0 R >> >> >>",
-		streamObj("", "q 100 0 0 100 0 0 cm /I Do Q"),
+			" /Resources << /XObject << /I 5 0 R /J 6 0 R >> >> >>",
+		streamObj("", "q 100 0 0 100 0 0 cm /I Do Q q 100 0 0 100 0 0 cm /J Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 2000 /Height 2000 /ColorSpace /DeviceRGB"+
+			" /BitsPerComponent 8 /Filter /FlateDecode", big.String()),
 		streamObj("/Type /XObject /Subtype /Image /Width 2000 /Height 2000 /ColorSpace /DeviceRGB"+
 			" /BitsPerComponent 8 /Filter /FlateDecode", big.String()),
 	})
@@ -1236,7 +1238,7 @@ func TestImageWork(t *testing.T) {
 		}
 		return nil
 	}); err != nil || last == nil {
-		t.Errorf("an image decoded again for each of 105 bands: %v", err)
+		t.Errorf("an image too large to hold beside another, in each of 105 bands: %v", err)
 	}
 	for _, err := range d.Err() {
 		t.Errorf("an image decoded again for each band: %v", err)
