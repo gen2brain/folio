@@ -134,6 +134,8 @@ type jpxTilePart struct {
 }
 
 type jpxContext struct {
+	// limit bounds the samples the image may have.
+	limit      int64
 	siz        jpxSIZ
 	components []*jpxComponent
 	tiles      []*jpxTile
@@ -1724,8 +1726,8 @@ func jpxReadQuant(data []byte, j, end int) (*jpxQuant, error) {
 }
 
 // jpxParseCodestream reads the markers of A.4 and decodes every tile it finds.
-func jpxParseCodestream(data []byte, start, end int) (*jpxContext, error) {
-	ctx := &jpxContext{coc: map[int]*jpxCOD{}, qcc: map[int]*jpxQuant{}}
+func jpxParseCodestream(data []byte, start, end int, limit int64) (*jpxContext, error) {
+	ctx := &jpxContext{limit: limit, coc: map[int]*jpxCOD{}, qcc: map[int]*jpxQuant{}}
 	pos := start
 	for pos+1 < end {
 		code := jpxU16(data, pos)
@@ -1751,8 +1753,8 @@ func jpxParseCodestream(data []byte, start, end int) (*jpxContext, error) {
 				return nil, fmt.Errorf("%w: JPX has %d components", ErrInvalid, siz.csiz)
 			}
 			if siz.xsiz <= siz.xosiz || siz.ysiz <= siz.yosiz ||
-				siz.xsiz-siz.xosiz > maxImagePixels || siz.ysiz-siz.yosiz > maxImagePixels ||
-				int64(siz.xsiz-siz.xosiz)*int64(siz.ysiz-siz.yosiz) > maxImagePixels {
+				int64(siz.xsiz-siz.xosiz) > ctx.limit || int64(siz.ysiz-siz.yosiz) > ctx.limit ||
+				int64(siz.xsiz-siz.xosiz)*int64(siz.ysiz-siz.yosiz) > ctx.limit {
 				return nil, fmt.Errorf("%w: JPX is %dx%d", ErrInvalid, siz.xsiz-siz.xosiz, siz.ysiz-siz.yosiz)
 			}
 			j := pos + 38
@@ -1940,8 +1942,8 @@ func jpxInitTile(ctx *jpxContext, tile *jpxTile, part *jpxTilePart) error {
 func jpxAssemble(ctx *jpxContext) (*jpxImage, error) {
 	siz := &ctx.siz
 	w, h, n := siz.xsiz-siz.xosiz, siz.ysiz-siz.yosiz, siz.csiz
-	if w <= 0 || h <= 0 || w > maxImagePixels || h > maxImagePixels ||
-		int64(w)*int64(h)*int64(n) > maxImagePixels {
+	if w <= 0 || h <= 0 || int64(w) > ctx.limit || int64(h) > ctx.limit ||
+		int64(w)*int64(h)*int64(n) > ctx.limit {
 		return nil, fmt.Errorf("%w: JPX is %dx%d with %d components", ErrInvalid, w, h, n)
 	}
 	if !slices.ContainsFunc(ctx.tiles, func(t *jpxTile) bool { return t.cod != nil }) {
@@ -2087,11 +2089,16 @@ func jpxComponents(data []byte) int {
 
 // jpxDecode reads a bare or JP2 wrapped codestream into interleaved eight bit samples.
 func jpxDecode(data []byte, indexed bool) (*jpxImage, error) {
+	return jpxDecodeLimit(data, indexed, maxImagePixels)
+}
+
+// jpxDecodeLimit is jpxDecode refusing an image of more than limit samples.
+func jpxDecodeLimit(data []byte, indexed bool, limit int64) (*jpxImage, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("%w: JPX stream is %d bytes", ErrInvalid, len(data))
 	}
 	if jpxU16(data, 0) == 0xff4f {
-		ctx, err := jpxParseCodestream(data, 0, len(data))
+		ctx, err := jpxParseCodestream(data, 0, len(data), limit)
 		if ctx == nil {
 			return nil, err
 		}
@@ -2124,7 +2131,7 @@ func jpxDecode(data []byte, indexed bool) (*jpxImage, error) {
 		}
 		if kind == 0x6a703263 { // jp2c
 			end := min(pos+size, len(data))
-			ctx, perr = jpxParseCodestream(data, pos, end)
+			ctx, perr = jpxParseCodestream(data, pos, end, limit)
 			if ctx != nil {
 				break
 			}

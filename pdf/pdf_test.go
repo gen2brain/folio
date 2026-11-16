@@ -2016,7 +2016,7 @@ func TestJPXTileTwice(t *testing.T) {
 	}
 	part := b[110 : 110+272]
 	twice := append(append(append([]byte{}, b[:110+272]...), part...), b[110+272:]...)
-	if _, err := jpxParseCodestream(twice, 0, len(twice)); err == nil || !strings.Contains(err.Error(), "starts twice") {
+	if _, err := jpxParseCodestream(twice, 0, len(twice), maxImagePixels); err == nil || !strings.Contains(err.Error(), "starts twice") {
 		t.Errorf("a tile started twice gave %v", err)
 	}
 	if _, err := jpxDecode(b, false); err != nil {
@@ -2035,6 +2035,9 @@ func TestJPXNoTile(t *testing.T) {
 	}
 }
 
+// fuzzJPXSamples bounds the images FuzzJPX decodes, as FuzzSVG bounds its drawings.
+const fuzzJPXSamples = 1 << 22
+
 func FuzzJPX(fu *testing.F) {
 	names, _ := filepath.Glob(filepath.Join("..", "testdata", "*.j2k"))
 	for _, name := range names {
@@ -2044,7 +2047,7 @@ func FuzzJPX(fu *testing.F) {
 	}
 	fu.Fuzz(func(t *testing.T, b []byte) {
 		defer slowFuzz(t)()
-		jpxDecode(b, false)
+		jpxDecodeLimit(b, false, fuzzJPXSamples)
 	})
 }
 
