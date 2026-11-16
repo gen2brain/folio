@@ -466,6 +466,45 @@ func (p *Page) ImageDPI(dpi float64) (*image.RGBA, error) {
 	return img, nil
 }
 
+// ImageBands renders the page as ImageDPI does, rows at a time, and hands
+// each band to fn in order from the top. A band's Rect is its place in the
+// image ImageDPI returns, valid only until fn returns, and a dpi of zero or
+// less is the resolution and the crop of Image. The pixel limit bounds a
+// band, not the page, and rows of zero or less is as many as it allows. An
+// error from fn stops the render and is returned.
+func (p *Page) ImageBands(dpi float64, rows int, fn func(*image.RGBA) error) error {
+	var box raster.Rect
+	crop := false
+	if dpi <= 0 {
+		dpi, box, crop = p.naturalDPI()
+	}
+	x0, y0, x1, y1 := p.DeviceBounds(dpi).Outer()
+	r := image.Rect(x0, y0, x1, y1)
+	if r.Empty() {
+		return fmt.Errorf("%w: page is %dx%d", ErrInvalid, r.Dx(), r.Dy())
+	}
+	if crop {
+		if c := gfx.CropRect(box, dpi).Add(r.Min).Intersect(r); !c.Empty() {
+			r = c
+		}
+	}
+	lim := p.doc.pixelLimit()
+	if rows = gfx.BandRows(r.Dx(), r.Dy(), rows, lim); rows == 0 {
+		return fmt.Errorf("%w: a row of %d is over the pixel limit of %d", ErrUnsupported, r.Dx(), lim)
+	}
+	list := gfx.NewListDevice()
+	if err := p.Run(list, p.Matrix(dpi)); err != nil {
+		return err
+	}
+	err := list.DrawBands(r, raster.ModelRGB, false, rows, 1, func(px *raster.Pixmap) gfx.Device {
+		return gfx.NewDrawDevice(px)
+	}, gfx.RGBABands(image.Pt(x0, y0), fn))
+	if errors.Is(err, gfx.ErrUnsupported) {
+		err = fmt.Errorf("%w: %w", ErrUnsupported, err)
+	}
+	return err
+}
+
 func (p *Page) naturalDPI() (float64, raster.Rect, bool) {
 	return p.natural.Get(func() (float64, raster.Rect, bool) {
 		st, _ := p.StructuredTextOptions(&TextOptions{Images: true})

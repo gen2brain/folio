@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -1173,23 +1174,72 @@ func TestImageWork(t *testing.T) {
 	w := zlib.NewWriter(&z)
 	w.Write(make([]byte, 3*1000*1000))
 	w.Close()
+	for _, c := range []struct {
+		name   string
+		render func(*Page) error
+	}{
+		{"whole", func(p *Page) error { _, err := p.Render(p.Matrix(72), nil); return err }},
+		{"threads", func(p *Page) error { _, err := p.Render(p.Matrix(300), &Options{Threads: 2}); return err }},
+		{"bands", func(p *Page) error {
+			return p.RenderBands(p.Matrix(300), nil, 0, func(*raster.Pixmap) error { return nil })
+		}},
+	} {
+		d := buildPDF(t, []string{
+			"<< /Type /Catalog /Pages 2 0 R >>",
+			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+				" /Resources << /XObject << /I 5 0 R >> >> >>",
+			streamObj("", strings.Repeat("q 100 0 0 100 0 0 cm /I Do Q\n", 2000)),
+			streamObj("/Type /XObject /Subtype /Image /Width 1000 /Height 1000 /ColorSpace /DeviceRGB"+
+				" /BitsPerComponent 8 /Filter /FlateDecode", z.String()),
+		})
+		d.ImageCacheBytes = -1
+		p, err := d.Page(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.render(p); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		found := false
+		for _, err := range d.Err() {
+			found = found || strings.Contains(err.Error(), "operations")
+		}
+		if !found {
+			t.Errorf("%s: two thousand decodes ran within the page's operations", c.name)
+		}
+	}
+
+	var big bytes.Buffer
+	w = zlib.NewWriter(&big)
+	w.Write(make([]byte, 3*2000*2000))
+	w.Close()
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
 			" /Resources << /XObject << /I 5 0 R >> >> >>",
-		streamObj("", strings.Repeat("q 100 0 0 100 0 0 cm /I Do Q\n", 2000)),
-		streamObj("/Type /XObject /Subtype /Image /Width 1000 /Height 1000 /ColorSpace /DeviceRGB"+
-			" /BitsPerComponent 8 /Filter /FlateDecode", z.String()),
+		streamObj("", "q 100 0 0 100 0 0 cm /I Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 2000 /Height 2000 /ColorSpace /DeviceRGB"+
+			" /BitsPerComponent 8 /Filter /FlateDecode", big.String()),
 	})
 	d.ImageCacheBytes = -1
-	renderDoc(t, d, nil)
-	found := false
-	for _, err := range d.Err() {
-		found = found || strings.Contains(err.Error(), "operations")
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Error("two thousand decodes ran within the page's operations")
+	var last *raster.Pixmap
+	if err := p.RenderBands(p.Matrix(300), nil, 4, func(px *raster.Pixmap) error {
+		last = px
+		if px.H == 4 && px.Samples[0] != 0 {
+			return fmt.Errorf("band at row %d has no image", px.Y)
+		}
+		return nil
+	}); err != nil || last == nil {
+		t.Errorf("an image decoded again for each of 105 bands: %v", err)
+	}
+	for _, err := range d.Err() {
+		t.Errorf("an image decoded again for each band: %v", err)
 	}
 }
 
@@ -1962,8 +2012,9 @@ func TestConcurrentRender(t *testing.T) {
 	}
 }
 
-// TestRenderBands checks a page drawn in bands against the page drawn whole.
-func TestRenderBands(t *testing.T) {
+// bandsPage is a page of a shading, text, strokes and a fill.
+func bandsPage(t *testing.T) *Page {
+	t.Helper()
 	d := buildPDF(t, []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -1980,6 +2031,25 @@ func TestRenderBands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return p
+}
+
+// near fails unless two runs of samples differ by at most a coverage unit.
+func near(t *testing.T, what string, got, want []uint8) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: %d samples, want %d", what, len(got), len(want))
+	}
+	for i := range got {
+		if d := int(got[i]) - int(want[i]); d > 1 || d < -1 {
+			t.Fatalf("%s: sample %d is %d, want %d", what, i, got[i], want[i])
+		}
+	}
+}
+
+// TestRenderBands checks a page drawn in bands against the page drawn whole.
+func TestRenderBands(t *testing.T) {
+	p := bandsPage(t)
 	want, err := p.Render(p.Matrix(150), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1992,12 +2062,147 @@ func TestRenderBands(t *testing.T) {
 		if got.W != want.W || got.H != want.H {
 			t.Fatalf("%d bands: %dx%d, want %dx%d", n, got.W, got.H, want.W, want.H)
 		}
-		for i := range got.Samples {
-			if d := int(got.Samples[i]) - int(want.Samples[i]); d > 1 || d < -1 {
-				t.Fatalf("%d bands: sample %d is %d, want %d",
-					n, i, got.Samples[i], want.Samples[i])
+		near(t, fmt.Sprint(n, " bands"), got.Samples, want.Samples)
+	}
+}
+
+// TestPageBands checks RenderBands and ImageBands against Render and ImageDPI,
+// a callback that stops, a page past the pixel limit and the memory a band takes.
+func TestPageBands(t *testing.T) {
+	p := bandsPage(t)
+	ctm := p.Matrix(150)
+	want, err := p.Render(ctm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		rows int
+		o    *Options
+	}{{37, nil}, {64, &Options{Threads: 3}}, {0, nil}, {5000, nil}, {1, &Options{Threads: -1}}} {
+		got := make([]uint8, 0, len(want.Samples))
+		y := want.Y
+		err := p.RenderBands(ctm, c.o, c.rows, func(px *raster.Pixmap) error {
+			if px.X != want.X || px.Y != y || px.W != want.W || px.H > max(c.rows, 1) && c.rows > 0 {
+				t.Fatalf("%d rows: band at %d,%d of %dx%d after row %d", c.rows, px.X, px.Y, px.W, px.H, y)
 			}
+			y += px.H
+			got = append(got, px.Samples[:px.H*px.Stride]...)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("%d rows: %v", c.rows, err)
 		}
+		near(t, fmt.Sprint(c.rows, " rows"), got, want.Samples)
+	}
+
+	img, err := p.ImageDPI(150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := image.NewRGBA(img.Bounds())
+	err = p.ImageBands(150, 50, func(b *image.RGBA) error {
+		if b.Rect.Min.X != 0 || b.Rect.Dx() != img.Rect.Dx() || b.Rect.Dy() > 50 {
+			t.Fatalf("band %v of %v", b.Rect, img.Rect)
+		}
+		for y := b.Rect.Min.Y; y < b.Rect.Max.Y; y++ {
+			copy(got.Pix[got.PixOffset(0, y):], b.Pix[b.PixOffset(0, y):b.PixOffset(b.Rect.Max.X, y)])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	near(t, "ImageBands", got.Pix, img.Pix)
+
+	stop := errors.New("stop")
+	calls := 0
+	if err := p.RenderBands(ctm, nil, 16, func(*raster.Pixmap) error { calls++; return stop }); !errors.Is(err, stop) || calls != 1 {
+		t.Errorf("a callback that stops gave %v after %d bands", err, calls)
+	}
+
+	o := &Options{PixelLimit: want.W * 40}
+	if _, err := p.Render(ctm, o); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a page past the pixel limit rendered whole: %v", err)
+	}
+	if err := p.RenderBands(ctm, o, 0, func(px *raster.Pixmap) error {
+		if px.W*px.H > o.PixelLimit {
+			t.Fatalf("a band of %dx%d is past the limit of %d", px.W, px.H, o.PixelLimit)
+		}
+		return nil
+	}); err != nil {
+		t.Errorf("bands within the pixel limit: %v", err)
+	}
+	if err := p.RenderBands(ctm, &Options{PixelLimit: want.W - 1}, 0, func(*raster.Pixmap) error { return nil }); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a row past the pixel limit gave %v", err)
+	}
+	if err := p.RenderBands(raster.Scale(raster.MaxCoord/256, 1), &Options{PixelLimit: -1}, 0, func(*raster.Pixmap) error { return nil }); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a band too large to allocate gave %v", err)
+	}
+
+	big := p.Matrix(600)
+	x0, y0, x1, y1 := big.ApplyRect(p.Bounds()).Outer()
+	var ms runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&ms)
+	base, peak := ms.HeapAlloc, uint64(0)
+	if err := p.RenderBands(big, nil, 64, func(*raster.Pixmap) error {
+		runtime.GC()
+		runtime.ReadMemStats(&ms)
+		peak = max(peak, ms.HeapAlloc-min(ms.HeapAlloc, base))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if whole := uint64((x1 - x0) * (y1 - y0) * 3); peak > whole/8 {
+		t.Errorf("bands of a %d byte page held %d bytes", whole, peak)
+	}
+}
+
+// TestImageBandsCrop checks bands at the natural resolution crop as Image does.
+func TestImageBandsCrop(t *testing.T) {
+	var pix []byte
+	for y := range 200 {
+		for x := range 150 {
+			pix = append(pix, uint8(x), uint8(y), uint8(x^y))
+		}
+	}
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R" +
+			" /Resources << /XObject << /I 5 0 R >> >> >>",
+		streamObj("", "q 0 0 1 rg 0 0 100 100 re f Q q 75 0 0 90 10 5 cm /I Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 150 /Height 200 /ColorSpace /DeviceRGB"+
+			" /BitsPerComponent 8", string(pix)),
+	})
+	p, err := d.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := p.Image()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Rect.Min == (image.Point{}) {
+		t.Fatalf("Image did not crop: %v", img.Rect)
+	}
+	r := image.Rectangle{}
+	got := image.NewRGBA(img.Rect)
+	if err := p.ImageBands(0, 30, func(b *image.RGBA) error {
+		r = r.Union(b.Rect)
+		for y := b.Rect.Min.Y; y < b.Rect.Max.Y; y++ {
+			copy(got.Pix[got.PixOffset(b.Rect.Min.X, y):], b.Pix[b.PixOffset(b.Rect.Min.X, y):b.PixOffset(b.Rect.Max.X, y)])
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r != img.Rect {
+		t.Fatalf("bands cover %v, Image %v", r, img.Rect)
+	}
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		near(t, fmt.Sprint("row ", y), got.Pix[got.PixOffset(r.Min.X, y):got.PixOffset(r.Max.X, y)],
+			img.Pix[img.PixOffset(r.Min.X, y):img.PixOffset(r.Max.X, y)])
 	}
 }
 

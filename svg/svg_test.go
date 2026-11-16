@@ -496,6 +496,63 @@ func TestClipAndImage(t *testing.T) {
 	}
 }
 
+// TestImageBands checks a drawing rendered in bands against the drawing
+// rendered whole.
+func TestImageBands(t *testing.T) {
+	d, err := Load([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="90">` +
+		`<linearGradient id="g"><stop offset="0" stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient>` +
+		`<filter id="b"><feGaussianBlur stdDeviation="4"/></filter>` +
+		`<rect width="120" height="90" fill="url(#g)"/>` +
+		`<circle cx="60" cy="45" r="30" fill="green" opacity="0.5" filter="url(#b)"/>` +
+		`<path d="M5 85 L115 5" stroke="black" stroke-width="3"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	p, _ := d.Page(0)
+	for _, dpi := range []float64{96, 200} {
+		want, err := p.ImageDPI(dpi)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rows := range []int{1, 13, 0} {
+			sameBands(t, fmt.Sprint(dpi, " dpi in ", rows), func(fn func(*image.RGBA) error) error {
+				return p.ImageBands(dpi, rows, fn)
+			}, want)
+		}
+	}
+	want, _ := p.Image()
+	sameBands(t, "natural", func(fn func(*image.RGBA) error) error { return p.ImageBands(0, 20, fn) }, want)
+}
+
+// sameBands assembles the bands of an image and compares them with want, a
+// coverage unit apart at most.
+func sameBands(t *testing.T, name string, render func(func(*image.RGBA) error) error, want *image.RGBA) {
+	t.Helper()
+	got := image.NewRGBA(want.Rect)
+	r := image.Rectangle{}
+	if err := render(func(b *image.RGBA) error {
+		if !b.Rect.In(want.Rect) || b.Rect.Min.Y != r.Max.Y && !r.Empty() {
+			t.Fatalf("%s: band %v after %v of %v", name, b.Rect, r, want.Rect)
+		}
+		r = r.Union(b.Rect)
+		for y := b.Rect.Min.Y; y < b.Rect.Max.Y; y++ {
+			copy(got.Pix[got.PixOffset(b.Rect.Min.X, y):], b.Pix[b.PixOffset(b.Rect.Min.X, y):b.PixOffset(b.Rect.Max.X, y)])
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if r != want.Rect {
+		t.Fatalf("%s: bands cover %v, want %v", name, r, want.Rect)
+	}
+	for i := range got.Pix {
+		if d := int(got.Pix[i]) - int(want.Pix[i]); d > 1 || d < -1 {
+			t.Fatalf("%s: byte %d is %d, want %d", name, i, got.Pix[i], want.Pix[i])
+		}
+	}
+}
+
 // TestStylesheet covers selectors, specificity and cascade order.
 func TestStylesheet(t *testing.T) {
 	d, err := Load([]byte(`<svg>
@@ -661,19 +718,26 @@ func TestWorkBudget(t *testing.T) {
 		fan(`<rect width="1" height="1"/>`, 5) + `</svg>`
 	nested := strings.Repeat(`<image width="10" height="10" href="data:image/svg+xml;base64,`+
 		base64.StdEncoding.EncodeToString([]byte(inner))+`"/>`, 50)
-	for _, c := range []struct{ name, body string }{
+	for _, c := range []struct {
+		name, body string
+		dpi        float64
+	}{
 		{"a heavy path a million times", `<filter id="b"><feGaussianBlur stdDeviation="3"/></filter>` +
-			fan(`<path d="M0 0`+strings.Repeat(" L100 100 L0 0", 1000)+`" stroke="red" filter="url(#b)"/>`, 6)},
-		{"the bounds of a group of 2^32", bounds},
-		{"fifty drawings of a hundred thousand", nested},
+			fan(`<path d="M0 0`+strings.Repeat(" L100 100 L0 0", 1000)+`" stroke="red" filter="url(#b)"/>`, 6), 24},
+		{"the bounds of a group of 2^32", bounds, 24},
+		{"fifty drawings of a hundred thousand", nested, 24},
+		{"the page filled a hundred thousand times", fan(`<rect width="100" height="100"/>`, 5), 96},
 	} {
 		d, err := Load([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">` + c.body + `</svg>`))
 		if err != nil {
 			t.Fatal(err)
 		}
 		p, _ := d.Page(0)
-		if _, err := p.ImageDPI(24); !errors.Is(err, ErrUnsupported) {
+		if _, err := p.ImageDPI(c.dpi); !errors.Is(err, ErrUnsupported) {
 			t.Errorf("%s: %v, want the budget to run out", c.name, err)
+		}
+		if err := p.ImageBands(c.dpi, 8, func(*image.RGBA) error { return nil }); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s in bands: %v, want the budget to run out", c.name, err)
 		}
 		d.Close()
 	}

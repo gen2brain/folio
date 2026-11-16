@@ -3,6 +3,7 @@ package doc
 import (
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,24 @@ func TestLoad(t *testing.T) {
 		}
 		if _, err := p.ImageDPI(72); err != nil {
 			t.Errorf("%s: image at 72 dpi: %v", c.name, err)
+		}
+		if img != nil {
+			r := image.Rectangle{}
+			if err := p.ImageBands(0, 3, func(b *image.RGBA) error {
+				for y := b.Rect.Min.Y; y < b.Rect.Max.Y; y++ {
+					for x := b.Rect.Min.X; x < b.Rect.Max.X; x++ {
+						for i := range 4 {
+							if d := int(b.Pix[b.PixOffset(x, y)+i]) - int(img.Pix[img.PixOffset(x, y)+i]); d > 1 || d < -1 {
+								return fmt.Errorf("%d,%d differs from Image", x, y)
+							}
+						}
+					}
+				}
+				r = r.Union(b.Rect)
+				return nil
+			}); err != nil || r != img.Rect {
+				t.Errorf("%s: bands cover %v of %v: %v", c.name, r, img.Rect, err)
+			}
 		}
 		if _, err := p.StructuredText(); err != nil {
 			t.Errorf("%s: structured text: %v", c.name, err)

@@ -626,13 +626,31 @@ func fitDPI(dpi float64, page raster.Rect, limit int) float64 {
 
 // CropTo cuts out the part of a rendered page box covers.
 func CropTo(img *image.RGBA, box raster.Rect, dpi float64) *image.RGBA {
-	s := dpi / 72
-	r := image.Rect(
-		int(float64(box.X0)*s), int(float64(box.Y0)*s),
-		int(float64(box.X1)*s+0.5), int(float64(box.Y1)*s+0.5),
-	).Intersect(img.Bounds())
+	r := CropRect(box, dpi).Intersect(img.Bounds())
 	if r.Empty() {
 		return img
 	}
 	return img.SubImage(r).(*image.RGBA)
+}
+
+// CropRect is the part of an image rendered at dpi that CropTo keeps.
+func CropRect(box raster.Rect, dpi float64) image.Rectangle {
+	s := dpi / 72
+	return image.Rect(
+		int(float64(box.X0)*s), int(float64(box.Y0)*s),
+		int(float64(box.X1)*s+0.5), int(float64(box.Y1)*s+0.5),
+	)
+}
+
+// BandRows returns the height of a band w pixels wide within limit pixels:
+// rows, at most h, or as many as the limit allows when rows is zero or less,
+// and zero when one row is over the limit.
+func BandRows(w, h, rows, limit int) int {
+	if rows <= 0 || rows > h {
+		rows = h
+	}
+	if limit >= 0 {
+		rows = min(rows, limit/max(w, 1))
+	}
+	return rows
 }

@@ -15,6 +15,10 @@ defer doc.Close()
 p, err := doc.Page(0)
 img, err := p.ImageDPI(150)
 txt, err := p.Text()
+
+err = p.ImageBands(600, 256, func(band *image.RGBA) error {   // a large page, 256 rows at a time
+	return enc.WriteRows(band)                                 // band.Rect is its place on the page
+})
 ```
 
 ### Supported

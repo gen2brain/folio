@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
@@ -387,8 +388,7 @@ func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			dev := NewDrawDevice(p.doc, band)
-			dev.SetFlatness(o.flatness())
+			dev := p.doc.bandDevice(band, o)
 			list.ReplayClip(dev, dev.Clip())
 			errs[i] = dev.Close()
 		}()
@@ -400,6 +400,75 @@ func (p *Page) renderBands(px *raster.Pixmap, ctm raster.Matrix, o *Options, n i
 		}
 	}
 	return nil
+}
+
+// RenderBands draws the page as Render does, rows at a time, and hands each
+// band to fn in order from the top: a pixmap whose X and Y are its place in
+// device space, valid only until fn returns. The pixel limit bounds a band,
+// not the page, and rows of zero or less is as many as it allows. An error
+// from fn stops the render and is returned.
+func (p *Page) RenderBands(ctm raster.Matrix, o *Options, rows int, fn func(*raster.Pixmap) error) error {
+	x0, y0, x1, y1 := ctm.ApplyRect(p.Bounds()).Outer()
+	return p.drawBands(image.Rect(x0, y0, x1, y1), ctm, o, rows, fn)
+}
+
+// ImageBands renders the page as ImageDPI does, rows at a time, and hands each
+// band to fn in order from the top. A band's Rect is its place in the image
+// ImageDPI returns, valid only until fn returns, and a dpi of zero or less is
+// the resolution and the crop of Image. The pixel limit bounds a band, not
+// the page. An error from fn stops the render and is returned.
+func (p *Page) ImageBands(dpi float64, rows int, fn func(*image.RGBA) error) error {
+	var box raster.Rect
+	crop := false
+	if dpi <= 0 {
+		dpi, box, crop = p.naturalDPI()
+	}
+	ctm := p.Matrix(dpi)
+	x0, y0, x1, y1 := ctm.ApplyRect(p.Bounds()).Outer()
+	r := image.Rect(x0, y0, x1, y1)
+	if crop {
+		if c := gfx.CropRect(box, dpi).Add(r.Min).Intersect(r); !c.Empty() {
+			r = c
+		}
+	}
+	return p.drawBands(r, ctm, nil, rows, gfx.RGBABands(image.Pt(x0, y0), fn))
+}
+
+// drawBands records the page into a display list and draws the part of it r
+// covers into bands.
+func (p *Page) drawBands(r image.Rectangle, ctm raster.Matrix, o *Options, rows int, fn func(*raster.Pixmap) error) error {
+	if r.Empty() {
+		return fmt.Errorf("%w: page %d is empty at this scale", ErrInvalid, p.num+1)
+	}
+	cs := o.colorSpace()
+	if cs == nil || cs.N < 1 || cs.N > 4 || cs.N == 2 {
+		return fmt.Errorf("%w: cannot render into %s", ErrUnsupported, csName(cs, "no color space"))
+	}
+	lim := o.pixelLimit()
+	if rows = gfx.BandRows(r.Dx(), r.Dy(), rows, lim); rows == 0 {
+		return fmt.Errorf("%w: a row of %d is over the pixel limit of %d", ErrUnsupported, r.Dx(), lim)
+	}
+
+	first := p.doc.errCount()
+	list := NewListDevice()
+	if err := p.Run(list, ctm); err != nil {
+		return err
+	}
+	if o.strict() {
+		if err := p.doc.errAfter(first); err != nil {
+			return err
+		}
+	}
+	err := list.DrawBands(r, cs.Model(), o.alpha(), rows, o.threads(), func(px *raster.Pixmap) Device {
+		return p.doc.bandDevice(px, o)
+	}, fn)
+	if errors.Is(err, gfx.ErrUnsupported) {
+		err = fmt.Errorf("%w: %w", ErrUnsupported, err)
+	}
+	if err == nil && o.strict() {
+		err = p.doc.errAfter(first)
+	}
+	return err
 }
 
 // ImageDPI renders the page at a resolution in dots per inch.

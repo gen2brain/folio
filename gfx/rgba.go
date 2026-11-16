@@ -11,6 +11,32 @@ import (
 // the conversion happens at, and it happens once.
 func ToRGBA(px *raster.Pixmap) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, px.W, px.H))
+	toRGBA(img, px)
+	return img
+}
+
+// RGBABands adapts a callback taking RGBA bands to DrawBands, converting each
+// band into one reused image whose Rect is the band's place in device space
+// less origin.
+func RGBABands(origin image.Point, fn func(*image.RGBA) error) func(*raster.Pixmap) error {
+	img := &image.RGBA{}
+	var pix []uint8
+	return func(px *raster.Pixmap) error {
+		n := px.W * px.H * 4
+		if cap(pix) < n {
+			pix = make([]uint8, n)
+		}
+		*img = image.RGBA{
+			Pix:    pix[:n],
+			Stride: px.W * 4,
+			Rect:   image.Rect(px.X, px.Y, px.X+px.W, px.Y+px.H).Sub(origin),
+		}
+		toRGBA(img, px)
+		return fn(img)
+	}
+}
+
+func toRGBA(img *image.RGBA, px *raster.Pixmap) {
 	model := px.Model
 	if model == nil {
 		model = raster.ModelRGB
@@ -53,7 +79,6 @@ func ToRGBA(px *raster.Pixmap) *image.RGBA {
 			out[x*4+3] = a
 		}
 	}
-	return img
 }
 
 func unpremultiply(v, a uint8) uint8 {

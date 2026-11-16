@@ -1,6 +1,10 @@
 package gfx
 
 import (
+	"fmt"
+	"image"
+	"sync"
+
 	"github.com/gen2brain/folio/raster"
 )
 
@@ -299,4 +303,68 @@ func (d *ListDevice) ReplayClip(dev Device, clip raster.Rect) {
 			dev.EndLayer()
 		}
 	}
+}
+
+// DrawBands draws the list into the area of device space r, rows at a time,
+// and hands each band to fn in order from the top. A band is a pixmap of
+// model whose X and Y are its place in device space, valid only until fn
+// returns. newDevice makes the device a band is drawn through, threads bands
+// are drawn at once, and an error from fn stops the drawing and is returned.
+func (d *ListDevice) DrawBands(r image.Rectangle, model raster.Model, alpha bool, rows, threads int,
+	newDevice func(*raster.Pixmap) Device, fn func(*raster.Pixmap) error) error {
+	w, h := r.Dx(), r.Dy()
+	if w <= 0 || h <= 0 {
+		return nil
+	}
+	rows = min(max(rows, 1), h)
+	n := min(max(threads, 1), (h+rows-1)/rows)
+	bufs := make([]*raster.Pixmap, n)
+	bands := make([]raster.Pixmap, n)
+	errs := make([]error, n)
+	for i := range bufs {
+		if bufs[i] = raster.NewPixmap(model, w, rows, alpha); bufs[i] == nil {
+			return fmt.Errorf("%w: %dx%d does not fit in memory", ErrUnsupported, w, rows)
+		}
+	}
+	draw := func(i int) {
+		b := &bands[i]
+		dev := newDevice(b)
+		d.ReplayClip(dev, raster.Rect{X0: float32(b.X), Y0: float32(b.Y), X1: float32(b.X + b.W), Y1: float32(b.Y + b.H)})
+		errs[i] = dev.Close()
+	}
+	for y := r.Min.Y; y < r.Max.Y; y += n * rows {
+		k := 0
+		for ; k < n && y+k*rows < r.Max.Y; k++ {
+			y0 := y + k*rows
+			b := bufs[k]
+			bh := min(rows, r.Max.Y-y0)
+			bands[k] = raster.Pixmap{
+				W: w, H: bh, N: b.N, Alpha: b.Alpha, Stride: b.Stride,
+				X: r.Min.X, Y: y0, Samples: b.Samples[:bh*b.Stride], Model: b.Model,
+			}
+			if alpha {
+				bands[k].Clear()
+			} else {
+				bands[k].ClearWhite()
+			}
+		}
+		if k == 1 {
+			draw(0)
+		} else {
+			var wg sync.WaitGroup
+			for i := range k {
+				wg.Go(func() { draw(i) })
+			}
+			wg.Wait()
+		}
+		for i := range k {
+			if errs[i] != nil {
+				return errs[i]
+			}
+			if err := fn(&bands[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

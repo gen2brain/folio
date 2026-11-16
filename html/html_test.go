@@ -1303,6 +1303,40 @@ func TestLayout(t *testing.T) {
 	if !hasInk(img) {
 		t.Error("the page rendered blank")
 	}
+	sameBands(t, "bands", func(fn func(*image.RGBA) error) error { return p.ImageBands(72, 17, fn) }, img)
+	d.PixelLimit = 300 * 20
+	if _, err := p.ImageDPI(72); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a page past the pixel limit rendered whole: %v", err)
+	}
+	sameBands(t, "within the limit", func(fn func(*image.RGBA) error) error { return p.ImageBands(72, 0, fn) }, img)
+}
+
+// sameBands assembles the bands of an image and compares them with want, a
+// coverage unit apart at most.
+func sameBands(t *testing.T, name string, render func(func(*image.RGBA) error) error, want *image.RGBA) {
+	t.Helper()
+	got := image.NewRGBA(want.Rect)
+	r := image.Rectangle{}
+	if err := render(func(b *image.RGBA) error {
+		if !b.Rect.In(want.Rect) || b.Rect.Min.Y != r.Max.Y && !r.Empty() {
+			t.Fatalf("%s: band %v after %v of %v", name, b.Rect, r, want.Rect)
+		}
+		r = r.Union(b.Rect)
+		for y := b.Rect.Min.Y; y < b.Rect.Max.Y; y++ {
+			copy(got.Pix[got.PixOffset(b.Rect.Min.X, y):], b.Pix[b.PixOffset(b.Rect.Min.X, y):b.PixOffset(b.Rect.Max.X, y)])
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if r != want.Rect {
+		t.Fatalf("%s: bands cover %v, want %v", name, r, want.Rect)
+	}
+	for i := range got.Pix {
+		if d := int(got.Pix[i]) - int(want.Pix[i]); d > 1 || d < -1 {
+			t.Fatalf("%s: byte %d is %d, want %d", name, i, got.Pix[i], want.Pix[i])
+		}
+	}
 }
 
 // TestLayoutWraps checks that a line breaks where it no longer fits.

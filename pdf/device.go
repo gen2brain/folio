@@ -94,6 +94,69 @@ func NewDrawDevice(doc *Document, dst *raster.Pixmap) *DrawDevice {
 	return d
 }
 
+// bandDevice draws a band of a recorded page, charging the images and meshes
+// it decodes to the operations a page has.
+type bandDevice struct {
+	*DrawDevice
+	doc *Document
+	ops int64
+}
+
+func (d *Document) bandDevice(px *raster.Pixmap, o *Options) *bandDevice {
+	dev := NewDrawDevice(d, px)
+	dev.SetFlatness(o.flatness())
+	return &bandDevice{DrawDevice: dev, doc: d}
+}
+
+func (d *bandDevice) spent() bool { return d.ops > maxOperations }
+
+func (d *bandDevice) charge(n int64) {
+	if d.ops += n; d.ops > maxOperations && d.ops-n <= maxOperations {
+		d.doc.errorf("page exceeds %d operations", maxOperations)
+	}
+}
+
+func (d *bandDevice) chargeImage(img gfx.Image) {
+	if i, ok := img.(*Image); ok {
+		d.charge(i.takeSpent() / imageOpSamples)
+	}
+}
+
+func (d *bandDevice) FillShade(shade gfx.Shade, ctm raster.Matrix, alpha float32, cp gfx.ColorParams) {
+	if d.spent() {
+		return
+	}
+	d.DrawDevice.FillShade(shade, ctm, alpha, cp)
+	if sh, ok := shade.(*Shade); ok {
+		d.charge(sh.spent.Swap(0) / meshOpSamples)
+	}
+}
+
+func (d *bandDevice) FillImage(img gfx.Image, ctm raster.Matrix, alpha float32, cp gfx.ColorParams) {
+	if d.spent() {
+		return
+	}
+	d.DrawDevice.FillImage(img, ctm, alpha, cp)
+	d.chargeImage(img)
+}
+
+func (d *bandDevice) FillImageMask(img gfx.Image, ctm raster.Matrix, cs *ColorSpace, color []float32, alpha float32, cp gfx.ColorParams) {
+	if d.spent() {
+		return
+	}
+	d.DrawDevice.FillImageMask(img, ctm, cs, color, alpha, cp)
+	d.chargeImage(img)
+}
+
+func (d *bandDevice) ClipImageMask(img gfx.Image, ctm raster.Matrix, scissor raster.Rect) {
+	if d.spent() {
+		d.DrawDevice.ClipPath(&raster.Path{}, false, ctm, scissor)
+		return
+	}
+	d.DrawDevice.ClipImageMask(img, ctm, scissor)
+	d.chargeImage(img)
+}
+
 // NewBBoxDevice returns a device that measures a page.
 func NewBBoxDevice() *BBoxDevice { return gfx.NewBBoxDevice() }
 

@@ -119,6 +119,9 @@ type Page interface {
 	NaturalDPI() float64
 	// ImageDPI renders it at the resolution asked for.
 	ImageDPI(dpi float64) (*image.RGBA, error)
+	// ImageBands renders it rows at a time, each band valid until fn returns
+	// and placed by its Rect; a dpi of zero or less is that of Image.
+	ImageBands(dpi float64, rows int, fn func(*image.RGBA) error) error
 	// Text is what the page says.
 	Text() (string, error)
 	// StructuredText is the same with the box every character covers.

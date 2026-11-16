@@ -71,6 +71,60 @@ func (p *Page) Render(ctm raster.Matrix, o *Options) (*raster.Pixmap, error) {
 	return px, err
 }
 
+// RenderBands draws the drawing as Render does, rows at a time, and hands
+// each band to fn in order from the top: a pixmap whose X and Y are its place
+// in device space, valid only until fn returns. The pixel limit bounds a
+// band, not the drawing, and rows of zero or less is as many as it allows.
+// An error from fn stops the render and is returned.
+func (p *Page) RenderBands(ctm raster.Matrix, o *Options, rows int, fn func(*raster.Pixmap) error) error {
+	x0, y0, x1, y1 := ctm.ApplyRect(p.Bounds()).Outer()
+	r := image.Rect(x0, y0, x1, y1)
+	if r.Empty() {
+		return fmt.Errorf("%w: the drawing is empty at this scale", ErrInvalid)
+	}
+	lim := o.pixelLimit()
+	if rows = gfx.BandRows(r.Dx(), r.Dy(), rows, lim); rows == 0 {
+		return fmt.Errorf("%w: a row of %d is over the pixel limit of %d", ErrUnsupported, r.Dx(), lim)
+	}
+	list := areaList{gfx.NewListDevice(), raster.Rect{X0: float32(x0), Y0: float32(y0), X1: float32(x1), Y1: float32(y1)}}
+	err := p.Run(list, ctm)
+	if e := list.DrawBands(r, gfx.DeviceRGB.Model(), o.alpha(), rows, 1, func(px *raster.Pixmap) gfx.Device {
+		dev := gfx.NewDrawDevice(px)
+		if f := o.flatness(); f > 0 {
+			dev.SetFlatness(f)
+		}
+		return dev
+	}, fn); e != nil {
+		if errors.Is(e, gfx.ErrUnsupported) {
+			e = fmt.Errorf("%w: %w", ErrUnsupported, e)
+		}
+		return e
+	}
+	return err
+}
+
+// ImageBands renders the drawing as ImageDPI does, rows at a time, and hands
+// each band to fn in order from the top. A band's Rect is its place in the
+// image ImageDPI returns, valid only until fn returns, and a dpi of zero or
+// less is the resolution of Image. The pixel limit bounds a band, not the
+// drawing. An error from fn stops the render and is returned.
+func (p *Page) ImageBands(dpi float64, rows int, fn func(*image.RGBA) error) error {
+	if dpi <= 0 {
+		dpi = p.NaturalDPI()
+	}
+	ctm := p.Matrix(dpi)
+	x0, y0, _, _ := ctm.ApplyRect(p.Bounds()).Outer()
+	return p.RenderBands(ctm, nil, rows, gfx.RGBABands(image.Pt(x0, y0), fn))
+}
+
+// areaList records a drawing while reporting the area a draw device would.
+type areaList struct {
+	*gfx.ListDevice
+	area raster.Rect
+}
+
+func (l areaList) Clip() raster.Rect { return l.area }
+
 // Image renders the drawing at the size it asks to be, a pixel per pixel.
 func (p *Page) Image() (*image.RGBA, error) { return p.ImageDPI(96) }
 
