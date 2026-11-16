@@ -218,7 +218,8 @@ func flateDecode(data []byte, limit int) ([]byte, error) {
 // inflaters pools the flate decompressors.
 var inflaters [2]sync.Pool
 
-func inflate(data []byte, header bool, limit int) ([]byte, error) {
+// openInflater takes a decompressor from its pool and starts it on data.
+func openInflater(data []byte, header bool) (io.ReadCloser, *sync.Pool, error) {
 	pool := &inflaters[0]
 	if header {
 		pool = &inflaters[1]
@@ -245,6 +246,14 @@ func inflate(data []byte, header bool, limit int) ([]byte, error) {
 		if r != nil {
 			pool.Put(r)
 		}
+		return nil, nil, err
+	}
+	return r, pool, nil
+}
+
+func inflate(data []byte, header bool, limit int) ([]byte, error) {
+	r, pool, err := openInflater(data, header)
+	if err != nil {
 		return nil, err
 	}
 	defer func() {
@@ -264,6 +273,218 @@ func inflate(data []byte, header bool, limit int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ImageReader is ImageDataLimit as a reader, for a stream whose last filter
+// is FlateDecode or LZWDecode and that leaves no image filter: it holds the
+// compressed bytes and no more. It declines any other stream, and one whose inflation
+// fails before it yields a byte, which ImageDataLimit then reports.
+func (s *Stream) ImageReader(limit int) (io.ReadCloser, bool) {
+	f := s.doc
+	filters := f.names(s.Dict, "Filter", "F")
+	n := len(filters)
+	if n == 0 || n > maxFilters {
+		return nil, false
+	}
+	last := filters[n-1]
+	if last != "FlateDecode" && last != "Fl" && last != "LZWDecode" && last != "LZW" {
+		return nil, false
+	}
+	for _, name := range filters {
+		if !byteFilters[name] {
+			return nil, false
+		}
+	}
+	data, err := s.Raw()
+	if err != nil {
+		return nil, false
+	}
+	parms := f.parmsList(s.Dict, n)
+	var errs []error
+	for i, name := range filters[:n-1] {
+		out, err := applyFilter(f, name, data, parms[i], s.Ref, maxDecoded)
+		if err != nil {
+			if out == nil {
+				return nil, false
+			}
+			errs = append(errs, err)
+		}
+		data = out
+	}
+	limit = min(limit, maxDecoded)
+	stage := maxDecoded
+	if limit < maxDecoded {
+		stage = min(2*limit+64, maxDecoded)
+	}
+	var src io.ReadCloser
+	if last == "LZWDecode" || last == "LZW" {
+		early := f.GetInt(parms[n-1]["EarlyChange"], 1)
+		src = &lzwReader{d: newLZW(data, early != 0), f: f, limit: stage}
+	} else {
+		fr, ok := newFlateReader(f, data, stage)
+		if !ok {
+			return nil, false
+		}
+		src = fr
+	}
+	for _, err := range errs {
+		f.errorf("%v", err)
+	}
+	pr, ok := predictorOf(f, parms[n-1])
+	if !ok {
+		return src, true
+	}
+	if pr.tiff {
+		return &tiffReader{ReadCloser: src, pr: pr, row: make([]byte, pr.rowLen)}, true
+	}
+	return &pngReader{
+		ReadCloser: src, f: f, pr: pr,
+		in: make([]byte, pr.rowLen+1), row: make([]byte, pr.rowLen), prev: make([]byte, pr.rowLen),
+	}, true
+}
+
+// flateReader inflates as flateDecode does, a read at a time.
+type flateReader struct {
+	f     *File
+	r     io.Reader
+	z     io.ReadCloser
+	pool  *sync.Pool
+	first []byte
+	n     int
+	done  bool
+}
+
+func newFlateReader(f *File, data []byte, limit int) (*flateReader, bool) {
+	for i := 0; i < len(data) && i < 32 && isSpace[data[i]]; i++ {
+		data = data[1:]
+		i--
+	}
+	if len(data) == 0 {
+		return &flateReader{f: f, done: true}, true
+	}
+	try := func(data []byte, header bool) *flateReader {
+		z, pool, err := openInflater(data, header)
+		if err != nil {
+			return nil
+		}
+		fr := &flateReader{f: f, r: io.LimitReader(z, int64(limit)), z: z, pool: pool}
+		buf := make([]byte, 32<<10)
+		for {
+			k, err := fr.r.Read(buf)
+			if k > 0 {
+				fr.first, fr.n = buf[:k], k
+				return fr
+			}
+			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+				fr.done = true
+				return fr
+			}
+			if err != nil {
+				fr.Close()
+				return nil
+			}
+		}
+	}
+	if fr := try(data, true); fr != nil {
+		return fr, true
+	}
+	if fr := try(data, false); fr != nil {
+		return fr, true
+	}
+	if len(data) > 1 {
+		if fr := try(data[1:], true); fr != nil {
+			return fr, true
+		}
+	}
+	return nil, false
+}
+
+func (fr *flateReader) Read(p []byte) (int, error) {
+	if len(fr.first) > 0 {
+		k := copy(p, fr.first)
+		fr.first = fr.first[k:]
+		return k, nil
+	}
+	if fr.done {
+		return 0, io.EOF
+	}
+	k, err := fr.r.Read(p)
+	fr.n += k
+	if err == nil {
+		return k, nil
+	}
+	fr.done = true
+	if err != io.EOF && !errors.Is(err, io.ErrUnexpectedEOF) {
+		fr.f.errorf("%v", fmt.Errorf("flate: %w after %d bytes", err, fr.n))
+	}
+	if k > 0 {
+		return k, nil
+	}
+	return 0, io.EOF
+}
+
+// Close returns the inflater to its pool.
+func (fr *flateReader) Close() error {
+	if fr.z != nil {
+		fr.z.Close()
+		fr.pool.Put(fr.z)
+		fr.z = nil
+	}
+	return nil
+}
+
+// pngReader undoes the PNG predictor a row at a time; a partial last row is dropped.
+type pngReader struct {
+	io.ReadCloser
+	f             *File
+	pr            predictor
+	in, row, prev []byte
+	pend          []byte
+}
+
+func (p *pngReader) Read(b []byte) (int, error) {
+	for len(p.pend) == 0 {
+		if _, err := io.ReadFull(p.ReadCloser, p.in); err != nil {
+			return 0, io.EOF
+		}
+		copy(p.row, p.in[1:])
+		p.pr.png(p.f, p.in[0], p.row, p.prev)
+		p.prev, p.row = p.row, p.prev
+		p.pend = p.prev
+	}
+	k := copy(b, p.pend)
+	p.pend = p.pend[k:]
+	return k, nil
+}
+
+// tiffReader undoes the TIFF predictor a row at a time; a partial last row is left as it is.
+type tiffReader struct {
+	io.ReadCloser
+	pr   predictor
+	row  []byte
+	pend []byte
+	end  bool
+}
+
+func (t *tiffReader) Read(b []byte) (int, error) {
+	for len(t.pend) == 0 {
+		if t.end {
+			return 0, io.EOF
+		}
+		k, _ := io.ReadFull(t.ReadCloser, t.row)
+		if k == 0 {
+			return 0, io.EOF
+		}
+		if k == len(t.row) {
+			tiffPredictor(t.row, t.pr.colors, t.pr.bpc, t.pr.columns, t.pr.rowLen)
+		} else {
+			t.end = true
+		}
+		t.pend = t.row[:k]
+	}
+	k := copy(b, t.pend)
+	t.pend = t.pend[k:]
+	return k, nil
+}
+
 // maxCCITTBytes bounds a CCITT image, 2^28 pixels of one bit.
 const maxCCITTBytes = 1 << 25
 
@@ -275,77 +496,98 @@ const maxDecoded = 1 << 30
 
 // applyPredictor undoes the TIFF or PNG predictor a filter's parameters name.
 func applyPredictor(f *File, data []byte, parms Dict) []byte {
-	if parms == nil || f == nil {
+	pr, ok := predictorOf(f, parms)
+	if !ok {
 		return data
+	}
+	if pr.tiff {
+		return tiffPredictor(data, pr.colors, pr.bpc, pr.columns, pr.rowLen)
+	}
+	rows := len(data) / (pr.rowLen + 1)
+	if rows == 0 {
+		return data[:0]
+	}
+	out := make([]byte, 0, rows*pr.rowLen)
+	prev := make([]byte, pr.rowLen)
+	for r := 0; r < rows; r++ {
+		src := data[r*(pr.rowLen+1):]
+		row := make([]byte, pr.rowLen)
+		copy(row, src[1:pr.rowLen+1])
+		pr.png(f, src[0], row, prev)
+		out = append(out, row...)
+		prev = row
+	}
+	return out
+}
+
+// predictor is the TIFF or PNG predictor of a filter's parameters.
+type predictor struct {
+	tiff                      bool
+	colors, bpc, columns, bpp int
+	rowLen                    int
+}
+
+func predictorOf(f *File, parms Dict) (predictor, bool) {
+	if parms == nil || f == nil {
+		return predictor{}, false
 	}
 	pred := int(f.GetInt(parms["Predictor"], 1))
 	if pred <= 1 {
-		return data
+		return predictor{}, false
 	}
 	colors := int(f.GetInt(parms["Colors"], 1))
 	bpc := int(f.GetInt(parms["BitsPerComponent"], 8))
 	columns := int(f.GetInt(parms["Columns"], 1))
 	if colors < 1 || colors > 32 || columns < 1 || columns > 1<<24 {
 		f.errorf("bad predictor parameters: colors %d columns %d", colors, columns)
-		return data
+		return predictor{}, false
 	}
 	switch bpc {
 	case 1, 2, 4, 8, 16:
 	default:
 		f.errorf("bad predictor bits per component: %d", bpc)
-		return data
+		return predictor{}, false
 	}
+	return predictor{
+		tiff:   pred == 2,
+		colors: colors, bpc: bpc, columns: columns,
+		bpp:    (colors*bpc + 7) / 8,
+		rowLen: (colors*bpc*columns + 7) / 8,
+	}, true
+}
 
-	bpp := (colors*bpc + 7) / 8
-	rowLen := (colors*bpc*columns + 7) / 8
-	if pred == 2 {
-		return tiffPredictor(data, colors, bpc, columns, rowLen)
-	}
-
-	rows := len(data) / (rowLen + 1)
-	if rows == 0 {
-		return data[:0]
-	}
-	out := make([]byte, 0, rows*rowLen)
-	prev := make([]byte, rowLen)
-	for r := 0; r < rows; r++ {
-		src := data[r*(rowLen+1):]
-		ft := src[0]
-		row := make([]byte, rowLen)
-		copy(row, src[1:rowLen+1])
-		switch ft {
-		case 0:
-		case 1:
-			for i := bpp; i < rowLen; i++ {
-				row[i] += row[i-bpp]
-			}
-		case 2:
-			for i := 0; i < rowLen; i++ {
-				row[i] += prev[i]
-			}
-		case 3:
-			for i := 0; i < rowLen; i++ {
-				var left byte
-				if i >= bpp {
-					left = row[i-bpp]
-				}
-				row[i] += byte((int(left) + int(prev[i])) / 2)
-			}
-		case 4:
-			for i := 0; i < rowLen; i++ {
-				var left, upLeft byte
-				if i >= bpp {
-					left, upLeft = row[i-bpp], prev[i-bpp]
-				}
-				row[i] += paeth(left, prev[i], upLeft)
-			}
-		default:
-			f.errorf("unknown PNG predictor row type %d", ft)
+// png undoes one row of the PNG predictor of type ft against the row above.
+func (pr predictor) png(f *File, ft byte, row, prev []byte) {
+	bpp, rowLen := pr.bpp, pr.rowLen
+	switch ft {
+	case 0:
+	case 1:
+		for i := bpp; i < rowLen; i++ {
+			row[i] += row[i-bpp]
 		}
-		out = append(out, row...)
-		prev = row
+	case 2:
+		for i := 0; i < rowLen; i++ {
+			row[i] += prev[i]
+		}
+	case 3:
+		for i := 0; i < rowLen; i++ {
+			var left byte
+			if i >= bpp {
+				left = row[i-bpp]
+			}
+			row[i] += byte((int(left) + int(prev[i])) / 2)
+		}
+	case 4:
+		for i := 0; i < rowLen; i++ {
+			var left, upLeft byte
+			if i >= bpp {
+				left, upLeft = row[i-bpp], prev[i-bpp]
+			}
+			row[i] += paeth(left, prev[i], upLeft)
+		}
+	default:
+		f.errorf("unknown PNG predictor row type %d", ft)
 	}
-	return out
 }
 
 func paeth(a, b, c byte) byte {

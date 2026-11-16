@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	"compress/lzw"
 	"compress/zlib"
 	"encoding/binary"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"image"
 	"image/jpeg"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1242,6 +1244,86 @@ func TestImageWork(t *testing.T) {
 	}
 	for _, err := range d.Err() {
 		t.Errorf("an image decoded again for each band: %v", err)
+	}
+}
+
+// TestImageStreams renders images whose samples a reader decodes against the
+// same samples stored raw, which are decoded whole: every depth, a stencil, a
+// /Decode array, a color key, a predictor, LZW and truncation.
+func TestImageStreams(t *testing.T) {
+	rng := rand.New(rand.NewPCG(4, 8))
+	for i := range 120 {
+		w, h := 1+rng.IntN(40), 1+rng.IntN(40)
+		bpc := []int{1, 2, 4, 8, 16}[rng.IntN(5)]
+		cs, comps := []string{"/DeviceGray", "/DeviceRGB", "/DeviceCMYK"}[rng.IntN(3)], 0
+		comps = map[string]int{"/DeviceGray": 1, "/DeviceRGB": 3, "/DeviceCMYK": 4}[cs]
+		dict := fmt.Sprintf("/Type /XObject /Subtype /Image /Width %d /Height %d /BitsPerComponent %d /ColorSpace %s", w, h, bpc, cs)
+		if rng.IntN(5) == 0 {
+			bpc, comps = 1, 1
+			dict = fmt.Sprintf("/Type /XObject /Subtype /Image /Width %d /Height %d /ImageMask true", w, h)
+		}
+		if rng.IntN(4) == 0 && !strings.Contains(dict, "ImageMask") {
+			dict += " /Decode ["
+			for range comps {
+				dict += " 1 0"
+			}
+			dict += " ]"
+		}
+		if rng.IntN(5) == 0 && !strings.Contains(dict, "ImageMask") {
+			dict += " /Mask ["
+			for range comps {
+				dict += " 0 " + strconv.Itoa((1<<bpc-1)/2)
+			}
+			dict += " ]"
+		}
+		rowLen := (w*comps*bpc + 7) / 8
+		raw := make([]byte, rowLen*h)
+		for k := range raw {
+			raw[k] = byte(rng.IntN(256))
+		}
+		if rng.IntN(4) == 0 {
+			raw = raw[:rng.IntN(len(raw)+1)]
+		}
+		var enc bytes.Buffer
+		filter := "/FlateDecode"
+		switch rng.IntN(3) {
+		case 0:
+			zw := zlib.NewWriter(&enc)
+			zw.Write(raw)
+			zw.Close()
+		case 1:
+			raw = raw[:len(raw)/rowLen*rowLen]
+			filter += fmt.Sprintf(" /DecodeParms << /Predictor 12 /Colors %d /BitsPerComponent %d /Columns %d >>", comps, bpc, w)
+			var pred []byte
+			for r := 0; r*rowLen < len(raw); r++ {
+				pred = append(pred, 0)
+				pred = append(pred, raw[r*rowLen:min((r+1)*rowLen, len(raw))]...)
+			}
+			zw := zlib.NewWriter(&enc)
+			zw.Write(pred)
+			zw.Close()
+		case 2:
+			filter = "/LZWDecode /DecodeParms << /EarlyChange 0 >>"
+			lw := lzw.NewWriter(&enc, lzw.MSB, 8)
+			lw.Write(raw)
+			lw.Close()
+		}
+		page := func(img string) *raster.Pixmap {
+			d := buildPDF(t, []string{
+				"<< /Type /Catalog /Pages 2 0 R >>",
+				"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+				"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 60 60] /Contents 4 0 R" +
+					" /Resources << /XObject << /I 5 0 R >> >> >>",
+				streamObj("", "0.2 0.5 0.8 rg q 50 0 0 50 5 5 cm /I Do Q"),
+				img,
+			})
+			return renderDoc(t, d, nil)
+		}
+		want := page(streamObj(dict, string(raw)))
+		got := page(streamObj(dict+" /Filter "+filter, enc.String()))
+		if !bytes.Equal(got.Samples, want.Samples) {
+			t.Fatalf("image %d (%s, %s): the streamed samples render differently", i, dict, filter)
+		}
 	}
 }
 

@@ -2,7 +2,12 @@ package syntax
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/lzw"
 	"compress/zlib"
+	"fmt"
+	"io"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -225,5 +230,118 @@ func TestCCITTTruncated(t *testing.T) {
 		if len(got) != 8*4 {
 			t.Fatalf("%d bytes in decoded to %d bytes, want %d", n, len(got), 8*4)
 		}
+	}
+}
+
+// TestImageReader checks the samples a reader decodes against the samples
+// ImageDataLimit decodes whole, with the errors each records: Flate and LZW,
+// every predictor, a raw and a damaged stream, leading space, truncation and a limit.
+func TestImageReader(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	deflate := func(b []byte, header bool) []byte {
+		var z bytes.Buffer
+		if header {
+			w := zlib.NewWriter(&z)
+			w.Write(b)
+			w.Close()
+		} else {
+			w, _ := flate.NewWriter(&z, 5)
+			w.Write(b)
+			w.Close()
+		}
+		return z.Bytes()
+	}
+	streams := 0
+	for i := range 400 {
+		colors, bpc, columns := 1+rng.IntN(4), []int{1, 2, 4, 8, 16}[rng.IntN(5)], 1+rng.IntN(70)
+		rowLen := (colors*bpc*columns + 7) / 8
+		rows := rng.IntN(40)
+		parms := Dict{}
+		var plain []byte
+		switch pred := []int{1, 2, 10, 15}[rng.IntN(4)]; pred {
+		case 1:
+			plain = make([]byte, rows*rowLen)
+			for k := range plain {
+				plain[k] = byte(rng.IntN(256))
+			}
+		default:
+			parms = Dict{"Predictor": Integer(pred), "Colors": Integer(colors),
+				"BitsPerComponent": Integer(bpc), "Columns": Integer(columns)}
+			if pred == 2 {
+				plain = make([]byte, rows*rowLen+rng.IntN(rowLen+1))
+				for k := range plain {
+					plain[k] = byte(rng.IntN(256))
+				}
+				break
+			}
+			for range rows {
+				plain = append(plain, byte(rng.IntN(6)))
+				for range rowLen {
+					plain = append(plain, byte(rng.IntN(256)))
+				}
+			}
+			plain = append(plain, make([]byte, rng.IntN(rowLen+1))...)
+		}
+		z := deflate(plain, rng.IntN(4) != 0)
+		name := Name("FlateDecode")
+		if rng.IntN(3) == 0 {
+			var b bytes.Buffer
+			w := lzw.NewWriter(&b, lzw.MSB, 8)
+			w.Write(plain)
+			w.Close()
+			z, name = b.Bytes(), "LZWDecode"
+			parms["EarlyChange"] = Integer(rng.IntN(2))
+		}
+		switch rng.IntN(8) {
+		case 0:
+			z = append([]byte("\r\n "), z...)
+		case 1:
+			z = z[:rng.IntN(len(z)+1)]
+		case 2:
+			z = append(z, "garbage"...)
+		case 3:
+			z = append([]byte{'x'}, z...)
+		case 4:
+			if len(z) > 8 {
+				z[len(z)/2] ^= 0x55
+			}
+		}
+		dict := Dict{"Filter": name}
+		if rng.IntN(5) == 0 {
+			dict["Filter"] = Array{Name("ASCIIHexDecode"), name}
+			dict["DecodeParms"] = Array{nil, parms}
+			z = []byte(fmt.Sprintf("%x>", z))
+		} else if len(parms) > 0 {
+			dict["DecodeParms"] = parms
+		}
+		limit := maxDecoded
+		if rng.IntN(3) == 0 {
+			limit = rng.IntN(len(plain) + 1)
+		}
+
+		f1, f2 := &File{}, &File{}
+		want, _, _, wantErr := (&Stream{Dict: dict, doc: f1, raw: z}).ImageDataLimit(limit)
+		r, ok := (&Stream{Dict: dict, doc: f2, raw: z}).ImageReader(limit)
+		if !ok {
+			if wantErr == nil && len(want) > 0 {
+				t.Fatalf("stream %d: the reader declined %d bytes the whole decode gave", i, len(want))
+			}
+			if len(f2.Err()) > 0 {
+				t.Fatalf("stream %d: a declined reader recorded %v", i, f2.Err())
+			}
+			continue
+		}
+		streams++
+		got, _ := io.ReadAll(r)
+		r.Close()
+		if !bytes.Equal(got, want) {
+			t.Fatalf("stream %d: the reader gave %d bytes, the whole decode %d", i, len(got), len(want))
+		}
+		if e1, e2 := fmt.Sprint(f1.Err()), fmt.Sprint(f2.Err()); e1 != e2 {
+			t.Fatalf("stream %d: errors %s, want %s", i, e2, e1)
+		}
+	}
+	if streams < 300 {
+		t.Errorf("only %d of 400 streams were read", streams)
 	}
 }

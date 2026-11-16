@@ -299,6 +299,17 @@ func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if int64(i.Width)*int64(i.Height) > maxImagePixels {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
+	if r, ok := i.reader(); ok {
+		defer r.Close()
+		src := &sampleRows{r: r}
+		if i.Mask {
+			return i.stencil(src, i.BPC, i.Decode, shrink)
+		}
+		if i.CS == nil {
+			return nil, fmt.Errorf("%w: image has no color space", ErrInvalid)
+		}
+		return i.samples(src, i.BPC, i.CS.N, i.Decode, dst, i.CS, nil, shrink)
+	}
 	data, filter, parms, err := i.data()
 	if err != nil {
 		return nil, err
@@ -327,12 +338,52 @@ func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	}
 
 	if i.Mask {
-		return i.stencil(data, bpc, decode, shrink)
+		return i.stencil(&sampleRows{data: data}, bpc, decode, shrink)
 	}
 	if cs == nil {
 		return nil, fmt.Errorf("%w: image has no color space", ErrInvalid)
 	}
-	return i.samples(data, bpc, comps, decode, dst, cs, alpha, shrink)
+	return i.samples(&sampleRows{data: data}, bpc, comps, decode, dst, cs, alpha, shrink)
+}
+
+// reader is the image's samples as a reader, when its stream can be read so.
+func (i *Image) reader() (io.ReadCloser, bool) {
+	if i.stream == nil {
+		return nil, false
+	}
+	n := i.sampleBytes()
+	if n <= 0 {
+		return nil, false
+	}
+	return i.stream.ImageReader(n)
+}
+
+// sampleRows hands out an image's packed samples a row at a time, in order,
+// from a buffer or from a reader.
+type sampleRows struct {
+	data []byte
+	r    io.Reader
+	buf  []byte
+	eof  bool
+}
+
+// row returns the n bytes of row y, fewer where the samples run out.
+func (s *sampleRows) row(y, n int) []byte {
+	if s.r == nil {
+		start := min(y*n, len(s.data))
+		return s.data[start:min(start+n, len(s.data))]
+	}
+	if s.eof {
+		return nil
+	}
+	if cap(s.buf) < n {
+		s.buf = make([]byte, n)
+	}
+	k, err := io.ReadFull(s.r, s.buf[:n])
+	if err != nil {
+		s.eof = true
+	}
+	return s.buf[:k]
 }
 
 // data is the image bytes with the byte filters applied, and what is left.
@@ -367,7 +418,7 @@ func (i *Image) sampleBytes() int {
 }
 
 // stencil decodes an /ImageMask into coverage.
-func (i *Image) stencil(data []byte, bpc int, decode []float64, shrink int) (*raster.Pixmap, error) {
+func (i *Image) stencil(rows *sampleRows, bpc int, decode []float64, shrink int) (*raster.Pixmap, error) {
 	sh := raster.NewMaskShrinker(i.Width, i.Height, shrink)
 	if sh == nil {
 		return nil, fmt.Errorf("%w: mask is %dx%d", ErrUnsupported, i.Width, i.Height)
@@ -382,11 +433,10 @@ func (i *Image) stencil(data []byte, bpc int, decode []float64, shrink int) (*ra
 		if row == nil {
 			break
 		}
-		start := y * rowBytes
-		if start >= len(data) {
+		src := rows.row(y, rowBytes)
+		if len(src) == 0 {
 			break
 		}
-		src := data[start:min(start+rowBytes, len(data))]
 		for x := 0; x < i.Width; x++ {
 			b := x >> 3
 			if b >= len(src) {
@@ -404,7 +454,7 @@ func (i *Image) stencil(data []byte, bpc int, decode []float64, shrink int) (*ra
 }
 
 // samples unpacks the image, converts it and hangs its transparency on it.
-func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte, shrink int) (*raster.Pixmap, error) {
+func (i *Image) samples(rows *sampleRows, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte, shrink int) (*raster.Pixmap, error) {
 	if dst == nil {
 		dst = DeviceRGB
 	}
@@ -419,7 +469,7 @@ func (i *Image) samples(data []byte, bpc, comps int, decode []float64, dst, cs *
 	}
 
 	u := unpacker{
-		img: i, data: data, bpc: bpc, comps: comps,
+		img: i, src: rows, bpc: bpc, comps: comps,
 		decode: decode, dst: dst, cs: cs, px: sh.Pixmap(), sh: sh,
 	}
 	u.run()
@@ -449,11 +499,10 @@ func (u *unpacker) bilevel(lut []uint8, rowBytes int) {
 		if row == nil {
 			return
 		}
-		start := y * rowBytes
-		if start >= len(u.data) {
+		src := u.src.row(y, rowBytes)
+		if len(src) == 0 {
 			return
 		}
-		src := u.data[start:min(start+rowBytes, len(u.data))]
 		width := i.Width * n
 		o := 0
 		for _, b := range src {
@@ -473,7 +522,7 @@ func (u *unpacker) bilevel(lut []uint8, rowBytes int) {
 // unpacker turns packed samples into destination components.
 type unpacker struct {
 	img    *Image
-	data   []byte
+	src    *sampleRows
 	bpc    int
 	comps  int
 	decode []float64
@@ -505,7 +554,7 @@ func (u *unpacker) run() {
 			if row == nil {
 				break
 			}
-			r := bitRow(u.data, y*rowBytes, rowBytes, u.bpc)
+			r := &bits{data: u.src.row(y, rowBytes), bpc: u.bpc}
 			for x := 0; x < i.Width; x++ {
 				v := r.next()
 				e := lut[int(v)*px.N:][:px.N:px.N]
@@ -529,11 +578,10 @@ func (u *unpacker) run() {
 			if row == nil {
 				break
 			}
-			start := y * rowBytes
-			if start >= len(u.data) {
+			src := u.src.row(y, rowBytes)
+			if len(src) == 0 {
 				break
 			}
-			src := u.data[start:min(start+rowBytes, len(u.data))]
 			w := min(i.Width, len(src)/u.comps)
 			if !px.Alpha {
 				copy(row[:w*n], src[:w*n])
@@ -589,7 +637,7 @@ func (u *unpacker) run() {
 		if row == nil {
 			break
 		}
-		r := bitRow(u.data, y*rowBytes, rowBytes, u.bpc)
+		r := &bits{data: u.src.row(y, rowBytes), bpc: u.bpc}
 		for x := 0; x < i.Width; x++ {
 			for j := range c {
 				raw[j] = r.next()
@@ -676,8 +724,7 @@ func (u *unpacker) mapped(lut []uint8, rowBytes int) {
 		if row == nil {
 			return
 		}
-		start := min(y*rowBytes, len(u.data))
-		src := u.data[start:min(start+rowBytes, len(u.data))]
+		src := u.src.row(y, rowBytes)
 		w := min(i.Width, len(src))
 		switch {
 		case gray:
@@ -816,14 +863,6 @@ type bits struct {
 	pos  int
 	bit  uint
 	bpc  int
-}
-
-func bitRow(data []byte, off, n, bpc int) *bits {
-	if off > len(data) {
-		off = len(data)
-	}
-	end := min(off+n, len(data))
-	return &bits{data: data[off:end], bpc: bpc}
 }
 
 func (b *bits) next() uint32 {
