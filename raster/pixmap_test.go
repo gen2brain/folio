@@ -3,6 +3,7 @@ package raster
 import (
 	"bytes"
 	"math"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -587,5 +588,115 @@ func TestGradientAlphaTable(t *testing.T) {
 	})
 	if !plain.Opaque() {
 		t.Error("a gradient with no alpha table is not opaque")
+	}
+}
+
+// TestRowShrinker checks that the rows a row shrinker hands on are the rows
+// the whole one keeps, and that it stops when told to.
+func TestRowShrinker(t *testing.T) {
+	for _, w := range []int{1, 2, 3, 17, 64} {
+		for _, h := range []int{1, 2, 5, 33} {
+			for n := 0; n <= 3; n++ {
+				for _, mask := range []bool{false, true} {
+					whole := NewShrinker(ModelRGB, w, h, false, n)
+					var rows [][]uint8
+					emit := func(r []uint8) bool { rows = append(rows, append([]uint8(nil), r...)); return true }
+					part := NewRowShrinker(ModelRGB, w, h, false, n, emit)
+					if mask {
+						whole = NewMaskShrinker(w, h, n)
+						part = NewMaskRowShrinker(w, h, n, emit)
+					}
+					for y := 0; y < h; y++ {
+						a, b := whole.Row(), part.Row()
+						if (a == nil) != (b == nil) {
+							t.Fatalf("%dx%d n=%d: row %d is nil in one only", w, h, n, y)
+						}
+						if a == nil {
+							continue
+						}
+						for x := range a {
+							a[x] = uint8(x*7 + y*13)
+							b[x] = a[x]
+						}
+						whole.Commit()
+						part.Commit()
+					}
+					px := whole.Pixmap()
+					if sw, sh := ShrunkSize(w, h, n); sw != px.W || sh != px.H {
+						t.Fatalf("%dx%d n=%d: ShrunkSize %dx%d, the shrinker %dx%d", w, h, n, sw, sh, px.W, px.H)
+					}
+					if len(rows) != px.H {
+						t.Fatalf("%dx%d n=%d mask %v: %d rows, want %d", w, h, n, mask, len(rows), px.H)
+					}
+					for y, r := range rows {
+						if !bytes.Equal(r, px.Row(y)[:len(r)]) {
+							t.Fatalf("%dx%d n=%d mask %v: row %d differs", w, h, n, mask, y)
+						}
+					}
+				}
+			}
+		}
+	}
+	calls := 0
+	s := NewRowShrinker(ModelRGB, 8, 8, false, 0, func([]uint8) bool { calls++; return calls < 3 })
+	for s.Row() != nil {
+		s.Commit()
+	}
+	if calls != 3 {
+		t.Errorf("a shrinker told to stop after 3 rows took %d", calls)
+	}
+}
+
+// TestFillImageRows checks that an image filled from a window of its rows,
+// with the margin the draw device keeps, is the image filled whole.
+func TestFillImageRows(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 3))
+	for i := range 400 {
+		w, h := 1+rng.IntN(60), 1+rng.IntN(60)
+		src := NewPixmap(ModelRGB, w, h, false)
+		for k := range src.Samples {
+			src.Samples[k] = uint8(rng.IntN(256))
+		}
+		sx, sy := 10+rng.Float32()*150, 10+rng.Float32()*150
+		ctm := Matrix{A: sx, D: -sy, E: rng.Float32() * 40, F: 20 + sy}
+		if rng.IntN(3) == 0 {
+			ctm = Concat(ctm, Rotate(rng.Float64()*20-10))
+		}
+		inv, ok := ctm.Invert()
+		if !ok {
+			continue
+		}
+		inv = Concat(inv, Scale(float32(w), float32(h)))
+		smooth := rng.IntN(2) == 0
+		y0 := float32(rng.IntN(200))
+		clip := Rect{X0: 0, Y0: y0, X1: 200, Y1: y0 + float32(1+rng.IntN(40))}
+
+		fill := func(s *Pixmap, base int) []uint8 {
+			dst := NewPixmap(ModelRGB, 200, 240, false)
+			dst.ClearWhite()
+			r := NewRasterizer(200, 240)
+			r.SetClip(clip)
+			var p Path
+			p.Rect(0, 0, 1, 1)
+			r.AddPath(&p, ctm)
+			r.FillImageRows(dst, s, h, base, inv, Paint{Alpha: 255}, smooth)
+			return dst.Samples
+		}
+		want := fill(src, 0)
+
+		vmin, vmax := float32(math.Inf(1)), float32(math.Inf(-1))
+		for _, c := range [4][2]float32{{clip.X0, clip.Y0}, {clip.X1, clip.Y0}, {clip.X0, clip.Y1}, {clip.X1, clip.Y1}} {
+			v := inv.Apply(Point{c[0], c[1]}).Y
+			vmin, vmax = min(vmin, v), max(vmax, v)
+		}
+		lo := max(int(math.Floor(float64(vmin)))-3, 0)
+		hi := min(int(math.Ceil(float64(vmax)))+3, h)
+		if lo >= hi {
+			continue
+		}
+		win := &Pixmap{W: w, H: hi - lo, N: src.N, Stride: src.Stride, Samples: src.Samples[lo*src.Stride : hi*src.Stride], Model: src.Model}
+		if got := fill(win, lo); !bytes.Equal(got, want) {
+			t.Fatalf("image %d (%dx%d, rows %d to %d, smooth %v): the window fills differently", i, w, h, lo, hi, smooth)
+		}
 	}
 }

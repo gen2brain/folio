@@ -7,10 +7,20 @@ package raster
 // A src with no color components is a stencil: the paint's color is painted
 // through its alpha, which is how a one bit image mask draws.
 func (r *Rasterizer) FillImage(dst, src *Pixmap, inv Matrix, paint Paint, smooth bool) {
-	if src == nil || src.W == 0 || src.H == 0 {
+	if src == nil {
+		return
+	}
+	r.FillImageRows(dst, src, src.H, 0, inv, paint, smooth)
+}
+
+// FillImageRows is FillImage from a window of an image h rows high: src holds
+// its rows from base on, and every row the sweep samples must be among them.
+func (r *Rasterizer) FillImageRows(dst, src *Pixmap, h, base int, inv Matrix, paint Paint, smooth bool) {
+	if src == nil || src.W == 0 || src.H == 0 || h <= 0 {
 		return
 	}
 	r.image.init(dst, src, inv, paint, smooth)
+	r.image.h, r.image.base = h, base
 	r.Sweep(NonZero, &r.image)
 }
 
@@ -61,6 +71,7 @@ type imageBlitter struct {
 	smooth   bool
 	stencil  bool
 	direct   bool
+	h, base  int
 }
 
 func (b *imageBlitter) init(dst, src *Pixmap, inv Matrix, paint Paint, smooth bool) {
@@ -211,8 +222,8 @@ func (b *imageBlitter) bilinearRow(x, w int, cu, v float32, out []uint8) {
 	v -= 0.5
 	j0 := ifloor32(v)
 	fv := uint32((v - float32(j0)) * 256)
-	j1 := clampInt(j0+1, 0, b.src.H-1)
-	j0 = clampInt(j0, 0, b.src.H-1)
+	j1 := b.row(j0 + 1)
+	j0 = b.row(j0)
 	r0 := b.src.Samples[j0*b.src.Stride:]
 	r1 := b.src.Samples[j1*b.src.Stride:]
 	iv := 256 - fv
@@ -290,8 +301,13 @@ func (b *imageBlitter) column(r0, r1 []uint8, k0, cols, n int, iv, fv uint32) []
 func (b *imageBlitter) nearest(u, v float32, out []uint8) {
 	n := b.src.Comps()
 	i := clampInt(ifloor32(u), 0, b.src.W-1)
-	j := clampInt(ifloor32(v), 0, b.src.H-1)
+	j := b.row(ifloor32(v))
 	copy(out[:n], b.src.Samples[j*b.src.Stride+i*n:])
+}
+
+// row returns the row of the window src holding image row j, clamped to the image.
+func (b *imageBlitter) row(j int) int {
+	return clampInt(clampInt(j, 0, b.h-1)-b.base, 0, b.src.H-1)
 }
 
 // bilinear weights the four samples around the point. The source is
@@ -304,8 +320,8 @@ func (b *imageBlitter) bilinear(u, v float32, out []uint8) {
 	j0 := ifloor32(v)
 	fu := uint32((u - float32(i0)) * 256)
 	fv := uint32((v - float32(j0)) * 256)
-	i1, j1 := clampInt(i0+1, 0, b.src.W-1), clampInt(j0+1, 0, b.src.H-1)
-	i0, j0 = clampInt(i0, 0, b.src.W-1), clampInt(j0, 0, b.src.H-1)
+	i1, j1 := clampInt(i0+1, 0, b.src.W-1), b.row(j0+1)
+	i0, j0 = clampInt(i0, 0, b.src.W-1), b.row(j0)
 
 	r0 := b.src.Samples[j0*b.src.Stride:]
 	r1 := b.src.Samples[j1*b.src.Stride:]
@@ -353,7 +369,16 @@ func ifloor32(v float32) int {
 // MulImage multiplies an alpha only pixmap by the alpha of src through inv,
 // which maps a pixel of p to one of src, and is how a stencil mask clips.
 func (p *Pixmap) MulImage(src *Pixmap, inv Matrix) {
-	if src == nil || src.W == 0 || src.H == 0 {
+	if src == nil {
+		return
+	}
+	p.MulImageRows(src, src.H, 0, inv)
+}
+
+// MulImageRows is MulImage from a window of an image h rows high, which src
+// holds from row base on.
+func (p *Pixmap) MulImageRows(src *Pixmap, h, base int, inv Matrix) {
+	if src == nil || src.W == 0 || src.H == 0 || h <= 0 {
 		return
 	}
 	n := src.Comps()
@@ -372,7 +397,7 @@ func (p *Pixmap) MulImage(src *Pixmap, inv Matrix) {
 			u := float32(inv.A*fx) + float32(inv.C*fy) + inv.E
 			v := float32(inv.B*fx) + float32(inv.D*fy) + inv.F
 			i := clampInt(int(floor32(u)), 0, src.W-1)
-			j := clampInt(int(floor32(v)), 0, src.H-1)
+			j := clampInt(clampInt(int(floor32(v)), 0, h-1)-base, 0, src.H-1)
 			row[x] = mul255(row[x], src.Samples[j*src.Stride+i*n+off])
 		}
 	}
@@ -386,14 +411,16 @@ func (p *Pixmap) MulImage(src *Pixmap, inv Matrix) {
 // The caller fills the slice Row returns and calls Commit, once per row of the
 // source, then takes the result from Pixmap.
 type Shrinker struct {
-	out  *Pixmap
-	n    int
-	w    []int
-	src  []uint8
-	pend [][]uint8
-	held []bool
-	rows [][]uint8
-	y    int
+	out     *Pixmap
+	n       int
+	w       []int
+	src     []uint8
+	pend    [][]uint8
+	held    []bool
+	rows    [][]uint8
+	y, h    int
+	emit    func([]uint8) bool
+	stopped bool
 }
 
 // NewShrinker reduces a w by h image of the model's components n times.
@@ -402,24 +429,54 @@ func NewShrinker(model Model, w, h int, alpha bool, n int) *Shrinker {
 	if model != nil {
 		comps = model.Components()
 	}
-	return newShrinker(model, comps, w, h, alpha, n)
+	return newShrinker(model, comps, w, h, alpha, n, nil)
 }
 
 // NewMaskShrinker is NewShrinker for the one byte coverage NewMask returns.
-func NewMaskShrinker(w, h, n int) *Shrinker { return newShrinker(nil, 0, w, h, true, n) }
+func NewMaskShrinker(w, h, n int) *Shrinker { return newShrinker(nil, 0, w, h, true, n, nil) }
 
-func newShrinker(model Model, comps, w, h int, alpha bool, n int) *Shrinker {
+// NewRowShrinker is NewShrinker handing each row of the reduced image to emit,
+// top first, and keeping none. Row returns nil once emit returns false.
+func NewRowShrinker(model Model, w, h int, alpha bool, n int, emit func([]uint8) bool) *Shrinker {
+	comps := 0
+	if model != nil {
+		comps = model.Components()
+	}
+	return newShrinker(model, comps, w, h, alpha, n, emit)
+}
+
+// NewMaskRowShrinker is NewRowShrinker for one byte coverage.
+func NewMaskRowShrinker(w, h, n int, emit func([]uint8) bool) *Shrinker {
+	return newShrinker(nil, 0, w, h, true, n, emit)
+}
+
+// ShrunkSize is the size a Shrinker reduces a w by h image to in n halvings.
+func ShrunkSize(w, h, n int) (int, int) {
+	k := 0
+	for sw, sh := w, h; n > 0 && sw > 1 && sh > 1; n-- {
+		sw, sh = max(sw/2, 1), max(sh/2, 1)
+		w = sw
+		k++
+	}
+	return w, heightAfter(h, k)
+}
+
+func newShrinker(model Model, comps, w, h int, alpha bool, n int, emit func([]uint8) bool) *Shrinker {
 	widths := []int{w}
 	for sw, sh := w, h; n > 0 && sw > 1 && sh > 1; n-- {
 		sw, sh = max(sw/2, 1), max(sh/2, 1)
 		widths = append(widths, sw)
 	}
 	last := len(widths) - 1
-	out := newPixmap(model, comps, widths[last], heightAfter(h, last), alpha)
+	outH := heightAfter(h, last)
+	if emit != nil {
+		outH = 1
+	}
+	out := newPixmap(model, comps, widths[last], outH, alpha)
 	if out == nil {
 		return nil
 	}
-	s := &Shrinker{out: out, n: out.Comps(), w: widths}
+	s := &Shrinker{out: out, n: out.Comps(), w: widths, h: heightAfter(h, last), emit: emit}
 	if last == 0 {
 		return s
 	}
@@ -446,9 +503,17 @@ func heightAfter(h, k int) int {
 // fills and then commits. A row the caller leaves short reads as zero, which
 // is what writing into a fresh pixmap did.
 func (s *Shrinker) Row() []uint8 {
+	if s.stopped {
+		return nil
+	}
 	if len(s.w) == 1 {
-		if s.y >= s.out.H {
+		if s.y >= s.h {
 			return nil
+		}
+		if s.emit != nil {
+			row := s.out.Row(0)
+			clear(row)
+			return row
 		}
 		return s.out.Row(s.y)
 	}
@@ -459,18 +524,34 @@ func (s *Shrinker) Row() []uint8 {
 // Commit folds the row Row returned into the result.
 func (s *Shrinker) Commit() {
 	if len(s.w) == 1 {
+		if s.emit != nil {
+			s.put(s.out.Row(0))
+			return
+		}
 		s.y++
 		return
 	}
 	s.feed(0, s.src)
 }
 
+// put hands a row of the reduced image on, or keeps it.
+func (s *Shrinker) put(row []uint8) {
+	if s.y >= s.h {
+		return
+	}
+	if s.emit != nil {
+		if !s.emit(row) {
+			s.stopped = true
+		}
+	} else {
+		copy(s.out.Row(s.y), row)
+	}
+	s.y++
+}
+
 func (s *Shrinker) feed(k int, row []uint8) {
 	if k == len(s.w)-1 {
-		if s.y < s.out.H {
-			copy(s.out.Row(s.y), row)
-			s.y++
-		}
+		s.put(row)
 		return
 	}
 	if !s.held[k] {

@@ -328,7 +328,8 @@ func (d *ListDevice) DrawBands(r image.Rectangle, model raster.Model, alpha bool
 			return fmt.Errorf("%w: %dx%d does not fit in memory", ErrUnsupported, w, rows)
 		}
 	}
-	hold := d.imageHold(int64(bufs[0].Stride) * int64(h))
+	hold := d.imageHold(int64(bufs[0].Stride)*int64(h), n == 1)
+	defer hold.stop()
 	draw := func(i int) {
 		b := &bands[i]
 		dev := newDevice(b)
@@ -379,11 +380,14 @@ func (d *ListDevice) DrawBands(r image.Rectangle, model raster.Model, alpha bool
 // imageHold keeps the images a banded drawing decodes from the first band
 // that draws one to the last, within a bound of bytes or one image alone.
 type imageHold struct {
-	mu    sync.Mutex
-	last  map[Image]int
-	held  map[holdKey]*raster.Pixmap
-	bytes int64
-	limit int64
+	mu      sync.Mutex
+	last    map[Image]int
+	uses    map[Image]int
+	held    map[holdKey]*raster.Pixmap
+	windows map[holdKey]*rowWindow
+	bytes   int64
+	limit   int64
+	rows    bool
 }
 
 type holdKey struct {
@@ -393,9 +397,13 @@ type holdKey struct {
 }
 
 // imageHold finds the lowest device row each image of the list reaches; an
-// image inside a tile repeats and is kept to the end.
-func (d *ListDevice) imageHold(limit int64) *imageHold {
-	h := &imageHold{last: map[Image]int{}, held: map[holdKey]*raster.Pixmap{}, limit: limit}
+// image inside a tile repeats and is kept to the end. With rows set, an image
+// drawn once outside a tile may be decoded a window of rows at a time.
+func (d *ListDevice) imageHold(limit int64, rows bool) *imageHold {
+	h := &imageHold{
+		last: map[Image]int{}, uses: map[Image]int{}, held: map[holdKey]*raster.Pixmap{},
+		windows: map[holdKey]*rowWindow{}, limit: limit, rows: rows,
+	}
 	tiles := 0
 	for i := range d.cmds {
 		c := &d.cmds[i]
@@ -416,6 +424,7 @@ func (d *ListDevice) imageHold(limit int64) *imageHold {
 			if v, ok := h.last[img]; !ok || y > v {
 				h.last[img] = y
 			}
+			h.uses[img]++
 		}
 	}
 	return h
@@ -456,4 +465,127 @@ func (h *imageHold) release(y int) {
 			h.bytes -= int64(len(px.Samples))
 		}
 	}
+	for k, w := range h.windows {
+		if h.last[k.img] <= y {
+			w.stop()
+			delete(h.windows, k)
+		}
+	}
+}
+
+// stop ends every decode a window still has running.
+func (h *imageHold) stop() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for k, w := range h.windows {
+		w.stop()
+		delete(h.windows, k)
+	}
+}
+
+// window returns the window of rows the hold keeps for an image, starting one,
+// and nil when the image is not decoded so.
+func (h *imageHold) window(img Image, cs *ColorSpace, shrink int) *rowWindow {
+	if h == nil || !h.rows || !holdable(img) {
+		return nil
+	}
+	ri, ok := img.(RowImage)
+	if !ok {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.uses[img] != 1 || h.last[img] == math.MaxInt {
+		return nil
+	}
+	k := holdKey{img, cs, shrink}
+	if w, ok := h.windows[k]; ok {
+		if w.failed {
+			return nil
+		}
+		return w
+	}
+	pr, ok := ri.PixelRows(cs, shrink)
+	w := &rowWindow{rows: pr, failed: !ok}
+	h.windows[k] = w
+	if !ok {
+		return nil
+	}
+	return w
+}
+
+// rowWindow keeps the rows of an image the bands of a drawing have reached.
+type rowWindow struct {
+	rows       *PixelRows
+	buf        []uint8
+	stride     int
+	base, have int
+	ended      bool
+	failed     bool
+}
+
+func (w *rowWindow) stop() {
+	if w.rows != nil && w.rows.Stop != nil {
+		w.rows.Stop()
+		w.rows.Stop = nil
+	}
+}
+
+func (w *rowWindow) fail() {
+	w.failed = true
+	w.stop()
+	w.buf = nil
+}
+
+// span returns the rows of the image from lo up to at least hi, and the row
+// they start at; false when lo lies above rows the window has let go.
+func (w *rowWindow) span(lo, hi int) (*raster.Pixmap, int, bool) {
+	r := w.rows
+	if w.failed || lo < w.base {
+		return nil, 0, false
+	}
+	n := 0
+	if r.Model != nil {
+		n = r.Model.Components()
+	}
+	comps := n
+	if r.Alpha {
+		comps++
+	}
+	w.stride = r.W * comps
+	if drop := min(lo-w.base, w.have); drop > 0 {
+		copy(w.buf, w.buf[drop*w.stride:w.have*w.stride])
+		w.base += drop
+		w.have -= drop
+	}
+	for w.base+w.have < hi {
+		var row []uint8
+		if !w.ended {
+			var ok bool
+			if row, ok = r.Next(); !ok {
+				w.ended = true
+				row = nil
+			}
+		}
+		if w.have == 0 && w.base < lo {
+			w.base++
+			continue
+		}
+		need := (w.have + 1) * w.stride
+		if cap(w.buf) < need {
+			w.buf = append(w.buf[:w.have*w.stride], make([]uint8, max(need, 2*cap(w.buf))-w.have*w.stride)...)
+		}
+		w.buf = w.buf[:max(len(w.buf), need)]
+		dst := w.buf[w.have*w.stride : need]
+		if row == nil {
+			clear(dst)
+		} else {
+			copy(dst, row)
+		}
+		w.have++
+	}
+	return &raster.Pixmap{
+		W: r.W, H: w.have, N: n, Alpha: r.Alpha, Stride: w.stride,
+		Samples: w.buf[:w.have*w.stride], Model: r.Model,
+	}, w.base, true
 }

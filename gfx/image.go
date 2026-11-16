@@ -16,3 +16,22 @@ type Image interface {
 	// for the coverage of a stencil, one byte a pixel.
 	Pixels(cs *ColorSpace, shrink int) (*raster.Pixmap, error)
 }
+
+// RowImage is an Image that can also hand out its pixmap a row at a time.
+type RowImage interface {
+	Image
+	// PixelRows starts decoding the rows Pixels would build into cs, halved
+	// shrink times, top first; false when the image cannot be decoded so.
+	PixelRows(cs *ColorSpace, shrink int) (*PixelRows, bool)
+}
+
+// PixelRows is an image's pixmap handed out a row at a time.
+type PixelRows struct {
+	W, H  int
+	Model raster.Model
+	Alpha bool
+	// Next returns the next row, valid until the next call, and false at the end.
+	Next func() ([]uint8, bool)
+	// Stop ends the decode.
+	Stop func()
+}

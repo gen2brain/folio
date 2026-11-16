@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	stdcolor "image/color"
 	"image/jpeg"
 	"io"
 	"math/rand/v2"
@@ -2239,6 +2240,182 @@ func TestPageBands(t *testing.T) {
 	}
 	if whole := uint64((x1 - x0) * (y1 - y0) * 3); peak > whole/8 {
 		t.Errorf("bands of a %d byte page held %d bytes", whole, peak)
+	}
+}
+
+// rowsDecoder is a row decoder over image/jpeg, handing out bands of 7 rows.
+type rowsDecoder struct {
+	img  image.Image
+	y    int
+	buf  []byte
+	used *int
+}
+
+func (r *rowsDecoder) Width() int  { return r.img.Bounds().Dx() }
+func (r *rowsDecoder) Height() int { return r.img.Bounds().Dy() }
+func (r *rowsDecoder) ColorModel() stdcolor.Model {
+	switch r.img.(type) {
+	case *image.Gray:
+		return stdcolor.GrayModel
+	case *image.CMYK:
+		return stdcolor.CMYKModel
+	}
+	return stdcolor.RGBAModel
+}
+func (r *rowsDecoder) Next() ([]byte, int, error) {
+	if r.y >= r.Height() {
+		return nil, 0, io.EOF
+	}
+	n := min(7, r.Height()-r.y)
+	r.buf = r.buf[:0]
+	for y := r.y; y < r.y+n; y++ {
+		for x := 0; x < r.Width(); x++ {
+			switch m := r.img.(type) {
+			case *image.Gray:
+				r.buf = append(r.buf, m.GrayAt(x, y).Y)
+			case *image.CMYK:
+				c := m.CMYKAt(x, y)
+				r.buf = append(r.buf, c.C, c.M, c.Y, c.K)
+			case *image.YCbCr:
+				c := m.YCbCrAt(x, y)
+				rr, g, b := stdcolor.YCbCrToRGB(c.Y, c.Cb, c.Cr)
+				r.buf = append(r.buf, rr, g, b, 255)
+			}
+		}
+	}
+	r.y += n
+	*r.used++
+	return r.buf, n, nil
+}
+func (r *rowsDecoder) Close() {}
+
+// TestBandWindows checks images drawn in bands from a window of their rows
+// against the same bands drawn from the image decoded whole: shrunk, smooth,
+// a stencil, an explicit mask, rotated, flipped, drawn twice, truncated, and a
+// JPEG through a row decoder.
+func TestBandWindows(t *testing.T) {
+	var flat, gray []byte
+	for y := range 300 {
+		for x := range 200 {
+			flat = append(flat, byte(x), byte(y), byte(x^y))
+			gray = append(gray, byte(x+y))
+		}
+	}
+	var mask []byte
+	for y := range 300 {
+		for x := 0; x < 200; x += 8 {
+			mask = append(mask, byte(0x5a^y))
+		}
+	}
+	deflate := func(b []byte) string {
+		var z bytes.Buffer
+		w := zlib.NewWriter(&z)
+		w.Write(b)
+		w.Close()
+		return z.String()
+	}
+	var jb bytes.Buffer
+	jimg := image.NewRGBA(image.Rect(0, 0, 200, 300))
+	for k := range jimg.Pix {
+		jimg.Pix[k] = flat[k/4*3%len(flat)]
+	}
+	jpeg.Encode(&jb, jimg, nil)
+
+	rgb := streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /FlateDecode", deflate(flat))
+	cases := []struct {
+		name, content, img string
+		more               []string
+		windowed           bool
+	}{
+		{"shrunk", "q 60 0 0 90 10 5 cm /I Do Q", rgb, nil, true},
+		{"full size", "q 120 0 0 180 3 2 cm /I Do Q", rgb, nil, true},
+		{"interpolated gray", "q 100 0 0 150 0 0 cm /I Do Q", streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /BitsPerComponent 8 /ColorSpace /DeviceGray /Interpolate true /Filter /FlateDecode", deflate(gray)), nil, true},
+		{"stencil", "0 0.5 0 rg q 100 0 0 150 10 10 cm /I Do Q", streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /ImageMask true /Filter /FlateDecode", deflate(mask)), nil, true},
+		{"explicit mask", "q 100 0 0 150 10 10 cm /I Do Q", streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /BitsPerComponent 8 /ColorSpace /DeviceGray /Mask 6 0 R /Filter /FlateDecode", deflate(gray)),
+			[]string{streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /ImageMask true /Filter /FlateDecode", deflate(mask))}, false},
+		{"rotated", "q 0 150 -100 0 110 10 cm /I Do Q", rgb, nil, false},
+		{"flipped", "q 100 0 0 -150 10 160 cm /I Do Q", rgb, nil, false},
+		{"twice", "q 50 0 0 70 0 0 cm /I Do Q q 50 0 0 70 50 80 cm /I Do Q", rgb, nil, false},
+		{"truncated", "q 100 0 0 150 0 0 cm /I Do Q", streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /FlateDecode", deflate(flat)[:9000]), nil, true},
+		{"jpeg rows", "q 100 0 0 150 5 0 cm /I Do Q", streamObj("/Type /XObject /Subtype /Image /Width 200 /Height 300 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode", jb.String()), nil, true},
+	}
+	used := 0
+	RegisterRowDecoder("DCTDecode", func(b []byte, _ Dict) (ImageRows, error) {
+		img, err := jpeg.Decode(bytes.NewReader(b))
+		if err != nil {
+			return nil, err
+		}
+		return &rowsDecoder{img: img, used: &used}, nil
+	})
+	defer RegisterRowDecoder("DCTDecode", nil)
+
+	for _, c := range cases {
+		objs := []string{
+			"<< /Type /Catalog /Pages 2 0 R >>",
+			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 130 200] /Contents 4 0 R /Resources << /XObject << /I 5 0 R >> >> >>",
+			streamObj("", c.content),
+			c.img,
+		}
+		objs = append(objs, c.more...)
+		render := func(threads int) ([]byte, int) {
+			d := buildPDF(t, objs)
+			p, err := d.Page(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []byte
+			if err := p.RenderBands(p.Matrix(150), &Options{Threads: threads}, 9, func(px *raster.Pixmap) error {
+				out = append(out, px.Samples[:px.H*px.Stride]...)
+				return nil
+			}); err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			return out, len(d.images)
+		}
+		used = 0
+		got, cached := render(1)
+		decoded := used
+		want, _ := render(2)
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s: drawn from a window, the bands differ from the image decoded whole", c.name)
+		}
+		if c.windowed && cached != 0 {
+			t.Errorf("%s: the image was decoded whole, not a window at a time", c.name)
+		}
+		if c.name == "jpeg rows" && decoded == 0 {
+			t.Errorf("the registered row decoder was not used")
+		}
+	}
+
+	var big []byte
+	for y := range 1600 {
+		for x := range 1200 {
+			big = append(big, byte(x), byte(y), byte(x^y))
+		}
+	}
+	d := buildPDF(t, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1200 1600] /Contents 4 0 R /Resources << /XObject << /I 5 0 R >> >> >>",
+		streamObj("", "q 1200 0 0 1600 0 0 cm /I Do Q"),
+		streamObj("/Type /XObject /Subtype /Image /Width 1200 /Height 1600 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /FlateDecode", deflate(big)),
+	})
+	p, _ := d.Page(0)
+	var ms runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&ms)
+	base, peak := ms.HeapAlloc, uint64(0)
+	if err := p.RenderBands(p.Matrix(72), &Options{}, 16, func(*raster.Pixmap) error {
+		runtime.GC()
+		runtime.ReadMemStats(&ms)
+		peak = max(peak, ms.HeapAlloc-min(ms.HeapAlloc, base))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if peak > 1200*1600*3/8 {
+		t.Errorf("bands over a %d byte image held %d bytes", 1200*1600*3, peak)
 	}
 }
 

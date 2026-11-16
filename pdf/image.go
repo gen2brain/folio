@@ -8,6 +8,7 @@ import (
 	stdcolor "image/color"
 	"image/jpeg"
 	"io"
+	"iter"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -299,16 +300,15 @@ func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	if int64(i.Width)*int64(i.Height) > maxImagePixels {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
-	if r, ok := i.reader(); ok {
-		defer r.Close()
-		src := &sampleRows{r: r}
+	if src, ok := i.source(); ok {
+		defer src.close()
 		if i.Mask {
-			return i.stencil(src, i.BPC, i.Decode, shrink)
+			return i.stencil(src.rows, src.bpc, i.Decode, shrink, nil)
 		}
 		if i.CS == nil {
 			return nil, fmt.Errorf("%w: image has no color space", ErrInvalid)
 		}
-		return i.samples(src, i.BPC, i.CS.N, i.Decode, dst, i.CS, nil, shrink)
+		return i.samples(src.rows, src.bpc, src.comps, i.Decode, dst, i.CS, nil, shrink, nil)
 	}
 	data, filter, parms, err := i.data()
 	if err != nil {
@@ -338,12 +338,151 @@ func (i *Image) decode(dst *ColorSpace, shrink int) (*raster.Pixmap, error) {
 	}
 
 	if i.Mask {
-		return i.stencil(&sampleRows{data: data}, bpc, decode, shrink)
+		return i.stencil(&sampleRows{data: data}, bpc, decode, shrink, nil)
 	}
 	if cs == nil {
 		return nil, fmt.Errorf("%w: image has no color space", ErrInvalid)
 	}
-	return i.samples(&sampleRows{data: data}, bpc, comps, decode, dst, cs, alpha, shrink)
+	return i.samples(&sampleRows{data: data}, bpc, comps, decode, dst, cs, alpha, shrink, nil)
+}
+
+// rowSource is an image's samples read a row at a time.
+type rowSource struct {
+	rows       *sampleRows
+	close      func()
+	bpc, comps int
+}
+
+// source opens the image's samples as rows when they can be read so: its
+// stream through ImageReader, or its DCT data through a registered RowDecoder.
+func (i *Image) source() (rowSource, bool) {
+	if r, ok := i.reader(); ok {
+		comps := 1
+		if !i.Mask && i.CS != nil {
+			comps = i.CS.N
+		}
+		return rowSource{rows: &sampleRows{r: r}, close: func() { r.Close() }, bpc: i.BPC, comps: comps}, true
+	}
+	if i.Mask || i.CS == nil || (rowDecoder("DCTDecode") == nil && rowDecoder("DCT") == nil) {
+		return rowSource{}, false
+	}
+	data, filter, parms, err := i.data()
+	if err != nil || (filter != "DCTDecode" && filter != "DCT") {
+		return rowSource{}, false
+	}
+	dec := rowDecoder(filter)
+	if dec == nil {
+		return rowSource{}, false
+	}
+	rows, err := dec(data, parms)
+	if err != nil || rows == nil {
+		return rowSource{}, false
+	}
+	comps := 0
+	switch rows.ColorModel() {
+	case stdcolor.GrayModel:
+		comps = 1
+	case stdcolor.RGBAModel:
+		comps = 3
+	case stdcolor.CMYKModel:
+		comps = 4
+	}
+	w, h := rows.Width(), rows.Height()
+	if comps == 0 || w != i.Width || h != i.Height || int64(w)*int64(h) > maxImagePixels {
+		rows.Close()
+		return rowSource{}, false
+	}
+	if comps != i.CS.N {
+		i.doc.errorf("%s image has %d components, its color space %d", filter, comps, i.CS.N)
+	}
+	rr := &rowsReader{src: rows, w: w, comps: comps, adobe: -1}
+	if comps == 4 {
+		rr.adobe = adobeTransform(data)
+	}
+	return rowSource{rows: &sampleRows{r: rr}, close: rows.Close, bpc: 8, comps: comps}, true
+}
+
+// rowsReader reads the bands of an ImageRows as the interleaved samples
+// jpegSamples makes of a whole decode.
+type rowsReader struct {
+	src       ImageRows
+	w, comps  int
+	adobe     int
+	buf, pend []byte
+	done      bool
+}
+
+func (r *rowsReader) Read(p []byte) (int, error) {
+	for len(r.pend) == 0 {
+		if r.done {
+			return 0, io.EOF
+		}
+		band, n, err := r.src.Next()
+		if err != nil || n <= 0 {
+			r.done = true
+			continue
+		}
+		switch r.comps {
+		case 1:
+			r.pend = band[:n*r.w]
+		case 3:
+			if cap(r.buf) < n*r.w*3 {
+				r.buf = make([]byte, n*r.w*3)
+			}
+			out := r.buf[:n*r.w*3]
+			for x, o := 0, 0; o < len(out); x, o = x+4, o+3 {
+				out[o], out[o+1], out[o+2] = band[x], band[x+1], band[x+2]
+			}
+			r.pend = out
+		default:
+			if cap(r.buf) < n*r.w*4 {
+				r.buf = make([]byte, n*r.w*4)
+			}
+			out := r.buf[:n*r.w*4]
+			copy(out, band)
+			undoAdobe(out, r.adobe)
+			r.pend = out
+		}
+	}
+	k := copy(p, r.pend)
+	r.pend = r.pend[k:]
+	return k, nil
+}
+
+// PixelRows implements gfx.RowImage: the pixmap Pixels builds, handed out a
+// row at a time, for an image with no mask or color key whose samples source
+// can read.
+func (i *Image) PixelRows(dst *ColorSpace, shrink int) (*gfx.PixelRows, bool) {
+	if i.SMask != nil || i.StencilMask != nil || i.ColorKey != nil ||
+		int64(i.Width)*int64(i.Height) > maxImagePixels || (!i.Mask && i.CS == nil) {
+		return nil, false
+	}
+	src, ok := i.source()
+	if !ok {
+		return nil, false
+	}
+	w, h := raster.ShrunkSize(i.Width, i.Height, shrink)
+	pr := &gfx.PixelRows{W: w, H: h}
+	n, out := 1, 1
+	if i.Mask {
+		pr.Alpha = true
+	} else {
+		if dst == nil {
+			dst = DeviceRGB
+		}
+		pr.Model = dst.Model()
+		n, out = max(i.CS.N, 1), dst.N
+	}
+	i.spent.Add(max(int64(i.Width)*int64(i.Height)*int64(n), int64(w)*int64(h)*int64(out)))
+	pr.Next, pr.Stop = iter.Pull(func(yield func([]uint8) bool) {
+		defer src.close()
+		if i.Mask {
+			i.stencil(src.rows, src.bpc, i.Decode, shrink, yield)
+			return
+		}
+		i.samples(src.rows, src.bpc, src.comps, i.Decode, dst, i.CS, nil, shrink, yield)
+	})
+	return pr, true
 }
 
 // reader is the image's samples as a reader, when its stream can be read so.
@@ -418,8 +557,11 @@ func (i *Image) sampleBytes() int {
 }
 
 // stencil decodes an /ImageMask into coverage.
-func (i *Image) stencil(rows *sampleRows, bpc int, decode []float64, shrink int) (*raster.Pixmap, error) {
+func (i *Image) stencil(rows *sampleRows, bpc int, decode []float64, shrink int, emit func([]uint8) bool) (*raster.Pixmap, error) {
 	sh := raster.NewMaskShrinker(i.Width, i.Height, shrink)
+	if emit != nil {
+		sh = raster.NewMaskRowShrinker(i.Width, i.Height, shrink, emit)
+	}
 	if sh == nil {
 		return nil, fmt.Errorf("%w: mask is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
@@ -454,7 +596,7 @@ func (i *Image) stencil(rows *sampleRows, bpc int, decode []float64, shrink int)
 }
 
 // samples unpacks the image, converts it and hangs its transparency on it.
-func (i *Image) samples(rows *sampleRows, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte, shrink int) (*raster.Pixmap, error) {
+func (i *Image) samples(rows *sampleRows, bpc, comps int, decode []float64, dst, cs *ColorSpace, opacity []byte, shrink int, emit func([]uint8) bool) (*raster.Pixmap, error) {
 	if dst == nil {
 		dst = DeviceRGB
 	}
@@ -464,6 +606,9 @@ func (i *Image) samples(rows *sampleRows, bpc, comps int, decode []float64, dst,
 		during = 0
 	}
 	sh := raster.NewShrinker(dst.Model(), i.Width, i.Height, alpha, during)
+	if emit != nil {
+		sh = raster.NewRowShrinker(dst.Model(), i.Width, i.Height, alpha, during, emit)
+	}
 	if sh == nil {
 		return nil, fmt.Errorf("%w: image is %dx%d", ErrUnsupported, i.Width, i.Height)
 	}
@@ -1004,6 +1149,49 @@ func undoAdobe(pix []byte, transform int) {
 			pix[i] = 255 - pix[i]
 		}
 	}
+}
+
+// ImageRows hands out the rows of a decoded image a band at a time, top
+// first, RowBytes apart: Gray, RGBA or CMYK, as jpegn's RowReader does.
+type ImageRows interface {
+	Width() int
+	Height() int
+	ColorModel() stdcolor.Model
+	Next() ([]byte, int, error)
+	Close()
+}
+
+// RowDecoder starts decoding the data of an image filter a band of rows at a
+// time.
+type RowDecoder func(data []byte, parms Dict) (ImageRows, error)
+
+var rowDecoders = map[Name]RowDecoder{}
+
+// RegisterRowDecoder installs a row decoder for an image filter, taking
+// precedence over a whole one. Only DCTDecode is read through it: an image is
+// then decoded a band of rows at a time, whole or in bands.
+//
+//	pdf.RegisterRowDecoder("DCTDecode", func(b []byte, _ pdf.Dict) (pdf.ImageRows, error) {
+//		r, err := jpegn.NewRowReader(b)
+//		if err != nil {
+//			return nil, err
+//		}
+//		return r, nil
+//	})
+func RegisterRowDecoder(filter Name, dec RowDecoder) {
+	decoderMu.Lock()
+	defer decoderMu.Unlock()
+	if dec == nil {
+		delete(rowDecoders, filter)
+		return
+	}
+	rowDecoders[filter] = dec
+}
+
+func rowDecoder(filter Name) RowDecoder {
+	decoderMu.RLock()
+	defer decoderMu.RUnlock()
+	return rowDecoders[filter]
 }
 
 // ImageDecoder turns the data of an image filter into interleaved eight bit

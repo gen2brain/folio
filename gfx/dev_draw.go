@@ -706,11 +706,57 @@ func (d *DrawDevice) FillImage(img Image, ctm raster.Matrix, alpha float32, cp C
 	if !d.drawing() || img == nil {
 		return
 	}
-	src := d.decodeImage(img, d.space(), shrinkFor(img, ctm))
+	shrink := shrinkFor(img, ctm)
+	if src, h, base, inv, ok := d.rowsOf(img, d.space(), shrink, ctm, d.clip.rect); ok {
+		if src != nil {
+			paint := raster.Paint{Alpha: alphaByte(alpha), Clip: d.clip.mask}
+			d.fillImage(src, h, base, inv, ctm, paint, smoothFor(src.W, h, ctm, img.Smooth()))
+		}
+		return
+	}
+	src := d.decodeImage(img, d.space(), shrink)
 	if src == nil {
 		return
 	}
 	d.drawImage(src, ctm, raster.Paint{Alpha: alphaByte(alpha), Clip: d.clip.mask}, img.Smooth())
+}
+
+// rowsOf returns the rows of img that area reaches, from the window the hold
+// keeps on it, with the image's height, the row they start at and the map from
+// a device pixel to the image. ok is false when the image is not drawn from a
+// window, and src is nil when area reaches none of it.
+func (d *DrawDevice) rowsOf(img Image, cs *ColorSpace, shrink int, ctm raster.Matrix, area raster.Rect) (src *raster.Pixmap, h, base int, inv raster.Matrix, ok bool) {
+	w := d.hold.window(img, cs, shrink)
+	if w == nil {
+		return nil, 0, 0, inv, false
+	}
+	pw, ph := w.rows.W, w.rows.H
+	m, invertible := ctm.Invert()
+	if subsampleFor(pw, ph, ctm) > 0 || !invertible {
+		w.fail()
+		return nil, 0, 0, inv, false
+	}
+	inv = raster.Concat(m, raster.Scale(float32(pw), float32(ph)))
+	box := ctm.ApplyRect(unitRect).Intersect(area)
+	if box.IsEmpty() {
+		return nil, ph, 0, inv, true
+	}
+	vmin, vmax := float32(math.Inf(1)), float32(math.Inf(-1))
+	for _, c := range [4]raster.Point{{X: box.X0, Y: box.Y0}, {X: box.X1, Y: box.Y0}, {X: box.X0, Y: box.Y1}, {X: box.X1, Y: box.Y1}} {
+		v := inv.Apply(c).Y
+		vmin, vmax = min(vmin, v), max(vmax, v)
+	}
+	lo := max(int(math.Floor(float64(vmin)))-3, 0)
+	hi := min(int(math.Ceil(float64(vmax)))+3, ph)
+	if lo >= hi {
+		return nil, ph, 0, inv, true
+	}
+	src, base, ok = w.span(lo, hi)
+	if !ok {
+		w.fail()
+		return nil, 0, 0, inv, false
+	}
+	return src, ph, base, inv, true
 }
 
 // FillImageMask implements Device.
@@ -718,7 +764,16 @@ func (d *DrawDevice) FillImageMask(img Image, ctm raster.Matrix, cs *ColorSpace,
 	if !d.drawing() || img == nil {
 		return
 	}
-	src := d.maskPixmap(img, shrinkFor(img, ctm))
+	shrink := shrinkFor(img, ctm)
+	if img.Stencil() {
+		if src, h, base, inv, ok := d.rowsOf(img, nil, shrink, ctm, d.clip.rect); ok {
+			if src != nil {
+				d.fillImage(src, h, base, inv, ctm, d.paint(cs, col, alpha), smoothFor(src.W, h, ctm, img.Smooth()))
+			}
+			return
+		}
+	}
+	src := d.maskPixmap(img, shrink)
 	if src == nil {
 		return
 	}
@@ -731,7 +786,28 @@ func (d *DrawDevice) ClipImageMask(img Image, ctm raster.Matrix, scissor raster.
 		d.push(clipState{rect: raster.EmptyRect})
 		return
 	}
-	src := d.maskPixmap(img, shrinkFor(img, ctm))
+	shrink := shrinkFor(img, ctm)
+	if img.Stencil() && d.hold.window(img, nil, shrink) != nil {
+		c := d.maskClip(ctm.ApplyRect(unitRect), func(r *raster.Rasterizer, ox, oy int) {
+			m := ctm
+			m.E -= float32(ox)
+			m.F -= float32(oy)
+			var p raster.Path
+			p.Rect(0, 0, 1, 1)
+			r.AddPath(&p, m)
+		}, false)
+		if mk := c.mask; mk != nil {
+			area := raster.Rect{X0: float32(mk.X), Y0: float32(mk.Y), X1: float32(mk.X + mk.W), Y1: float32(mk.Y + mk.H)}
+			if src, h, base, inv, ok := d.rowsOf(img, nil, shrink, ctm, area); ok {
+				if src != nil {
+					mk.MulImageRows(src, h, base, inv)
+				}
+				d.push(c)
+				return
+			}
+		}
+	}
+	src := d.maskPixmap(img, shrink)
 	if src == nil {
 		d.push(clipState{rect: raster.EmptyRect})
 		return
@@ -777,13 +853,19 @@ func (d *DrawDevice) drawImage(src *raster.Pixmap, ctm raster.Matrix, paint rast
 	if !ok {
 		return
 	}
+	d.fillImage(src, src.H, 0, inv, ctm, paint, smoothImage(src, ctm, interpolate))
+}
+
+// fillImage fills the unit square under ctm from rows base on of an image h
+// rows high, through inv.
+func (d *DrawDevice) fillImage(src *raster.Pixmap, h, base int, inv, ctm raster.Matrix, paint raster.Paint, smooth bool) {
 	var p raster.Path
 	p.Rect(0, 0, 1, 1)
 
 	d.ras.Reset()
 	d.ras.SetClip(d.clip.rect)
 	d.ras.AddPath(&p, ctm)
-	d.ras.FillImage(d.dst, src, inv, paint, smoothImage(src, ctm, interpolate))
+	d.ras.FillImageRows(d.dst, src, h, base, inv, paint, smooth)
 	d.whole(d.ras)
 }
 
@@ -827,11 +909,15 @@ func subsampleFor(w, h int, ctm raster.Matrix) int {
 // smoothImage decides between bilinear and nearest: magnifying by more than
 // four keeps the samples crisp unless the file asks for interpolation.
 func smoothImage(src *raster.Pixmap, ctm raster.Matrix, interpolate bool) bool {
+	return smoothFor(src.W, src.H, ctm, interpolate)
+}
+
+func smoothFor(sw, sh int, ctm raster.Matrix, interpolate bool) bool {
 	if interpolate {
 		return true
 	}
 	w, h := deviceExtent(ctm)
-	return w < float32(src.W)*4 || h < float32(src.H)*4
+	return w < float32(sw)*4 || h < float32(sh)*4
 }
 
 // deviceExtent returns the width and height of the unit square after ctm.
